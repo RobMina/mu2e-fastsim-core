@@ -42,11 +42,20 @@ def primary_muons(gen):
     return mu.drop_duplicates(KEY).reset_index(drop=True)
 
 
-def write(path, trees):
-    """Write {tree name: DataFrame} into directory dump/ of a new ROOT file (empty or None frames are skipped)."""
+def write(path, trees, as_ttree=False):
+    """Write {tree name: DataFrame} into directory dump/ of a new ROOT file (empty or None frames are skipped).
+
+    as_ttree: write TTrees (uproot >= 5.7 writes RNTuple by default; art/ROOT readers such as the table-source art
+    modules need TTrees).
+    """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with uproot.recreate(path) as f:
         for name, df in trees.items():
             if df is not None and len(df):
-                f[f"{DIR}/{name}"] = {c: df[c].to_numpy() for c in df.columns}
+                cols = {c: df[c].to_numpy() for c in df.columns}
+                if as_ttree:
+                    f.mktree(f"{DIR}/{name}", {c: v.dtype for c, v in cols.items()})
+                    f[f"{DIR}/{name}"].extend(cols)
+                else:
+                    f[f"{DIR}/{name}"] = cols
     print(f"wrote {path}")

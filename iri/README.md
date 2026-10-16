@@ -57,5 +57,7 @@ iri/tools/iri.sh cat $M2FS_EAGLE/hello/hello.out
 |---|---|---|
 | `jobs/setup_venv_polaris.json` + `scripts/setup_venv.sh` | build the project venv on Eagle | done 2026-10-16 (PBS 7752878, from mu2e-crv-fastsim) |
 | `jobs/hello_polaris.json` + `scripts/hello_gpu.sh` | node/GPU inventory, JAX matmul per A100 | **passed** 2026-10-16 (PBS 7752911, from mu2e-crv-fastsim): 4x A100-SXM4-40GB, driver 580.65.06, JAX sees 4 devices |
+| `jobs/probe_polaris.json` + `scripts/probe_env.sh` | compute-node environment probe | diagnostic |
+| `jobs/mkdir_eagle.json` | create the work area on Eagle | utility |
 | `jobs/git_sync_polaris.json` + `scripts/git_sync.sh` | clone or `--ff-only` pull the public `mu2e-fastsim` umbrella repo with its submodules into `$M2FS_EAGLE/code` over HTTPS through the ALCF proxy; `--args fresh` removes the clone first | prints HEAD of each submodule |
 

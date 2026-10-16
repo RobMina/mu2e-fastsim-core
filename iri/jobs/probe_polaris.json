@@ -1,0 +1,19 @@
+{
+  "name": "mu2efastsim-probe",
+  "executable": "/bin/bash",
+  "arguments": ["${M2FS_EAGLE}/hello/hello_gpu.sh"],
+  "directory": "${M2FS_EAGLE}/hello",
+  "stdout_path": "${M2FS_EAGLE}/hello/probe.out",
+  "stderr_path": "${M2FS_EAGLE}/hello/probe.err",
+  "resources": {
+    "node_count": 1
+  },
+  "attributes": {
+    "duration": 600,
+    "queue_name": "debug",
+    "account": "${ALCF_PROJECT}",
+    "custom_attributes": {
+      "filesystems": "home:eagle"
+    }
+  }
+}

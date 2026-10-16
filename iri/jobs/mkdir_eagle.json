@@ -1,0 +1,4 @@
+{
+  "path": "${M2FS_EAGLE}/hello",
+  "parent": true
+}

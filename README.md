@@ -22,6 +22,7 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 | `mu2efastsim/transport.py` | correlated multiple scattering to a plane (uniform or banded material), sliced slab loss with range-out |
 | `mu2efastsim/tables.py` | flat-table I/O in the art dumper layout (`dump/` directory, `(run, subrun, event)` keys) |
 | `mu2efastsim/stats.py`, `plots.py` | robust statistics and plotting/stats-JSON helpers shared by every comparison |
+| `mu2efastsim/match.py` | joins and lookups on multi-column integer keys, two-sample KS test (fast-vs-stock comparisons) |
 | `iri/` | ALCF Polaris job drivers through the IRI API (inline job shipping, venv setup, GPU smoke test, git sync) |
 
 ## Backends
@@ -43,8 +44,9 @@ loss = eloss.sample_loss(rng, materials.POLYSTYRENE, p_MeV, length_mm, tcut_MeV)
 
 ## History
 
-The modules were first written in `mu2e-crv-fastsim` and copied here from its commit `f451d7b` (2026-10-16). Until the
-CRV repository switches to this package, the copies may diverge; they are merged later by hand.
+The modules were first written in `mu2e-crv-fastsim` and moved here from its commit `f451d7b` (2026-10-16); the CRV
+repository removed its copies and imports this package since 2026-10-16. `match.py` (multi-column key joins, lookups,
+KS test) came from the CRV fast reco the same day; `tables.write(as_ttree=True)` from the CRV path-A work.
 
 ## License
 
