@@ -1,0 +1,15 @@
+#!/bin/bash
+# GPU throughput of the CRV fast pulse reco (crvfastsim reco-bench) on one Polaris node: GPU tests, then one
+# process per A100 on synthetic KPP-like waveforms. usage: crv_reco_bench.sh [n_events_per_gpu]   (default 200000)
+E=${M2FS_EAGLE:?}; V=$E/venv/bin/python; N=${1:-200000}
+cd $E/code || exit 2
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+O=$E/bench/$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O
+$V -c "import jax; print('devices', jax.devices())"
+$V -m pytest -q -p no:cacheprovider crv/tests/test_reco_jax.py core/tests 2>&1 | tail -3
+for g in 0 1 2 3; do
+  CUDA_VISIBLE_DEVICES=$g $V -m crvfastsim reco-bench synthetic --max-events $N --length 12 --batch 65536 --repeat 3 \
+    --seed $((20261016+g)) --outdir $O/gpu$g > $O/gpu$g.txt 2>&1 &
+done; wait
+for g in 0 1 2 3; do grep -h -E '"(device|events_per_s|compile_s|us_per_event)"' $O/gpu$g/bench_stats.json | tr -d '\n'; echo; done
+echo "outdir $O"; echo exit=0

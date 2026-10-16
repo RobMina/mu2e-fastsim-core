@@ -11,7 +11,7 @@ scripts ([AI-ModCon/genesis-skills](https://github.com/AI-ModCon/genesis-skills)
 | Polaris resource id | `55c1c993-1124-47f9-b823-514ba3849a9a` |
 | Eagle filesystem resource id | `1c3ad9d4-2e91-42bc-becb-72b1fde1235c` |
 | Work area | `$M2FS_EAGLE` (on Eagle) |
-| Queues | `debug` (1-2 nodes, <= 1 h), or the project's production queue or reservation |
+| Queues | `debug` (1-2 nodes, <= 1 h; can sit for hours), `capacity` (1-4 nodes, up to 168 h), `preemptable` (1-10 nodes), `prod` (>= 10 nodes); the hackathon reservation queue `R7728155` while it is active |
 
 ## What the ALCF IRI API actually accepts (tested 2026-10-16)
 
@@ -33,6 +33,19 @@ scripts ([AI-ModCon/genesis-skills](https://github.com/AI-ModCon/genesis-skills)
 
 Literal paths only in the submitted JSON (the API does not expand `$HOME`/`$USER`): `tools/make_inline_job.py` expands
 `${M2FS_EAGLE}` and `${ALCF_PROJECT}` in the templates before submission.
+
+## When the API answers 403 or 401
+
+- **HTTP 403 with a Cloudflare "Just a moment..." page** (even for `/openapi.json`): the client's network is challenged,
+  not the account. Seen from a residential laptop connection on 2026-10-16 while a FNAL GPVM and the AI node got 200.
+  Submit from a host that gets 200: copy the access token (`token_manager.py ensure --print-token`) and the JobSpec
+  built by `make_inline_job.py` to that host's `/tmp` (mode 600) and POST with curl:
+  `curl -A iri-api-client/1.0 -H "Authorization: Bearer $(cat tok)" -H "Content-Type: application/json"
+  -X POST --data @job.json https://api.alcf.anl.gov/api/v1/compute/job/<polaris resource id>`; status:
+  `GET /api/v1/compute/status/<resource id>/<job id>`.
+- **HTTP 401 "Globus token not active"** while `token_manager.py status` says the token is valid: the stored ALCF token
+  has no expiry, so `ensure --min-ttl` reuses it. Force a refresh with the stored refresh token
+  (`token_manager.refresh_stored_tokens(tokens, ["alcf"])`, then `save_tokens`); interactive login only if that fails.
 
 ## Environment
 
@@ -59,5 +72,6 @@ iri/tools/iri.sh cat $M2FS_EAGLE/hello/hello.out
 | `jobs/hello_polaris.json` + `scripts/hello_gpu.sh` | node/GPU inventory, JAX matmul per A100 | **passed** 2026-10-16 (PBS 7752911, from mu2e-crv-fastsim): 4x A100-SXM4-40GB, driver 580.65.06, JAX sees 4 devices |
 | `jobs/probe_polaris.json` + `scripts/probe_env.sh` | compute-node environment probe | diagnostic |
 | `jobs/mkdir_eagle.json` | create the work area on Eagle | utility |
+| `jobs/crv_reco_bench_polaris.json` + `scripts/crv_reco_bench.sh` | CRV fast pulse reco throughput, one process per A100 (`crvfastsim reco-bench` on synthetic waveforms) after the GPU tests; queue `capacity` (1-4 nodes, no debug wait); `--args N` events per GPU | `events_per_s` per GPU in the job output |
 | `jobs/git_sync_polaris.json` + `scripts/git_sync.sh` | clone or `--ff-only` pull the public `mu2e-fastsim` umbrella repo with its submodules into `$M2FS_EAGLE/code` over HTTPS through the ALCF proxy; `--args fresh` removes the clone first | prints HEAD of each submodule |
 
