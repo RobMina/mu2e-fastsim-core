@@ -2,13 +2,16 @@
 
 * msc_to_plane: carry tracks to a horizontal plane through a uniform slab, or through height bands of material,
   with correlated (displacement, angle) Highland multiple scattering in two transverse planes (PDG eq. 34.20);
-* slab_loss: energy loss through a thick layer integrated in slices so dE/dx follows the slowing muon.
+* slab_loss: energy loss through a thick layer integrated in slices so dE/dx follows the slowing muon;
+* world_loss: material column of the GDML world between a track origin and a horizontal plane, in height bands
+  (energy loss per material, x/X0 and lever arm per band for msc_to_plane).
 
 Detector packages own the geometry-specific parts (which plane, which footprint, which world bands).
 """
 import numpy as np
 
-from . import eloss
+from . import eloss, materials
+from . import world as world_mod
 
 
 def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, band_h=None):
@@ -87,3 +90,49 @@ def slab_loss(rng, mat, p, length):
         pg = np.sqrt(np.clip((tk + eloss.MMU) ** 2 - eloss.MMU ** 2, 1e-6, None))
         lost[rest] += eloss.dedx_restricted(mat, pg, 1e9) * left[rest]
     return np.minimum(lost, tk0)
+
+
+def world_loss(rng, o, d, p, world, band_edges_y):
+    """Material between o and the plane y = band_edges_y[-1] (tracks going down).
+
+    band_edges_y: decreasing heights [mm]; the last is the plane. Returns (|p| at the plane, total x/X0, survived?,
+    x/X0 per band, path distance from each band's centre to the plane). Loss per material is integrated in slices
+    (slab_loss); materials without constants are treated as concrete. The band lever arms let msc_to_plane place the
+    scattering where it happens (material close above the plane scatters with a short arm, distant air with a long one).
+    """
+    edges = np.asarray(band_edges_y, float)
+    y_plane = edges[-1]
+    L = (o[:, 1] - y_plane) / -d[:, 1]
+    nb = len(edges) - 1
+    band_xx0 = np.zeros((len(p), nb))
+    band_h = np.zeros((len(p), nb))
+    loss = np.zeros(len(p))
+    x0_air = eloss.radiation_length_mm(materials.AIR)
+    for k in range(nb):
+        y_top, y_bot = edges[k], edges[k + 1]
+        s_top = np.clip((o[:, 1] - y_top) / -d[:, 1], 0, L)
+        s_bot = np.clip((o[:, 1] - y_bot) / -d[:, 1], 0, L)
+        seg = s_bot - s_top
+        if not (seg > 0).any():
+            continue
+        band_pieces = [q for q in world if q[3][1] >= y_bot and q[2][1] <= y_top]
+        act = np.flatnonzero(seg > 0)
+        col = {} if not band_pieces else {
+            m: np.bincount(act, weights=v, minlength=len(p))
+            for m, v in world_mod.column(band_pieces, (o + d * s_top[:, None])[act], d[act], seg[act]).items()}
+        solid = np.zeros(len(p))
+        for name, c in col.items():
+            if not c.any():
+                continue
+            mat = materials.BY_NAME.get(name, materials.CONCRETE_MARS)
+            hit = np.flatnonzero(c > 0)
+            loss[hit] += slab_loss(rng, mat, p[hit] - loss[hit], c[hit])
+            band_xx0[:, k] += c / eloss.radiation_length_mm(mat)
+            solid += c
+        air = np.clip(seg - solid, 0, None)
+        loss += eloss.dedx_restricted(materials.AIR, np.maximum(p - loss, 1.0), 1e9) * air
+        band_xx0[:, k] += air / x0_air
+        band_h[:, k] = L - 0.5 * (s_top + s_bot)
+    tk = np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU - loss
+    p_plane = np.sqrt(np.clip((tk + eloss.MMU) ** 2 - eloss.MMU ** 2, 0, None))
+    return p_plane, band_xx0.sum(1), tk > 0.5, band_xx0, band_h

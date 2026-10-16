@@ -6,6 +6,12 @@ E=${M2FS_EAGLE:?}; V=$E/venv/bin/python; N=${1:-200000}; R=${2:-}
 cd $E/code || exit 2
 export https_proxy=http://proxy.alcf.anl.gov:3128 http_proxy=http://proxy.alcf.anl.gov:3128
 git pull -q --ff-only && git submodule update -q --init --recursive; git log -1 --format="code %h %s"; git submodule status
+# public Offline data files the fast chain reads (no CVMFS on Polaris): fetched once into $E/offline_data
+D=$E/offline_data/Offline/CRVResponse/data; mkdir -p $D
+[ -s $D/singlePEWaveform_v3.txt ] || curl -s -o $D/singlePEWaveform_v3.txt \
+  https://raw.githubusercontent.com/Mu2e/Offline/main/CRVResponse/data/singlePEWaveform_v3.txt
+export MU2E_SEARCH_PATH=$E/offline_data${MU2E_SEARCH_PATH:+:$MU2E_SEARCH_PATH}
+wc -l $D/singlePEWaveform_v3.txt
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 O=$E/bench/$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O
 $V -c "import jax; print('devices', jax.devices())"

@@ -16,7 +16,8 @@ N_A = 6.02214076e23
 # Z, A [g/mol] of the elements in the materials below
 ELEMENTS = {"H": (1, 1.00794), "C": (6, 12.0107), "N": (7, 14.0067), "O": (8, 15.9994), "Na": (11, 22.98977),
             "Al": (13, 26.981538), "Si": (14, 28.0855), "Ar": (18, 39.948), "K": (19, 39.0983), "Ca": (20, 40.078),
-            "Fe": (26, 55.845), "Mn": (25, 54.938049)}
+            "Fe": (26, 55.845), "Mn": (25, 54.938049), "Cu": (29, 63.546), "W": (74, 183.84), "Mg": (12, 24.305),
+            "B": (5, 10.811), "Ti": (22, 47.867), "F": (9, 18.9984032)}
 
 
 @dataclass(frozen=True)
@@ -86,5 +87,17 @@ MILD_STEEL = Material("MildSteel", 7.86, 284.511116716604, {"Mn": 0.01, "Si": 0.
 SHIELDING_CONCRETE = Material("ShieldingConcrete", 2.5, 129.122501214703,
                               {"O": 0.52, "Si": 0.325, "Ca": 0.06, "Na": 0.015, "Fe": 0.04, "Al": 0.04})
 
+# tracker-area electronics and services above the KPP tracker (v04 GDML, read 2026-10-16); Sternheimer tables for the
+# NIST elements from G4DensityEffectData, mixtures use the condensed-material formula (density_params)
+COPPER = Material("G4_Cu", 8.96, 322.0, {"Cu": 1.0}, sternheimer=(4.4190, -0.0254, 3.2792, 0.14339, 2.9044, 0.08))
+SILICON = Material("G4_Si", 2.33, 173.0, {"Si": 1.0}, sternheimer=(4.4351, 0.2014, 2.8715, 0.14921, 3.2546, 0.14))
+ELECTRONICS2 = Material("Electronics2", 4.52, 229.423798310015,
+                        {"Si": 0.0393766268325182, "O": 0.0937139019072929, "Ca": 0.021183442718492,
+                         "Al": 0.0107331999698117, "Mg": 0.00235184116252291, "B": 0.0036336834583261,
+                         "Ti": 0.000747978346220884, "Na": 0.00115729823161608, "K": 0.00129503062544011,
+                         "Fe": 0.000545552317870526, "F": 0.001092, "C": 0.0715765662980504, "H": 0.0089116569351508,
+                         "N": 0.00368122119668749, "Cu": 0.74})
+CUW1090 = Material("CuW1090", 17.3, 663.689239365592, {"W": 0.9, "Cu": 0.1})
+
 BY_NAME = {m.name: m for m in (POLYSTYRENE, ALUMINIUM, AIR, CONCRETE_MARS, MB_OVERBURDEN, MILD_STEEL,
-                               SHIELDING_CONCRETE)}
+                               SHIELDING_CONCRETE, COPPER, SILICON, ELECTRONICS2, CUW1090)}
