@@ -14,5 +14,10 @@ for g in 0 1 2 3; do
   CUDA_VISIBLE_DEVICES=$g $V -m crvfastsim reco-bench synthetic --max-events $N --length 12 --batch 65536 --repeat 3 \
     --seed $((20261016+g)) ${R:+--rounds $R} --outdir $O/gpu$g > $O/gpu$g.txt 2>&1 &
 done; wait
+for g in 0 1 2 3; do
+  CUDA_VISIBLE_DEVICES=$g $V -m crvfastsim reco-bench synthetic --stage waveforms --max-events 200000 --batch 65536 \
+    --repeat 3 --seed $((20261116+g)) --outdir $O/wf$g > $O/wf$g.txt 2>&1 &
+done; wait
+for g in 0 1 2 3; do grep -h -E '"(stage|events_per_s|compile_s|us_per_event)"' $O/wf$g/bench_waveforms_stats.json | tr -d '\n'; echo; done
 for g in 0 1 2 3; do grep -h -E '"(device|events_per_s|compile_s|us_per_event|rounds|rounds_exhausted_first_batch)"' $O/gpu$g/bench_stats.json | tr -d '\n'; echo; done
 echo "outdir $O"; echo exit=0
