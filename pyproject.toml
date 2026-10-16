@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mu2efastsim"
+version = "0.1.0"
+description = "Detector-independent core of the Mu2e Geant4-free fast simulation (energy loss, materials, world, crossings, tables)"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = ["numpy", "pandas", "uproot", "matplotlib"]
+
+[project.optional-dependencies]
+jax = ["jax"]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["mu2efastsim"]

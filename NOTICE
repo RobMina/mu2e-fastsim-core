@@ -1,0 +1,11 @@
+mu2e-fastsim-core
+Copyright 2026 the Mu2e Genesis team (Mu2e Collaboration)
+
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
+The energy-loss, fluctuation and material code re-implements published Geant4 11.3.2 models (G4MuBetheBlochModel,
+G4UniversalFluctuation, G4UrbanFluctuation, G4EmSaturation, G4IonisParamMat, G4DensityEffectData) in Python; Geant4
+is distributed under the Geant4 Software License. Code first written in mu2e-crv-fastsim (commit f451d7b).
+
+Mu2e-internal inputs (conditions, calibration and lookup tables, detector data) and physics results are not part of
+this repository and must not be added to it.

@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+# analysis and job products, never source
+*.root
+*.art
+*.db
+*.sif
+*.log
+output/
+plots/
+build/
+site.env

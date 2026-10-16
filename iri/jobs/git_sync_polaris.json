@@ -1,0 +1,19 @@
+{
+  "name": "mu2efastsim-gitsync",
+  "executable": "/bin/bash",
+  "arguments": ["${M2FS_EAGLE}/logs/git_sync.sh"],
+  "directory": "${M2FS_EAGLE}/logs",
+  "stdout_path": "${M2FS_EAGLE}/logs/git_sync.out",
+  "stderr_path": "${M2FS_EAGLE}/logs/git_sync.err",
+  "resources": {
+    "node_count": 1
+  },
+  "attributes": {
+    "duration": 600,
+    "queue_name": "debug",
+    "account": "${ALCF_PROJECT}",
+    "custom_attributes": {
+      "filesystems": "home:eagle"
+    }
+  }
+}
