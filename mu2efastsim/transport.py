@@ -14,18 +14,36 @@ from . import eloss, materials
 from . import world as world_mod
 
 
-def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, band_h=None):
+def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, band_h=None, band_p=None):
     """Move each track from o to the plane y = y_plane through a uniform slab, with PDG (eq. 34.20) correlated MSC.
 
     Two independent transverse planes per track: y_plane displacement and angle from (z1, z2) unit Gaussians,
     theta_plane = z2 * theta0, y_plane = z1 * L * theta0 / sqrt(12) + z2 * L * theta0 / 2. Returns new (origin,
     direction, path length L). Tracks are assumed downward (d_y < 0).
+
+    band_p [N, nbands] (sliced scattering): the muon |p| in each band (world_loss returns it). Each band then
+    scatters with its own 1/(beta p)^2: theta0^2 = sum_k (13.6/(beta_k p_k))^2 x_k (1 + 0.038 ln(X/beta^2))^2, the
+    Highland log term on the total x/X0 (Lynch-Dahl / PDG 34.16 summed over layers), so soft muons that lose most of
+    their energy in the concrete scatter most near the plane. Without band_p one |p| (`p`) is used for the column.
     """
     L = (o[:, 1] - y_plane) / -d[:, 1]
     th0 = eloss.highland_theta0(p, L / x0_mm if x_over_x0 is None else x_over_x0)
     if band_xx0 is not None:
         # scattering spread over path bands at distance band_h from the plane: exact Gaussian covariance
-        w = band_xx0 / np.maximum(band_xx0.sum(1, keepdims=True), 1e-30)
+        if band_p is not None:
+            xt = np.maximum(band_xx0.sum(1), 1e-12)
+            bp = np.maximum(band_p, 1.0)
+            beta2 = bp ** 2 / (bp ** 2 + eloss.MMU ** 2)
+            # per-band variance with that band's momentum; the log term uses the column's total x/X0 and a
+            # variance-weighted beta (beta ~ 1 except for the softest muons)
+            v_k = (13.6 / (np.sqrt(beta2) * bp)) ** 2 * band_xx0
+            beta2_eff = (v_k * beta2).sum(1) / np.maximum(v_k.sum(1), 1e-30)
+            corr = (1 + 0.038 * np.log(xt / np.maximum(beta2_eff, 1e-6))) ** 2
+            v_k = v_k * corr[:, None]
+            w = v_k / np.maximum(v_k.sum(1, keepdims=True), 1e-30)
+            th0 = np.sqrt(v_k.sum(1))
+        else:
+            w = band_xx0 / np.maximum(band_xx0.sum(1, keepdims=True), 1e-30)
         s_tt = th0 ** 2
         s_yt = s_tt * (w * band_h).sum(1)
         s_yy = s_tt * (w * band_h ** 2).sum(1)
@@ -92,11 +110,12 @@ def slab_loss(rng, mat, p, length):
     return np.minimum(lost, tk0)
 
 
-def world_loss(rng, o, d, p, world, band_edges_y):
+def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False):
     """Material between o and the plane y = band_edges_y[-1] (tracks going down).
 
     band_edges_y: decreasing heights [mm]; the last is the plane. Returns (|p| at the plane, total x/X0, survived?,
-    x/X0 per band, path distance from each band's centre to the plane). Loss per material is integrated in slices
+    x/X0 per band, path distance from each band's centre to the plane); with return_band_p=True also the mean of the
+    entry and exit |p| of each band [N, nbands] (for sliced scattering in msc_to_plane). Loss per material is integrated in slices
     (slab_loss); materials without constants are treated as concrete. The band lever arms let msc_to_plane place the
     scattering where it happens (material close above the plane scatters with a short arm, distant air with a long one).
     """
@@ -107,9 +126,11 @@ def world_loss(rng, o, d, p, world, band_edges_y):
     band_xx0 = np.zeros((len(p), nb))
     band_h = np.zeros((len(p), nb))
     loss = np.zeros(len(p))
+    band_p = np.zeros((len(p), nb))
     x0_air = eloss.radiation_length_mm(materials.AIR)
     for k in range(nb):
         y_top, y_bot = edges[k], edges[k + 1]
+        loss_in = loss.copy()
         s_top = np.clip((o[:, 1] - y_top) / -d[:, 1], 0, L)
         s_bot = np.clip((o[:, 1] - y_bot) / -d[:, 1], 0, L)
         seg = s_bot - s_top
@@ -133,6 +154,15 @@ def world_loss(rng, o, d, p, world, band_edges_y):
         loss += eloss.dedx_restricted(materials.AIR, np.maximum(p - loss, 1.0), 1e9) * air
         band_xx0[:, k] += air / x0_air
         band_h[:, k] = L - 0.5 * (s_top + s_bot)
+        band_p[:, k] = 0.5 * (_p_after(p, loss_in) + _p_after(p, loss))
     tk = np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU - loss
     p_plane = np.sqrt(np.clip((tk + eloss.MMU) ** 2 - eloss.MMU ** 2, 0, None))
+    if return_band_p:
+        return p_plane, band_xx0.sum(1), tk > 0.5, band_xx0, band_h, band_p
     return p_plane, band_xx0.sum(1), tk > 0.5, band_xx0, band_h
+
+
+def _p_after(p, loss):
+    """|p| after losing kinetic energy `loss` (MeV), floored at 0."""
+    tk = np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU - loss
+    return np.sqrt(np.clip((np.maximum(tk, 0) + eloss.MMU) ** 2 - eloss.MMU ** 2, 0, None))
