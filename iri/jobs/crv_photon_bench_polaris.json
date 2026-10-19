@@ -1,0 +1,21 @@
+{
+  "name": "mu2efastsim-crvphotons",
+  "executable": "/bin/bash",
+  "arguments": [
+    "${M2FS_EAGLE}/logs/crv_photon_bench.sh"
+  ],
+  "directory": "${M2FS_EAGLE}/logs",
+  "stdout_path": "${M2FS_EAGLE}/logs/crv_photon_bench.out",
+  "stderr_path": "${M2FS_EAGLE}/logs/crv_photon_bench.err",
+  "resources": {
+    "node_count": 1
+  },
+  "attributes": {
+    "duration": 1200,
+    "queue_name": "capacity",
+    "account": "${ALCF_PROJECT}",
+    "custom_attributes": {
+      "filesystems": "home:eagle"
+    }
+  }
+}
