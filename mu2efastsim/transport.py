@@ -136,9 +136,9 @@ def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False):
         seg = s_bot - s_top
         if not (seg > 0).any():
             continue
-        band_pieces = [q for q in world if q[3][1] >= y_bot and q[2][1] <= y_top]
+        band_pieces = world.band(k) if hasattr(world, "band") else [q for q in world if q[3][1] >= y_bot and q[2][1] <= y_top]
         act = np.flatnonzero(seg > 0)
-        col = {} if not band_pieces else {
+        col = {} if not len(band_pieces) else {
             m: np.bincount(act, weights=v, minlength=len(p))
             for m, v in world_mod.column(band_pieces, (o + d * s_top[:, None])[act], d[act], seg[act]).items()}
         solid = np.zeros(len(p))
@@ -166,3 +166,22 @@ def _p_after(p, loss):
     """|p| after losing kinetic energy `loss` (MeV), floored at 0."""
     tk = np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU - loss
     return np.sqrt(np.clip((np.maximum(tk, 0) + eloss.MMU) ** 2 - eloss.MMU ** 2, 0, None))
+
+
+class BandedWorld:
+    """World pieces pre-split into the height bands of world_loss, each band packed as a world.PieceSet."""
+
+    def __init__(self, pieces, band_edges_y, cell=500.0):
+        self._pieces, self._cell = pieces, cell
+        self.edges = np.asarray(band_edges_y, float)
+        self.bands = [world_mod.PieceSet([q for q in pieces if q[3][1] >= self.edges[k + 1] and q[2][1] <= self.edges[k]])
+                      .build_grid(cell) for k in range(len(self.edges) - 1)]
+
+    def band(self, k):
+        return self.bands[k]
+
+    def pieces(self):
+        """All pieces as one PieceSet (for whole-column queries outside the band loop)."""
+        if not hasattr(self, "_all"):
+            self._all = world_mod.PieceSet(self._pieces).build_grid(self._cell)
+        return self._all

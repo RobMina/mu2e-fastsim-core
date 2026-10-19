@@ -139,13 +139,136 @@ def load(gdml_path, keep_materials=None, y_min=None):
     return pieces
 
 
+class PieceSet:
+    """The convex pieces of `load` packed into arrays for vectorised columns (same result as `column`).
+
+    Bounding boxes [P, 3] and planes padded to the largest plane count [P, Kmax, 4] (padding planes never cut).
+    `column` tests every (track, piece) pair's bounding box in one array operation per chunk of tracks, then clips
+    only the surviving pairs against their planes, so there is no Python loop over pieces.
+    """
+
+    def __init__(self, pieces):
+        self.mats = sorted({q[0] for q in pieces})
+        mi = {m: i for i, m in enumerate(self.mats)}
+        self.mat = np.array([mi[q[0]] for q in pieces], np.int64)
+        self.lo = np.array([q[2] for q in pieces], float).reshape(-1, 3)
+        self.hi = np.array([q[3] for q in pieces], float).reshape(-1, 3)
+        kmax = max((len(q[1]) for q in pieces), default=1)
+        P = np.zeros((len(pieces), kmax, 4))
+        P[:, :, 3] = 1e30                       # padding plane 0 . x <= 1e30: always inside, never enters or leaves
+        for i, q in enumerate(pieces):
+            P[i, :len(q[1])] = q[1]
+        self.P = P
+
+    def __len__(self):
+        return len(self.mat)
+
+    def build_grid(self, cell=500.0):
+        """Uniform x-z grid of `cell` mm over the pieces' footprint: for each cell, the pieces whose box overlaps it.
+
+        column then tests only the pieces in the cells a segment's x-z bounding box touches (pieces are mostly
+        compact slabs and prisms, and segments in a height band are short in x-z), instead of every piece."""
+        if not len(self.mat):
+            self.grid = None
+            return self
+        self.g0 = np.array([self.lo[:, 0].min(), self.lo[:, 2].min()])
+        g1 = np.array([self.hi[:, 0].max(), self.hi[:, 2].max()])
+        self.cell = float(cell)
+        self.ng = np.maximum(np.ceil((g1 - self.g0) / cell).astype(int), 1)
+        ix0 = np.clip(((self.lo[:, 0] - self.g0[0]) // cell).astype(int), 0, self.ng[0] - 1)
+        ix1 = np.clip(((self.hi[:, 0] - self.g0[0]) // cell).astype(int), 0, self.ng[0] - 1)
+        iz0 = np.clip(((self.lo[:, 2] - self.g0[1]) // cell).astype(int), 0, self.ng[1] - 1)
+        iz1 = np.clip(((self.hi[:, 2] - self.g0[1]) // cell).astype(int), 0, self.ng[1] - 1)
+        cells = [[] for _ in range(self.ng[0] * self.ng[1])]
+        for ip in range(len(self.mat)):
+            for ix in range(ix0[ip], ix1[ip] + 1):
+                for iz in range(iz0[ip], iz1[ip] + 1):
+                    cells[ix * self.ng[1] + iz].append(ip)
+        self.cell_start = np.r_[0, np.cumsum([len(c) for c in cells])]
+        self.cell_items = np.array([i for c in cells for i in c], np.int64)
+        self.grid = True
+        return self
+
+    def _candidates(self, o, d, t_max):
+        """(track, piece) candidate pairs from the grid: pieces in the cells of each segment's x-z bounding box."""
+        a, b = o, o + d * t_max[:, None]
+        x0, x1 = np.minimum(a[:, 0], b[:, 0]), np.maximum(a[:, 0], b[:, 0])
+        z0, z1 = np.minimum(a[:, 2], b[:, 2]), np.maximum(a[:, 2], b[:, 2])
+        c = self.cell
+        ix0 = np.clip(((x0 - self.g0[0]) // c).astype(int), 0, self.ng[0] - 1)
+        ix1 = np.clip(((x1 - self.g0[0]) // c).astype(int), 0, self.ng[0] - 1)
+        iz0 = np.clip(((z0 - self.g0[1]) // c).astype(int), 0, self.ng[1] - 1)
+        iz1 = np.clip(((z1 - self.g0[1]) // c).astype(int), 0, self.ng[1] - 1)
+        outside = (x1 < self.g0[0]) | (z1 < self.g0[1]) | (x0 > self.g0[0] + self.ng[0] * c) | (z0 > self.g0[1] + self.ng[1] * c)
+        nx, nz = ix1 - ix0 + 1, iz1 - iz0 + 1
+        ncell = np.where(outside, 0, nx * nz)
+        it = np.repeat(np.arange(len(o)), ncell)
+        k = np.arange(ncell.sum()) - np.repeat(np.cumsum(ncell) - ncell, ncell)
+        cx = ix0[it] + k // nz[it]
+        cz = iz0[it] + k % nz[it]
+        cid = cx * self.ng[1] + cz
+        cnt = self.cell_start[cid + 1] - self.cell_start[cid]
+        it2 = np.repeat(it, cnt)
+        j = np.arange(cnt.sum()) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+        ip = self.cell_items[np.repeat(self.cell_start[cid], cnt) + j]
+        if not len(it2):
+            return it2, ip
+        key = np.unique(it2 * len(self.mat) + ip)          # a piece spanning several cells counts once per track
+        return key // len(self.mat), key % len(self.mat)
+
+    def column(self, o, d, t_max, chunk=2048):
+        o = np.asarray(o, float)
+        d = np.asarray(d, float)
+        t_max = np.asarray(t_max, float) * np.ones(len(o))
+        acc = np.zeros((len(self.mats), len(o)))
+        if not len(self.mat):
+            return {}
+        inv = 1.0 / np.where(d == 0, 1e-300, d)
+        for c0 in range(0, len(o), chunk):
+            sl = slice(c0, c0 + chunk)
+            oc, ic, tm = o[sl], inv[sl], t_max[sl]
+            if getattr(self, "grid", None):
+                it, ip = self._candidates(oc, d[sl], tm)
+                if not len(it):
+                    continue
+                t1 = (self.lo[ip] - oc[it]) * ic[it]
+                t2 = (self.hi[ip] - oc[it]) * ic[it]
+                tin = np.maximum(np.minimum(t1, t2).max(1), 0.0)
+                tout = np.minimum(np.maximum(t1, t2).min(1), tm[it])
+                ok = tout > tin
+                it, ip = it[ok], ip[ok]
+            else:
+                t1 = (self.lo[None] - oc[:, None]) * ic[:, None]      # [n, P, 3]
+                t2 = (self.hi[None] - oc[:, None]) * ic[:, None]
+                tin = np.maximum(np.minimum(t1, t2).max(2), 0.0)
+                tout = np.minimum(np.maximum(t1, t2).min(2), tm[:, None])
+                it, ip = np.nonzero(tout > tin)
+            if not len(it):
+                continue
+            Pp = self.P[ip]                                         # [M, K, 4]
+            den = np.einsum("mj,mkj->mk", d[c0 + it], Pp[:, :, :3])
+            num = Pp[:, :, 3] - np.einsum("mj,mkj->mk", o[c0 + it], Pp[:, :, :3])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                s = num / den
+            enter = np.where(den < 0, s, -np.inf).max(1)
+            leave = np.where(den > 0, s, np.inf).min(1)
+            outside = ((den == 0) & (num < 0)).any(1)
+            a = np.maximum(enter, 0.0)
+            b = np.minimum(leave, tm[it])
+            L = np.where(outside, 0.0, np.clip(b - a, 0.0, None))
+            np.add.at(acc, (self.mat[ip], c0 + it), L)
+        return {m: acc[i] for i, m in enumerate(self.mats)}
+
+
 def column(pieces, o, d, t_max, chunk=4096):
     """Path length [mm] of each segment o + s d, s in [0, t_max], inside each material: dict name -> [N] array.
 
     Convex-piece slab clipping: for each piece, entry = max over planes of the entering intersections, exit = min over
     the leaving ones. Pieces are grouped by material; overlaps within a material are summed (geometry overlaps are rare
-    and small above the CRV).
+    and small above the CRV). `pieces` is a list from `load` or a PieceSet (vectorised, same result, much faster).
     """
+    if isinstance(pieces, PieceSet):
+        return pieces.column(o, d, t_max)
     o = np.asarray(o, float)
     d = np.asarray(d, float)
     t_max = np.asarray(t_max, float) * np.ones(len(o))

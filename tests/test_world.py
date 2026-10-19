@@ -70,3 +70,27 @@ def test_coaxial_shells_match_column_tubes():
     got = cs.column(o, d, 4000.0, nsub=64)
     for m in ("A", "B"):
         assert np.allclose(got.get(m, 0), ref.get(m, 0), atol=0.2), m       # phi sampling differs at sector edges
+
+
+
+def test_pieceset_matches_column_loop():
+    rng = np.random.default_rng(4)
+    pieces = []
+    for _ in range(60):
+        c = rng.uniform(-50, 50, 3)
+        h = rng.uniform(1, 8, 3)
+        P = np.array([[1, 0, 0, c[0] + h[0]], [-1, 0, 0, -(c[0] - h[0])], [0, 1, 0, c[1] + h[1]],
+                      [0, -1, 0, -(c[1] - h[1])], [0, 0, 1, c[2] + h[2]], [0, 0, -1, -(c[2] - h[2])]], float)
+        if rng.random() < 0.3:
+            P = P[:5]                                      # a piece with fewer planes (padding path)
+            P = np.vstack([P, [0, 0, -1, -(c[2] - h[2])]])
+        pieces.append(("A" if rng.random() < 0.5 else "B", P, c - h, c + h))
+    n = 3000
+    o = np.c_[rng.uniform(-60, 60, n), np.full(n, 100.0), rng.uniform(-60, 60, n)]
+    d = np.c_[rng.normal(0, .3, n), -np.ones(n), rng.normal(0, .3, n)]
+    d /= np.linalg.norm(d, axis=1)[:, None]
+    ref = W.column(pieces, o, d, 250.0)
+    got = W.column(W.PieceSet(pieces), o, d, 250.0)
+    grid = W.column(W.PieceSet(pieces).build_grid(cell=7.0), o, d, 250.0)
+    for m in ref:
+        assert np.allclose(got[m], ref[m], atol=1e-9) and np.allclose(grid[m], ref[m], atol=1e-9)
