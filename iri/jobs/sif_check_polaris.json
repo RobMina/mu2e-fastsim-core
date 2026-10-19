@@ -1,0 +1,11 @@
+{
+  "name": "mu2efastsim-sifcheck",
+  "executable": "/bin/bash",
+  "arguments": ["${M2FS_EAGLE}/logs/sif_check.sh"],
+  "directory": "/eagle/GenesisHackathonOct26/ram2aq/crvfastsim/logs",
+  "stdout_path": "/eagle/GenesisHackathonOct26/ram2aq/crvfastsim/logs/sif_check.out",
+  "stderr_path": "/eagle/GenesisHackathonOct26/ram2aq/crvfastsim/logs/sif_check.err",
+  "resources": {"node_count": 1},
+  "attributes": {"duration": 3600, "queue_name": "debug", "account": "GenesisHackathonOct26",
+                 "custom_attributes": {"filesystems": "home:eagle"}}
+}

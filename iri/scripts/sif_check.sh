@@ -1,12 +1,19 @@
 #!/bin/bash
-# R4 check on a Polaris compute node: find apptainer, time a cold start of the mu2e-fastsim image (first exec with an
-# empty cache), run the GPU tests and the chain bench inside it. usage: sif_check.sh <image.sif>
-S=${1:?usage: sif_check.sh <image.sif>}
-E=${M2FS_EAGLE:?}; O=$E/bench/sif_$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O
+# R4 check on a Polaris compute node: find apptainer, build the mu2e-fastsim image from the Eagle checkout if it is
+# missing (the IRI upload endpoint is not implemented), time a cold start (copy to node-local disk + first exec with
+# an empty cache), run the GPU tests and the chain bench inside it. usage: sif_check.sh [image.sif]
+E=${M2FS_EAGLE:?}; S=${1:-$E/mu2efastsim.sif}; O=$E/bench/sif_$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O
 export https_proxy=http://proxy.alcf.anl.gov:3128 http_proxy=http://proxy.alcf.anl.gov:3128
 A=$(command -v apptainer || true)
 [ -z "$A" ] && for m in apptainer spack-pe-base/0.10.1; do module load $m 2>/dev/null; done; A=$(command -v apptainer || command -v singularity || true)
 echo "apptainer: ${A:-none} $($A --version 2>/dev/null)"; [ -n "$A" ] || { echo exit=3; exit 3; }
+if [ ! -s $S ]; then
+  cd $E/code && git pull -q --ff-only && git submodule update -q --init --recursive && git log -1 --format="code %h"
+  export APPTAINER_TMPDIR=/local/scratch/$USER/apptainer_tmp
+  tb=$(date +%s); bash container/build.sh /local/scratch/$USER/build.sif > $O/build.txt 2>&1; rc=$?; te=$(date +%s)
+  tail -5 $O/build.txt; echo "build_exit $rc build_s $((te-tb))"; [ $rc -eq 0 ] || { echo exit=4; exit 4; }
+  cp /local/scratch/$USER/build.sif $S && rm -f /local/scratch/$USER/build.sif
+fi
 ls -la $S
 export APPTAINER_CACHEDIR=/local/scratch/$USER/apptainer_cache; mkdir -p $APPTAINER_CACHEDIR
 L=/local/scratch/$USER/sif; mkdir -p $L
