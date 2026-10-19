@@ -89,6 +89,8 @@ SHIELDING_CONCRETE = Material("ShieldingConcrete", 2.5, 129.122501214703,
 
 # tracker-area electronics and services above the KPP tracker (v04 GDML, read 2026-10-16); Sternheimer tables for the
 # NIST elements from G4DensityEffectData, mixtures use the condensed-material formula (density_params)
+ALUMINIUM_6061 = Material("Al6061", 2.70, 166.0, {"Al": 0.98, "Mg": 0.01, "Si": 0.006, "Cu": 0.004})
+ALUMINIUM_7075 = Material("Al7075", 2.81, 166.0, {"Al": 0.90, "Cu": 0.016, "Mg": 0.025, "Ti": 0.059})
 COPPER = Material("G4_Cu", 8.96, 322.0, {"Cu": 1.0}, sternheimer=(4.4190, -0.0254, 3.2792, 0.14339, 2.9044, 0.08))
 SILICON = Material("G4_Si", 2.33, 173.0, {"Si": 1.0}, sternheimer=(4.4351, 0.2014, 2.8715, 0.14921, 3.2546, 0.14))
 ELECTRONICS2 = Material("Electronics2", 4.52, 229.423798310015,
@@ -99,5 +101,15 @@ ELECTRONICS2 = Material("Electronics2", 4.52, 229.423798310015,
                          "N": 0.00368122119668749, "Cu": 0.74})
 CUW1090 = Material("CuW1090", 17.3, 663.689239365592, {"W": 0.9, "Cu": 0.1})
 
+# tracker interior (Mu2eG4 ConstructMaterials; compositions approximate where the GDML holds a mixture: the
+# energy loss depends on Z/A and I, both within 1-2 % of these for the alloys)
+BRONZE_C938 = Material("BronzeC938", 9.4, 310.0, {"Cu": 0.75, "Mn": 0.10, "Fe": 0.15})
+TRACKER_MANIFOLD = Material("TrackerManifold", 1.95, 120.0, {"C": 0.13, "H": 0.017, "Al": 0.645, "O": 0.208})
+G10 = Material("G10", 1.70, 100.0, {"Si": 0.28, "O": 0.47, "C": 0.20, "H": 0.05})
+ELECTRONICS = Material("Electronics", 0.58, 150.0, {"Si": 0.30, "O": 0.40, "C": 0.15, "Cu": 0.15})
+POLYETHYLENE = Material("G4_POLYETHYLENE", 0.94, 57.4, {"C": 0.856, "H": 0.144})
+SILICA = Material("G4_SILICON_DIOXIDE", 2.32, 139.2, {"Si": 0.4674, "O": 0.5326})
+
 BY_NAME = {m.name: m for m in (POLYSTYRENE, ALUMINIUM, AIR, CONCRETE_MARS, MB_OVERBURDEN, MILD_STEEL,
-                               SHIELDING_CONCRETE, COPPER, SILICON, ELECTRONICS2, CUW1090)}
+                               SHIELDING_CONCRETE, COPPER, SILICON, ELECTRONICS2, CUW1090, ALUMINIUM_6061,
+                               ALUMINIUM_7075, BRONZE_C938, TRACKER_MANIFOLD, G10, ELECTRONICS, POLYETHYLENE, SILICA)}
