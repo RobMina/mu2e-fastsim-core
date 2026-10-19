@@ -179,3 +179,129 @@ def column(pieces, o, d, t_max, chunk=4096):
             acc[cand] += L
         out[mat] = acc
     return out
+
+
+def load_tubes(gdml_path, keep_materials=None, bbox=None):
+    """Tube and polycone solids of the GDML world as cylindrical shells: list of (material, R [3x3], t [3], rmin, rmax,
+    half z, phi0, dphi) in the global frame (R maps local to global). Polycones become one shell per z section with the
+    section's smaller rmin and larger rmax. Boolean solids use their first constituent (as `load`).
+
+    keep_materials: names to keep (default: everything that is not air or vacuum). bbox: (lo, hi) global corners; keep
+    only shells whose global bounding box overlaps it (the tracker region holds thousands of support pieces).
+    """
+    root = ET.parse(gdml_path).getroot()
+    vols = {v.get("name"): v for v in root.find("structure").findall("volume")}
+    solids = {s.get("name"): s for s in root.find("solids")}
+    world = root.find("setup/world").get("ref")
+    out = []
+
+    def keep(mat):
+        if keep_materials is not None:
+            return mat in keep_materials
+        return not re.search(r"AIR|Vacuum|VACUUM|Galactic", mat)
+
+    def shells(solid):
+        while solid.tag in ("subtraction", "union", "intersection"):
+            solid = solids[solid.find("first").get("ref")]
+        ang = np.pi / 180 if solid.get("aunit", "deg") == "deg" else 1.0
+        phi0 = float(solid.get("startphi", 0)) * ang
+        dphi = float(solid.get("deltaphi", 360)) * ang
+        if solid.tag in ("tube", "cutTube"):
+            return [(float(solid.get("rmin", 0)), float(solid.get("rmax")), 0.0, 0.5 * float(solid.get("z")), phi0, dphi)]
+        if solid.tag == "polycone":
+            zp = sorted((float(z.get("z")), float(z.get("rmin", 0)), float(z.get("rmax"))) for z in solid.findall("zplane"))
+            res = []
+            for (z0, a0, b0), (z1, a1, b1) in zip(zp[:-1], zp[1:]):
+                if z1 > z0:
+                    res.append((min(a0, a1), max(b0, b1), 0.5 * (z0 + z1), 0.5 * (z1 - z0), phi0, dphi))
+            return res
+        return []
+
+    def walk(lv, R, t):
+        for pv in vols[lv].findall("physvol"):
+            child = pv.find("volumeref").get("ref")
+            p = pv.find("position")
+            pos = np.array([float(p.get(a, 0)) for a in "xyz"]) if p is not None else np.zeros(3)
+            Rl = _rot(pv.find("rotation"))
+            R2, t2 = R @ Rl, R @ pos + t
+            mat = _strip(vols[child].find("materialref").get("ref"))
+            if keep(mat):
+                for rmin, rmax, zc, hz, phi0, dphi in shells(solids[vols[child].find("solidref").get("ref")]):
+                    tc = t2 + R2 @ np.array([0.0, 0.0, zc])
+                    corners = np.array([[sx * rmax, sy * rmax, sz * hz] for sx in (-1, 1) for sy in (-1, 1)
+                                        for sz in (-1, 1)]) @ R2.T + tc
+                    lo, hi = corners.min(0), corners.max(0)
+                    if bbox is not None and (np.any(hi < bbox[0]) or np.any(lo > bbox[1])):
+                        continue
+                    out.append((mat, R2, tc, rmin, rmax, hz, phi0, dphi))
+            walk(child, R2, t2)
+
+    walk(world, np.eye(3), np.zeros(3))
+    return out
+
+
+def column_tubes(tubes, o, d, t_max, nsub=16):
+    """Path length [mm] of each segment o + s d, s in [0, t_max], inside the cylindrical shells: dict material -> [N].
+
+    Per shell, in its local frame: the chord inside r <= rmax minus the chord inside r < rmin, clipped to |z| <= hz;
+    the phi range of a sector is applied by subdividing each inside interval into `nsub` pieces and keeping those whose
+    midpoint lies in [phi0, phi0 + dphi] (exact for full tubes; nsub sets the accuracy at sector edges).
+    """
+    o = np.asarray(o, float)
+    d = np.asarray(d, float)
+    t_max = np.asarray(t_max, float) * np.ones(len(o))
+    out = {}
+    for mat, R, tc, rmin, rmax, hz, phi0, dphi in tubes:
+        ol = (o - tc) @ R          # global -> local: R^T (x - t), written as row vectors
+        dl = d @ R
+        A = dl[:, 0] ** 2 + dl[:, 1] ** 2
+        B = 2 * (ol[:, 0] * dl[:, 0] + ol[:, 1] * dl[:, 1])
+        r2 = ol[:, 0] ** 2 + ol[:, 1] ** 2
+
+        def chord(r):
+            C = r2 - r * r
+            disc = B * B - 4 * A * C
+            par = A < 1e-15
+            ok = np.where(par, C <= 0, disc > 0)
+            sq = np.sqrt(np.where(ok & ~par, disc, 0.0))
+            a_ = np.where(par, 1.0, A)
+            return (np.where(par, -np.inf, (-B - sq) / (2 * a_)), np.where(par, np.inf, (-B + sq) / (2 * a_)), ok)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z0 = np.where(np.abs(dl[:, 2]) > 1e-15, (-hz - ol[:, 2]) / dl[:, 2], -np.inf)
+            z1 = np.where(np.abs(dl[:, 2]) > 1e-15, (hz - ol[:, 2]) / dl[:, 2], np.inf)
+        zin = (np.abs(dl[:, 2]) > 1e-15) | (np.abs(ol[:, 2]) <= hz)
+        zlo, zhi = np.minimum(z0, z1), np.maximum(z0, z1)
+        a0, a1, aok = chord(rmax)
+        lo = np.maximum(np.maximum(a0, zlo), 0.0)
+        hi = np.minimum(np.minimum(a1, zhi), t_max)
+        cand = np.flatnonzero(aok & zin & (hi > lo))
+        if not len(cand):
+            continue
+        full = dphi >= 2 * np.pi - 1e-9
+        # inside the shell: [lo, hi] minus the rmin hole [b0, b1]; split into up to two intervals
+        ivals = []
+        if rmin > 0:
+            b0, b1, bok = chord(rmin)
+            hole = bok[cand]
+            b0c = np.where(hole, b0[cand], hi[cand])         # no hole crossing: the first interval is all of [lo, hi]
+            b1c = np.where(hole, b1[cand], hi[cand])
+            ivals.append((lo[cand], np.minimum(hi[cand], np.maximum(b0c, lo[cand]))))
+            ivals.append((np.maximum(lo[cand], np.minimum(b1c, hi[cand])), hi[cand]))
+        else:
+            ivals.append((lo[cand], hi[cand]))
+        acc = np.zeros(len(cand))
+        for s0, s1 in ivals:
+            ln = np.clip(s1 - s0, 0, None)
+            if full:
+                acc += ln
+                continue
+            k = (np.arange(nsub) + 0.5) / nsub
+            sm = s0[:, None] + ln[:, None] * k[None, :]
+            x = ol[cand, 0][:, None] + dl[cand, 0][:, None] * sm
+            y = ol[cand, 1][:, None] + dl[cand, 1][:, None] * sm
+            ph = np.mod(np.arctan2(y, x) - phi0, 2 * np.pi)
+            acc += ln * np.mean(ph <= dphi, axis=1)
+        v = out.setdefault(mat, np.zeros(len(o)))
+        v[cand] += acc
+    return out

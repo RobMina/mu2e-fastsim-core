@@ -32,3 +32,20 @@ def test_ear_clipping_area_preserved():
     area = sum(0.5 * abs((t[1, 0] - t[0, 0]) * (t[2, 1] - t[0, 1]) - (t[2, 0] - t[0, 0]) * (t[1, 1] - t[0, 1]))
                for t in tris)
     assert len(tris) == 4 and np.isclose(area, 4 * 1 + 1 * 2)
+
+
+
+def test_tube_shell_chords():
+    # full shell rmin 1, rmax 2, |z| <= 5 along z: a vertical (y) line through the axis crosses 2 x 1 mm of wall
+    tube = [("X", np.eye(3), np.zeros(3), 1.0, 2.0, 5.0, 0.0, 2 * np.pi)]
+    o = np.array([[0.0, 10.0, 0.0], [1.5, 10.0, 0.0], [0.0, 10.0, 7.0]])
+    d = np.array([[0.0, -1.0, 0.0]] * 3)
+    c = W.column_tubes(tube, o, d, 100.0)["X"]
+    assert np.isclose(c[0], 2.0) and np.isclose(c[1], 2 * np.sqrt(4 - 2.25)) and c[2] == 0
+
+
+def test_tube_sector_keeps_only_its_phi_range():
+    # upper half shell (phi 0..180 deg): the vertical line through the axis crosses only the top wall (1 mm)
+    tube = [("X", np.eye(3), np.zeros(3), 1.0, 2.0, 5.0, 0.0, np.pi)]
+    c = W.column_tubes(tube, np.array([[0.0, 10.0, 0.0]]), np.array([[0.0, -1.0, 0.0]]), 100.0, nsub=64)["X"]
+    assert abs(c[0] - 1.0) < 0.05
