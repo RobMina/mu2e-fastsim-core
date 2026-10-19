@@ -93,3 +93,19 @@ def test_world_loss_band_p_decreases_downwards():
     out = T.world_loss(rng, o, d, np.full(500, 2000.0), world, [10000.0, 3000.0, 2000.0, 0.0], return_band_p=True)
     bp = out[5]
     assert (np.diff(bp, axis=1) <= 1e-9).all() and (bp[:, 1] < bp[:, 0] - 100).all()
+
+
+
+def test_slab_loss_range_out_follows_the_mean_range():
+    # survival through concrete brackets the CSDA range of the same dE/dx (numerical integral of 1/dE/dx from TK_STOP
+    # to the initial kinetic energy): > 90 % survive 0.9 R, < 10 % survive 1.1 R, for 0.5 and 1 GeV/c muons
+    rng = np.random.default_rng(12)
+    n = 3000
+    for p0 in (500.0, 1000.0):
+        tk0 = np.sqrt(p0 ** 2 + E.MMU ** 2) - E.MMU
+        tk = np.linspace(T.TK_STOP, tk0, 4000)
+        pk = np.sqrt((tk + E.MMU) ** 2 - E.MMU ** 2)
+        R = np.trapezoid(1.0 / E.dedx_restricted(M.CONCRETE_MARS, pk, 1e9), tk)
+        s09 = np.mean(T.slab_loss(rng, M.CONCRETE_MARS, np.full(n, p0), np.full(n, 0.9 * R)) < tk0)
+        s11 = np.mean(T.slab_loss(rng, M.CONCRETE_MARS, np.full(n, p0), np.full(n, 1.1 * R)) < tk0)
+        assert s09 > 0.9 and s11 < 0.1, (p0, R, s09, s11)

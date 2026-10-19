@@ -77,37 +77,46 @@ def _apply_msc(o, d, L, dth, dy, y_plane):
     return end, dn, L - back
 
 
-N_SLICES_MAX = 40
+N_SLICES_MAX = 200
 SLICE_FRAC = 0.05   # max fractional kinetic-energy loss per slice
+TK_STOP = 1.0       # MeV: kinetic energy below which a muon is stopped (the remainder is deposited)
 
 
 def slab_loss(rng, mat, p, length):
     """Energy loss [MeV] through `length` [mm] of `mat`, integrated in slices so dE/dx follows the slowing muon.
 
     Each slice loses at most ~SLICE_FRAC of the current kinetic energy (mean); fluctuations are sampled per slice.
-    A muon whose loss reaches its kinetic energy stops (loss = initial kinetic energy).
+    Range-out follows the mean range (CSDA), not a single fluctuation: if a slice's sampled loss would exceed the
+    remaining kinetic energy, that slice takes its mean loss instead (the large-loss tail of a slice is delta-ray
+    energy that leaves the muon, not a reason to stop it); the muon stops only when its kinetic energy falls below
+    TK_STOP. At SLICE_FRAC = 5 % a muon needs about 60-90 slices to range out, inside N_SLICES_MAX; beyond the cap the
+    remainder is one mean step, limited to the remaining kinetic energy.
     """
     p = np.asarray(p, float).copy()
     tk0 = np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU
     left = np.asarray(length, float).copy()
     lost = np.zeros_like(p)
     for _ in range(N_SLICES_MAX):
-        go = (left > 0) & (lost < tk0)
+        go = (left > 0) & (tk0 - lost > TK_STOP)
         if not go.any():
             break
         tk = tk0[go] - lost[go]
         pg = np.sqrt(np.clip((tk + eloss.MMU) ** 2 - eloss.MMU ** 2, 1e-6, None))
-        step = np.minimum(left[go], SLICE_FRAC * tk / eloss.dedx_restricted(mat, pg, 1e9))
+        dedx = eloss.dedx_restricted(mat, pg, 1e9)
+        step = np.minimum(left[go], SLICE_FRAC * tk / dedx)
         last = np.flatnonzero(go)
         step = np.where(left[go] <= step * 1.0001, left[go], step)
-        lost[last] += eloss.sample_loss(rng, mat, pg, step, 1e9)
+        dl = eloss.sample_loss(rng, mat, pg, step, 1e9)
+        dl = np.where(dl >= tk, dedx * step, dl)          # tail sample beyond the remaining energy: mean instead
+        lost[last] += dl
         left[last] -= step
-    rest = (left > 0) & (lost < tk0)   # still inside after N_SLICES_MAX: finish with one mean step
+    rest = (left > 0) & (tk0 - lost > TK_STOP)   # still inside after N_SLICES_MAX: finish with one mean step
     if rest.any():
         tk = tk0[rest] - lost[rest]
         pg = np.sqrt(np.clip((tk + eloss.MMU) ** 2 - eloss.MMU ** 2, 1e-6, None))
         lost[rest] += eloss.dedx_restricted(mat, pg, 1e9) * left[rest]
-    return np.minimum(lost, tk0)
+    stopped = tk0 - lost <= TK_STOP
+    return np.where(stopped, tk0, np.minimum(lost, tk0))
 
 
 def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False):
