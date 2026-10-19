@@ -19,6 +19,12 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 O=$E/bench/$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O
 $V -c "import jax; print('devices', jax.devices())"
 $V -m pytest -q -p no:cacheprovider crv/tests/test_reco_jax.py core/tests 2>&1 | tail -3
+# R5: GPU twice (bit-identical per seed), CPU on the same node, then GPU vs CPU (statistical)
+CUDA_VISIBLE_DEVICES=0 $V -m crvfastsim reco-repro synthetic --max-events 5000 --outdir $O/repro_gpu > $O/repro_gpu.txt 2>&1
+JAX_PLATFORMS=cpu $V -m crvfastsim reco-repro synthetic --max-events 5000 --outdir $O/repro_cpu \
+  --against $O/repro_gpu/repro_gpu.npz > $O/repro_cpu.txt 2>&1
+for r in gpu cpu; do grep -h -E '"(backend|pass_bit_identical|pass_statistical|sample_identical_frac|identical_frac|max_rel_pe_diff|max_abs_time_diff_ns|clusters|per_event_type_counts_equal|p)"' \
+  $O/repro_$r/repro_stats.json | tr -d '\n'; echo; done
 for g in 0 1 2 3; do
   CUDA_VISIBLE_DEVICES=$g $V -m crvfastsim reco-bench synthetic --max-events $N --length 12 --batch 65536 --repeat 3 \
     --seed $((20261016+g)) ${R:+--rounds $R} --outdir $O/gpu$g > $O/gpu$g.txt 2>&1 &
