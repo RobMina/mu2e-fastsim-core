@@ -80,6 +80,7 @@ def _apply_msc(o, d, L, dth, dy, y_plane):
 N_SLICES_MAX = 200
 SLICE_FRAC = 0.05   # max fractional kinetic-energy loss per slice
 TK_STOP = 1.0       # MeV: kinetic energy below which a muon is stopped (the remainder is deposited)
+MAX_SLICES_PER_SLAB = 4   # slices for a muon with > 3x the energy the remaining slab takes (flat dE/dx regime)
 
 
 def slab_loss(rng, mat, p, length):
@@ -103,7 +104,13 @@ def slab_loss(rng, mat, p, length):
         tk = tk0[go] - lost[go]
         pg = np.sqrt(np.clip((tk + eloss.MMU) ** 2 - eloss.MMU ** 2, 1e-6, None))
         dedx = eloss.dedx_restricted(mat, pg, 1e9)
-        step = np.minimum(left[go], SLICE_FRAC * tk / dedx)
+        # slice by energy: SLICE_FRAC of the kinetic energy, but never finer than needed to cross what is left of the
+        # slab in MAX_SLICES_PER_SLAB pieces when the muon has energy to spare (dE/dx is flat above ~1 GeV/c, so a
+        # fast muon needs few slices; slow muons are still sliced at SLICE_FRAC down to the stop)
+        need = dedx * left[go]
+        coarse = tk > 3.0 * need
+        step = np.where(coarse, left[go] / MAX_SLICES_PER_SLAB, SLICE_FRAC * tk / dedx)
+        step = np.minimum(left[go], np.maximum(step, SLICE_FRAC * tk / dedx))
         last = np.flatnonzero(go)
         step = np.where(left[go] <= step * 1.0001, left[go], step)
         dl = eloss.sample_loss(rng, mat, pg, step, 1e9)

@@ -9,6 +9,7 @@ Sources (read 2026-10-16):
 Electron densities are computed here from the composition (electrons per volume = rho N_A sum_i w_i Z_i / A_i).
 """
 from dataclasses import dataclass, field
+from functools import cached_property
 
 import numpy as np
 
@@ -30,16 +31,20 @@ class Material:
     birks_mm_per_MeV: float = 0.0
     cuts_e_MeV: dict = field(default_factory=dict)   # production threshold for delta electrons, by region tag
 
-    @property
+    @cached_property
     def zeff(self):
         return sum(w * ELEMENTS[e][0] for e, w in self.fractions.items())
 
-    @property
+    @cached_property
     def electron_density_per_mm3(self):
         z_over_a = sum(w * ELEMENTS[e][0] / ELEMENTS[e][1] for e, w in self.fractions.items())
         return self.rho * N_A * z_over_a * 1e-3  # cm-3 -> mm-3
 
     def density_params(self):
+        return self._density_params
+
+    @cached_property
+    def _density_params(self):
         """(C, X0, X1, a, m, delta0): the NIST table when given, else Sternheimer 1971 for condensed materials
         (G4IonisParamMat::ComputeDensityEffectParameters, solid branch; every non-NIST material here is a solid)."""
         if self.sternheimer:
@@ -56,6 +61,10 @@ class Material:
         return (C, x0, x1, a, m, 0.0)
 
     def fluct_params(self):
+        return self._fluct_params
+
+    @cached_property
+    def _fluct_params(self):
         """G4IonisParamMat::ComputeFluctModel: (f1, f2, e1, e2) in MeV, plus e0 = 10 eV and log I."""
         I = self.I_eV * 1e-6
         z = self.zeff
