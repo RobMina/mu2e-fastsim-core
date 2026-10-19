@@ -1,5 +1,5 @@
 #!/bin/bash
-# GPU throughput of the CRV photon substep kernel (crvfastsim.response.bench) on one Polaris node: tests, then one process
+# GPU throughput of the CRV photon substep kernel and the SiPM-charge stage (crvfastsim.response.bench) on one Polaris node: tests, then one process
 # per A100 on synthetic tables and rows (no Mu2e-internal input). usage: crv_photon_bench.sh [rows_per_gpu] [prob]
 E=${M2FS_EAGLE:?}; V=$E/venv/bin/python; N=${1:-1000000}; P=${2:-0.0015}
 cd $E/code || exit 2
@@ -16,4 +16,11 @@ for g in 0 1 2 3; do
     --outdir $O/gpu$g > $O/gpu$g.txt 2>&1 &
 done; wait
 for g in 0 1 2 3; do tail -1 $O/gpu$g.txt; done
+# SiPM-charge stage (synthetic photons, ~130 per SiPM), one process per A100
+for g in 0 1 2 3; do
+  CUDA_VISIBLE_DEVICES=$g $V -m crvfastsim.response.bench --stage sipm --sipms ${NS:-500000} --numpy-sipms 0 --repeat 3 \
+    --seed $((20261119+g)) --outdir $O/sipm$g > $O/sipm$g.txt 2>&1 &
+done; wait
+CUDA_VISIBLE_DEVICES=0 $V -m crvfastsim.response.bench --stage sipm --sipms 20000 --numpy-sipms 20000 --no-jax > $O/sipm_cpu.txt 2>&1
+cat $O/sipm_cpu.txt; for g in 0 1 2 3; do tail -1 $O/sipm$g.txt; done
 echo "outdir $O"; echo exit=0
