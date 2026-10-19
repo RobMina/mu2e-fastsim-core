@@ -41,5 +41,11 @@ def ks_2samp(a, b):
     ne = len(a) * len(b) / (len(a) + len(b))
     lam = (np.sqrt(ne) + 0.12 + 0.11 / np.sqrt(ne)) * d
     k = np.arange(1, 101)
-    p = float(np.clip(2 * np.sum((-1) ** (k - 1) * np.exp(-2 * (k * lam) ** 2)), 0, 1))
+    if lam < 0.2:
+        p = 1.0
+    elif lam < 1.0:   # small-lambda (theta-function) form: the alternating series does not converge there
+        cdf = np.sqrt(2 * np.pi) / lam * np.sum(np.exp(-((2 * k - 1) ** 2) * np.pi ** 2 / (8 * lam ** 2)))
+        p = float(np.clip(1.0 - cdf, 0, 1))
+    else:
+        p = float(np.clip(2 * np.sum((-1) ** (k - 1) * np.exp(-2 * (k * lam) ** 2)), 0, 1))
     return float(d), p
