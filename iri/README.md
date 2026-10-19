@@ -2,7 +2,13 @@
 
 Jobs go to Polaris through the ALCF IRI API (`https://api.alcf.anl.gov`), with the genesis skill `amsc-skills/iri-api`
 scripts ([AI-ModCon/genesis-skills](https://github.com/AI-ModCon/genesis-skills)) and a Python with globus-sdk. Read
-`references/ALCF.md` in that skill first. Site settings (`IRI`, `IRI_PY`, `M2FS_EAGLE`, `ALCF_PROJECT`) come from
+`references/ALCF.md` in that skill first.
+
+**API v2 (seen 2026-10-19).** The ALCF API moved to `/api/v2` (OpenAPI at `https://api.alcf.anl.gov/api/v2/openapi.json`;
+the old `/openapi.json` and `/api/v1/...` answer 404). Operation ids, resource ids and the JobSpec fields used here are
+unchanged; the filesystem `ls`/`view` calls now take a JSON body (`{"path": ...}`, `view` also `size`/`offset`) instead
+of query parameters. `tools/iri.sh` passes `--openapi-url` (override with `IRI_OPENAPI_URL`); the genesis helper's
+built-in ALCF OpenAPI URL is still the old one. Site settings (`IRI`, `IRI_PY`, `M2FS_EAGLE`, `ALCF_PROJECT`) come from
 `site.env` (copy `site.env.example` of the umbrella repo).
 
 | Item | Value |
@@ -11,7 +17,7 @@ scripts ([AI-ModCon/genesis-skills](https://github.com/AI-ModCon/genesis-skills)
 | Polaris resource id | `55c1c993-1124-47f9-b823-514ba3849a9a` |
 | Eagle filesystem resource id | `1c3ad9d4-2e91-42bc-becb-72b1fde1235c` |
 | Work area | `$M2FS_EAGLE` (on Eagle) |
-| Queues | `debug` (1-2 nodes, <= 1 h; can sit for hours), `capacity` (1-4 nodes, up to 168 h), `preemptable` (1-10 nodes), `prod` (>= 10 nodes); the hackathon reservation queue `R7728155` while it is active |
+| Queues | `debug` (1-2 nodes, <= 1 h; can sit for hours), `capacity` (1-4 nodes, up to 168 h; the hackathon project often hits its per-project limit, "would exceed queue capacity's per-project limit"), `preemptable` (1-10 nodes; started within a minute on 2026-10-19), `prod` (>= 10 nodes); the hackathon reservation queue `R7728155` while it is active |
 
 ## What the ALCF IRI API actually accepts (tested 2026-10-16)
 
@@ -41,8 +47,8 @@ Literal paths only in the submitted JSON (the API does not expand `$HOME`/`$USER
   Submit from a host that gets 200: copy the access token (`token_manager.py ensure --print-token`) and the JobSpec
   built by `make_inline_job.py` to that host's `/tmp` (mode 600) and POST with curl:
   `curl -A iri-api-client/1.0 -H "Authorization: Bearer $(cat tok)" -H "Content-Type: application/json"
-  -X POST --data @job.json https://api.alcf.anl.gov/api/v1/compute/job/<polaris resource id>`; status:
-  `GET /api/v1/compute/status/<resource id>/<job id>`.
+  -X POST --data @job.json https://api.alcf.anl.gov/api/v2/compute/job/<polaris resource id>`; status:
+  `GET /api/v2/compute/status/<resource id>/<job id>`.
 - **HTTP 401 "Globus token not active"** while `token_manager.py status` says the token is valid: the stored ALCF token
   has no expiry, so `ensure --min-ttl` reuses it. Force a refresh with the stored refresh token
   (`token_manager.refresh_stored_tokens(tokens, ["alcf"])`, then `save_tokens`); interactive login only if that fails.
@@ -73,5 +79,6 @@ iri/tools/iri.sh cat $M2FS_EAGLE/hello/hello.out
 | `jobs/probe_polaris.json` + `scripts/probe_env.sh` | compute-node environment probe | diagnostic |
 | `jobs/mkdir_eagle.json` | create the work area on Eagle | utility |
 | `jobs/crv_reco_bench_polaris.json` + `scripts/crv_reco_bench.sh` | CRV fast pulse reco throughput, one process per A100 (`crvfastsim reco-bench` on synthetic waveforms) after the GPU tests; queue `capacity` (1-4 nodes, no debug wait); `--args N` events per GPU | `events_per_s` per GPU in the job output |
+| `jobs/crv_photon_bench_polaris.json` + `scripts/crv_photon_bench.sh` | CRV photon substep kernel throughput (`crvfastsim.response.bench`, synthetic tables: no Mu2e-internal input), one process per A100; submitted to `preemptable` when `capacity` is full | **290-305 k rows/s per A100** (PBS 7761901, 2026-10-19) |
 | `jobs/git_sync_polaris.json` + `scripts/git_sync.sh` | clone or `--ff-only` pull the public `mu2e-fastsim` umbrella repo with its submodules into `$M2FS_EAGLE/code` over HTTPS through the ALCF proxy; `--args fresh` removes the clone first | prints HEAD of each submodule |
 
