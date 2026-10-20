@@ -4,8 +4,10 @@
 # an empty cache), run the GPU tests and the chain bench inside it. usage: sif_check.sh [image.sif]
 E=${M2FS_EAGLE:?}; S=${1:-$E/mu2efastsim.sif}; O=$E/bench/sif_$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O
 export https_proxy=http://proxy.alcf.anl.gov:3128 http_proxy=http://proxy.alcf.anl.gov:3128
+# apptainer on compute nodes: lmod, then the spack base 0.8.1 module tree (apptainer 1.3.2; probed 2026-10-19, PBS 7762807)
+source /opt/cray/pe/lmod/lmod/init/bash; export MODULEPATH=/soft/modulefiles
+module use /soft/spack/base/0.8.1/install/modulefiles/Core; module load apptainer 2>/dev/null
 A=$(command -v apptainer || true)
-[ -z "$A" ] && for m in apptainer spack-pe-base/0.10.1; do module load $m 2>/dev/null; done; A=$(command -v apptainer || command -v singularity || true)
 echo "apptainer: ${A:-none} $($A --version 2>/dev/null)"; [ -n "$A" ] || { echo exit=3; exit 3; }
 if [ ! -s $S ]; then
   cd $E/code && git pull -q --ff-only && git submodule update -q --init --recursive && git log -1 --format="code %h"
