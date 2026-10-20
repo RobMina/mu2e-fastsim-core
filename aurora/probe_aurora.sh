@@ -38,12 +38,15 @@ s "code"; CODE=$F/code
 if [ -d $CODE/.git ]; then git -C $CODE pull -q --ff-only; git -C $CODE submodule update -q --init --recursive
 else git clone -q --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git $CODE; fi
 git -C $CODE log -1 --format="umbrella %h %ad %s" --date=iso; git -C $CODE submodule status
-s "venv"; module load frameworks 2>&1 | tail -1; BASEPY=$(command -v python3); echo "base $BASEPY $($BASEPY --version)"
-V=$F/venv; [ -x $V/bin/python ] || $BASEPY -m venv $V
+s "venv"; module load frameworks >/dev/null 2>&1   # no pipe: a subshell would drop the environment
+BASEPY=${CONDA_PREFIX:-/opt/aurora/26.181.0/frameworks/aurora_frameworks-2026.1.0}/bin/python3
+echo "base $BASEPY $($BASEPY --version 2>&1)"
+V=$F/venv
+$V/bin/python -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null || { rm -rf $V; $BASEPY -m venv $V; }
 export PIP_CACHE_DIR=/tmp/pipcache_$USER
 t0=$SECONDS
-$V/bin/python -m pip install -q --upgrade pip
-$V/bin/python -m pip install -q "jax[oneapi]==$JAXV" numpy h5py pyarrow pandas awkward uproot matplotlib pytest 2>&1 | tail -3
+$V/bin/python -m pip install -q --retries 10 --upgrade pip
+$V/bin/python -m pip install -q --retries 10 "jax[oneapi]==$JAXV" numpy h5py pyarrow pandas awkward uproot matplotlib pytest 2>&1 | tail -3
 for p in core crv tracker; do $V/bin/python -m pip install -q --no-deps -e $CODE/$p; done
 echo "pip $((SECONDS-t0)) s"; $V/bin/python -m pip freeze | grep -iE "^(jax|jaxlib|jax-oneapi|numpy|intel-sycl|dpcpp)"
 module unload frameworks 2>/dev/null
