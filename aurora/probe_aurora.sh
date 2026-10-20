@@ -50,6 +50,9 @@ $V/bin/python -m pip install -q --retries 10 "jax[oneapi]==$JAXV" numpy h5py pya
 for p in core crv tracker; do $V/bin/python -m pip install -q --no-deps -e $CODE/$p; done
 echo "pip $((SECONDS-t0)) s"; $V/bin/python -m pip freeze | grep -iE "^(jax|jaxlib|jax-oneapi|numpy|intel-sycl|dpcpp)"
 module unload frameworks 2>/dev/null
+# the pip oneAPI runtime (libur_loader 0.11) must shadow the default oneapi module's older one
+export LD_LIBRARY_PATH=$V/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+sh $CODE/container/fetch_offline_data.sh $F/offline_data && export MU2E_SEARCH_PATH=$F/offline_data
 export JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false MPLBACKEND=Agg
 s "jax on the tiles"
 $V/bin/python - <<'EOF'
