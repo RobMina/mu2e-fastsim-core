@@ -53,8 +53,8 @@ for st in ph si; do
   for i in $(seq 0 11); do
     if [ $st = ph ]; then a="--table 3200_0 --rows $N --numpy-rows 0 --seed $((20261020+i))"
     else a="--stage sipm --photon-map $L/photonMap.root --sipms $NS --numpy-sipms 0 --seed $((20261120+i))"; fi
-    ZE_AFFINITY_MASK=$i taskset -c $(cores $i) $B $a > $O/${st}12_$i.txt 2>&1 &
-  done; wait
+    ZE_AFFINITY_MASK=$i taskset -c $(cores $i) $B $a > $O/${st}12_$i.txt 2>&1 & pids+=($!)
+  done; wait "${pids[@]}"; pids=()   # explicit pids: a bare wait also waits for the tee of exec > >(tee)
   echo "wall $(awk -v a=$t0 -v b=$(date +%s.%N) "BEGIN{printf \"%.1f\", b-a}") s (includes 12 parallel compiles and table loads)"
   for i in $(seq 0 11); do echo "tile $i $(tail -1 $O/${st}12_$i.txt | cut -c1-260)"; done
   $V/bin/python - $O $st <<'EOF'
