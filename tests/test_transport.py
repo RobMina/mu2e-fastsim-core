@@ -180,3 +180,18 @@ def test_msc_to_plane_tail_widens_only_the_tails():
     _, d2, _ = T.msc_to_plane(rng, o, d, p, 0.0, x0, bxx0.sum(1), bxx0, bh, band_chic2=chic2, band_thn=thn * 1e6)
     n2 = (np.abs(np.arctan2(d2[:, 0], -d2[:, 1])) > 4 * th0).sum()
     assert n1 > 2 * max(n0, 1) and n2 > 5 * n1
+
+
+def test_electron_tail_ends_at_the_electron_kinematic_limit():
+    rng = np.random.default_rng(31)
+    n = 400_000
+    th = T.single_scatter_tail(rng, np.full(n, 1e-8), np.full(n, 1e-3), None, T.ME_OVER_MMU)
+    sp = np.hypot(th[:, 0], th[:, 1])
+    k = sp > 0
+    lam = 1e-8 * (1 / 1e-3 ** 2 - 1 / T.ME_OVER_MMU ** 2)    # ~0.01: almost always one scatter
+    assert abs(k.mean() / (1 - np.exp(-lam)) - 1) < 0.05
+    assert np.mean(sp[k] > T.ME_OVER_MMU * 1.0001) < 0.01     # only the rare sums of two pass the limit
+    # electron part = chi_c^2 (Z+1) minus the nuclear Z^2 part: Al 1 cm at 1 GeV/c
+    assert np.isclose(T.chi_c2_electron(M.ALUMINIUM, 10.0, 1000.0), T.chi_c2(M.ALUMINIUM, 10.0, 1000.0) / 14)
+    # tungsten: X0 3.5 mm (PDG), the wire material
+    assert abs(E.radiation_length_mm(M.TUNGSTEN) / 3.504 - 1) < 0.02

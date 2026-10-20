@@ -117,6 +117,12 @@ def chi_c2(mat, length_mm, p, mass=eloss.MMU, electrons=True):
     return 0.157 * _zz_over_a(mat, electrons) * mat.rho * 0.1 * np.asarray(length_mm, float) / pb ** 2
 
 
+def chi_c2_electron(mat, length_mm, p, mass=eloss.MMU):
+    """Electron part of chi_c^2 [rad^2]: 0.157 sum_i w_i Z_i / A_i rho t / (p beta)^2 (the Z of Z(Z+1)). A muon is
+    deflected by at most ME_OVER_MMU on an electron, so this part ends there (single_scatter_tail theta_max)."""
+    return chi_c2(mat, length_mm, p, mass) - chi_c2(mat, length_mm, p, mass, electrons=False)
+
+
 def theta_nuclear(mat, p):
     """Form-factor angle [rad] of single scattering: theta_n = sqrt(20) hbar c / (p R), R = 1.2 fm A_eff^(1/3).
 
@@ -161,26 +167,30 @@ def tail_threshold(chic2, theta0, k=None):
     return u * th0
 
 
-def single_scatter_tail(rng, chic2, theta_min, theta_n):
+def single_scatter_tail(rng, chic2, theta_min, theta_n=None, theta_max=THETA_TAIL_MAX):
     """Projected angles [N, 2] of the single scatters above space angle theta_min (screened Rutherford tail).
 
-    Rate per track dN/dtheta = 2 chi_c^2 / theta^3 F^2(theta), F^2 = (1 + theta^2 / theta_n^2)^-4 (theta_nuclear),
-    up to THETA_TAIL_MAX. Sampled by thinning: Poisson(chi_c^2 (1/theta_min^2 - 1/THETA_TAIL_MAX^2)) proposals from
-    the bare 1/theta^3 spectrum, each kept with probability F^2 (exact for a Poisson process); uniform azimuth; the
-    kept scatters of a track add."""
+    Rate per track dN/dtheta = 2 chi_c^2 / theta^3 F^2(theta), F^2 = (1 + theta^2 / theta_n^2)^-4 (theta_nuclear;
+    None = no form factor, as for electrons), up to theta_max (scalar or [N]; ME_OVER_MMU for the electron part).
+    Sampled by thinning: Poisson(chi_c^2 (1/theta_min^2 - 1/theta_max^2)) proposals from the bare 1/theta^3 spectrum,
+    each kept with probability F^2 (exact for a Poisson process); uniform azimuth; the kept scatters of a track add.
+    Zero where theta_min >= theta_max."""
     chic2 = np.asarray(chic2, float)
     n = len(chic2)
     out = np.zeros((n, 2))
     a = 1.0 / np.maximum(theta_min, 1e-12) ** 2
-    b = 1.0 / THETA_TAIL_MAX ** 2
+    b = np.broadcast_to(1.0 / np.asarray(theta_max, float) ** 2, (n,))
     lam = np.clip(chic2 * (a - b), 0, None)
     k = rng.poisson(lam)
     if not k.any():
         return out
     idx = np.repeat(np.arange(n), k)
-    th = 1.0 / np.sqrt(a[idx] - rng.random(len(idx)) * (a[idx] - b))
-    tn = np.broadcast_to(np.asarray(theta_n, float), (n,))[idx]
-    keep = rng.random(len(idx)) < (1 + (th / tn) ** 2) ** -4
+    th = 1.0 / np.sqrt(a[idx] - rng.random(len(idx)) * (a[idx] - b[idx]))
+    if theta_n is None:
+        keep = np.ones(len(idx), bool)
+    else:
+        tn = np.broadcast_to(np.asarray(theta_n, float), (n,))[idx]
+        keep = rng.random(len(idx)) < (1 + (th / tn) ** 2) ** -4
     idx, th = idx[keep], th[keep]
     ph = rng.random(len(idx)) * 2 * np.pi
     np.add.at(out, idx, np.c_[th * np.cos(ph), th * np.sin(ph)])

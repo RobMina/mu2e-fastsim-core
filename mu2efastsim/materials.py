@@ -17,7 +17,7 @@ N_A = 6.02214076e23
 # Z, A [g/mol] of the elements in the materials below
 ELEMENTS = {"H": (1, 1.00794), "C": (6, 12.0107), "N": (7, 14.0067), "O": (8, 15.9994), "Na": (11, 22.98977),
             "Al": (13, 26.981538), "Si": (14, 28.0855), "Ar": (18, 39.948), "K": (19, 39.0983), "Ca": (20, 40.078),
-            "Fe": (26, 55.845), "Mn": (25, 54.938049), "Cu": (29, 63.546), "W": (74, 183.84), "Mg": (12, 24.305),
+            "Fe": (26, 55.845), "Mn": (25, 54.938049), "Cu": (29, 63.546), "W": (74, 183.84), "Au": (79, 196.967), "Mg": (12, 24.305),
             "B": (5, 10.811), "Ti": (22, 47.867), "F": (9, 18.9984032)}
 
 
@@ -116,6 +116,8 @@ BRONZE_C938 = Material("BronzeC938", 9.4, 310.0, {"Cu": 0.75, "Mn": 0.10, "Fe": 
 TRACKER_MANIFOLD = Material("TrackerManifold", 1.95, 120.0, {"C": 0.13, "H": 0.017, "Al": 0.645, "O": 0.208})
 G10 = Material("G10", 1.70, 100.0, {"Si": 0.28, "O": 0.47, "C": 0.20, "H": 0.05})
 ELECTRONICS = Material("Electronics", 0.58, 150.0, {"Si": 0.30, "O": 0.40, "C": 0.15, "Cu": 0.15})
+TUNGSTEN = Material("G4_W", 19.30, 727.0, {"W": 1.0}, sternheimer=(5.4059, 0.2167, 3.4960, 0.15509, 2.8447, 0.14))
+GOLD = Material("G4_Au", 19.32, 790.0, {"Au": 1.0}, sternheimer=(5.5747, 0.2021, 3.6979, 0.09756, 3.1101, 0.14))
 MYLAR = Material("G4_MYLAR", 1.40, 78.7, {"C": 0.625010832340889, "H": 0.0419607170679432, "O": 0.333028450591168})
 POLYETHYLENE = Material("G4_POLYETHYLENE", 0.94, 57.4, {"C": 0.856, "H": 0.144})
 SILICA = Material("G4_SILICON_DIOXIDE", 2.32, 139.2, {"Si": 0.4674, "O": 0.5326})
@@ -123,4 +125,4 @@ SILICA = Material("G4_SILICON_DIOXIDE", 2.32, 139.2, {"Si": 0.4674, "O": 0.5326}
 BY_NAME = {m.name: m for m in (POLYSTYRENE, ALUMINIUM, AIR, CONCRETE_MARS, MB_OVERBURDEN, MILD_STEEL,
                                SHIELDING_CONCRETE, COPPER, SILICON, ELECTRONICS2, CUW1090, ALUMINIUM_6061,
                                ALUMINIUM_7075, BRONZE_C938, TRACKER_MANIFOLD, G10, ELECTRONICS, POLYETHYLENE, SILICA,
-                               MYLAR)}
+                               MYLAR, TUNGSTEN, GOLD)}
