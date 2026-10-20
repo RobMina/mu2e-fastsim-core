@@ -1,0 +1,21 @@
+{
+  "name": "mu2efastsim-devv4",
+  "executable": "/bin/bash",
+  "arguments": [
+    "${M2FS_EAGLE}/logs/crv_device_v4.sh"
+  ],
+  "directory": "${M2FS_EAGLE}/logs",
+  "stdout_path": "${M2FS_EAGLE}/logs/crv_device_v4.out",
+  "stderr_path": "${M2FS_EAGLE}/logs/crv_device_v4.err",
+  "resources": {
+    "node_count": 1
+  },
+  "attributes": {
+    "duration": 3000,
+    "queue_name": "debug",
+    "account": "${ALCF_PROJECT}",
+    "custom_attributes": {
+      "filesystems": "home:eagle"
+    }
+  }
+}
