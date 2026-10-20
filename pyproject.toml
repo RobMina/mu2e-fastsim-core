@@ -14,5 +14,5 @@ dependencies = ["numpy", "pandas", "uproot", "matplotlib"]
 jax = ["jax"]
 test = ["pytest"]
 
-[tool.setuptools]
-packages = ["mu2efastsim"]
+[tool.setuptools.packages.find]
+include = ["mu2efastsim*"]
