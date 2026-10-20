@@ -82,3 +82,30 @@ iri/tools/iri.sh cat $M2FS_EAGLE/hello/hello.out
 | `jobs/crv_photon_bench_polaris.json` + `scripts/crv_photon_bench.sh` | CRV photon substep kernel throughput (`crvfastsim.response.bench`, synthetic tables: no Mu2e-internal input), one process per A100; submitted to `preemptable` when `capacity` is full | **290-305 k rows/s per A100** (PBS 7761901, 2026-10-19) |
 | `jobs/git_sync_polaris.json` + `scripts/git_sync.sh` | clone or `--ff-only` pull the public `mu2e-fastsim` umbrella repo with its submodules into `$M2FS_EAGLE/code` over HTTPS through the ALCF proxy; `--args fresh` removes the clone first | prints HEAD of each submodule |
 
+
+## ESnet East (AWS EKS, IRI v2)
+
+`tools/esnet.sh` drives `https://iri-dev.ppg.es.net/api/v2` with curl + jq and an AmSC personal access token (MyAmSC,
+project selected when it is made; 30 days) from `$AMSC_TOKEN` or the mode-600 file `$AMSC_TOKEN_FILE` (default
+`~/.amsc/pat`). No Globus login, no Cloudflare challenge: the laptop can submit. Every job is a Kubernetes pod running a
+**public** OCI image (`container.image`); resources are per pod (`cpu_cores_per_process`, `memory` in bytes,
+`gpu_cores_per_process`). The hackathon project maps every participant to one shared user (`hackathon2610`) with a
+shared EFS home: unique run directories, nothing non-public on EFS, cancel only your own job ids.
+
+| Item | Value |
+|---|---|
+| compute resource | `fb0aafe1-c780-55c0-b635-a7121f1b0ce5` (Low Priority, Kueue) |
+| storage resource | `b6d59ba3-5c2d-57dd-b3b9-108832da0578` (EFS: `/data/home/<user>`, `/data/projects/<project>`) |
+| pod (probe 2026-10-20) | 80 GB overlay root, `/dev/shm` 64 MB, no GPU/FUSE/userns in a CPU pod; open egress (PyPI, GitHub, ghcr, CVMFS S1) |
+| files API | `mkdir`, `upload` (multipart), `ls`, `view`, `download` (base64), `rm` work |
+
+```bash
+RUN=$(date -u +%Y%m%dT%H%M%SZ)-$(python3 -c 'import uuid;print(uuid.uuid4().hex[:8])')
+export ESNET_WORK=/data/home/hackathon2610/mu2efastsim/$RUN
+tools/esnet.sh mkdir $ESNET_WORK/probe
+python3 tools/make_inline_job.py jobs/probe_esnet.json scripts/probe_esnet.sh --out /tmp/job.json
+tools/esnet.sh submit /tmp/job.json        # prints {"id": ...}
+tools/esnet.sh wait <id> 400
+tools/esnet.sh cat $ESNET_WORK/probe/probe.out
+tools/esnet.sh alloc                        # node-hours and bytes used / allocated
+```

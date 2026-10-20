@@ -1,0 +1,19 @@
+{
+  "name": "mu2efastsim-bench",
+  "container": {"image": "ghcr.io/robmina/mu2e-fastsim:${ESNET_IMAGE_TAG}"},
+  "directory": "${ESNET_WORK}/bench",
+  "stdout_path": "${ESNET_WORK}/bench/bench.out",
+  "stderr_path": "${ESNET_WORK}/bench/bench.err",
+  "resources": {
+    "node_count": 1,
+    "process_count": 1,
+    "cpu_cores_per_process": 8,
+    "memory": 17179869184
+  },
+  "attributes": {
+    "duration": 2400,
+    "queue_name": "default",
+    "account": "hackathon2610-project",
+    "custom_attributes": {}
+  }
+}
