@@ -195,3 +195,19 @@ def test_electron_tail_ends_at_the_electron_kinematic_limit():
     assert np.isclose(T.chi_c2_electron(M.ALUMINIUM, 10.0, 1000.0), T.chi_c2(M.ALUMINIUM, 10.0, 1000.0) / 14)
     # tungsten: X0 3.5 mm (PDG), the wire material
     assert abs(E.radiation_length_mm(M.TUNGSTEN) / 3.504 - 1) < 0.02
+
+
+def test_mpv_fit_is_stable_where_argmax_is_not():
+    from mu2efastsim import stats
+    rng = np.random.default_rng(41)
+    tc = 990e-6
+    gas = M.Material("StrawGas", 0.001696, 158.62097145526, {"Ar": 0.784057035890315, "O": 0.15700963928136,
+                                                              "C": 0.0589333248283256})
+    fits = []
+    for _ in range(4):
+        L = rng.uniform(1, 8, 40_000)
+        fits.append(stats.mpv_fit(1e3 * E.sample_loss(rng, gas, np.full(L.size, 3000.0), L, tc), 0, 4, 200))
+    mu = np.array([f[0] for f in fits])
+    err = np.array([f[1] for f in fits])
+    # the same distribution four times: fitted MPVs agree within their errors, and errors are ~2-4 %
+    assert np.all(np.isfinite(mu)) and np.std(mu) < 3 * err.mean() and np.all(err / mu < 0.05)

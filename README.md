@@ -21,7 +21,7 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 | `mu2efastsim/crossings.py` | vectorised ray-box crossings (JAX on CPU/GPU, numpy fallback) |
 | `mu2efastsim/transport.py` | correlated multiple scattering to a plane (uniform or banded material, per-band \|p\|), sliced slab loss with range-out; scattering pieces for detector packages: Highland per layer with the log term on the cumulative x/X0 (`highland_var_increment`), the single-scattering tail (`chi_c2`, `chi_c2_electron`, `theta_nuclear`, `tail_threshold`, `single_scatter_tail`: screened Rutherford on nuclei with an exponential form factor, atomic electrons up to m_e/m_mu, optional in `msc_to_plane`/`world_loss`) |
 | `mu2efastsim/tables.py` | flat-table I/O in the art dumper layout (`dump/` directory, `(run, subrun, event)` keys) |
-| `mu2efastsim/stats.py`, `plots.py` | robust statistics and plotting/stats-JSON helpers shared by every comparison |
+| `mu2efastsim/stats.py`, `plots.py` | robust statistics (core sigma, binned-ratio band, MPV by Moyal fit `mpv_fit` and by histogram peak `mpv`) and plotting/stats-JSON helpers shared by every comparison |
 | `mu2efastsim/match.py` | joins and lookups on multi-column integer keys, two-sample KS test (fast-vs-stock comparisons) |
 | `iri/` | ALCF Polaris job drivers through the IRI API (inline job shipping, venv setup, GPU smoke test, git sync) |
 

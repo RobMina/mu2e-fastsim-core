@@ -22,6 +22,37 @@ def mpv(x, lo=0.0, hi=15.0, nbins=150, half_window=3):
     return float((c[sl] * w).sum() / w.sum()) if w.sum() else float("nan")
 
 
+def mpv_fit(x, lo=0.0, hi=15.0, nbins=200, lo_q=0.10, hi_q=0.60):
+    """Most probable value and its statistical error from a Moyal (Landau approximation) fit to the histogram core.
+
+    Fit range: the lo_q to hi_q quantiles of the sample inside [lo, hi] (rising edge, peak, start of the falling edge;
+    not the long tail). Weighted least squares on counts with Poisson errors. Returns (mpv, err); nan if the fit fails.
+    Unlike mpv (argmax), it uses the whole core, so a flat-topped peak does not make it jump between bins.
+    """
+    from scipy.optimize import curve_fit
+    h, e = np.histogram(np.asarray(x, dtype=float), bins=nbins, range=(lo, hi))
+    h = h.astype(float)
+    c = 0.5 * (e[:-1] + e[1:])
+    if h.sum() < 100:
+        return float("nan"), float("nan")
+    cdf = np.cumsum(h) / h.sum()
+    sel = (cdf >= lo_q) & (cdf <= hi_q) & (h > 0)
+    if sel.sum() < 4:
+        return float("nan"), float("nan")
+
+    def moyal(t, a, mu, sig):
+        z = (t - mu) / sig
+        return a * np.exp(-0.5 * (z + np.exp(-z)))
+
+    k = int(np.argmax(np.where(sel, h, 0)))
+    p0 = (h[k] / np.exp(-0.5), c[k], max(0.3 * c[k], (hi - lo) / nbins))
+    try:
+        par, cov = curve_fit(moyal, c[sel], h[sel], p0=p0, sigma=np.sqrt(h[sel]), absolute_sigma=True, maxfev=10000)
+        return float(par[1]), float(np.sqrt(cov[1, 1]))
+    except (RuntimeError, ValueError):
+        return float("nan"), float("nan")
+
+
 def ratio_band(fast, ref, q=(0.05, 0.95), nbins=20, min_ref=400):
     """Binned fast/ref of unit-normalised histograms over the reference's q-range.
 
