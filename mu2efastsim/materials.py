@@ -116,9 +116,11 @@ BRONZE_C938 = Material("BronzeC938", 9.4, 310.0, {"Cu": 0.75, "Mn": 0.10, "Fe": 
 TRACKER_MANIFOLD = Material("TrackerManifold", 1.95, 120.0, {"C": 0.13, "H": 0.017, "Al": 0.645, "O": 0.208})
 G10 = Material("G10", 1.70, 100.0, {"Si": 0.28, "O": 0.47, "C": 0.20, "H": 0.05})
 ELECTRONICS = Material("Electronics", 0.58, 150.0, {"Si": 0.30, "O": 0.40, "C": 0.15, "Cu": 0.15})
+MYLAR = Material("G4_MYLAR", 1.40, 78.7, {"C": 0.625010832340889, "H": 0.0419607170679432, "O": 0.333028450591168})
 POLYETHYLENE = Material("G4_POLYETHYLENE", 0.94, 57.4, {"C": 0.856, "H": 0.144})
 SILICA = Material("G4_SILICON_DIOXIDE", 2.32, 139.2, {"Si": 0.4674, "O": 0.5326})
 
 BY_NAME = {m.name: m for m in (POLYSTYRENE, ALUMINIUM, AIR, CONCRETE_MARS, MB_OVERBURDEN, MILD_STEEL,
                                SHIELDING_CONCRETE, COPPER, SILICON, ELECTRONICS2, CUW1090, ALUMINIUM_6061,
-                               ALUMINIUM_7075, BRONZE_C938, TRACKER_MANIFOLD, G10, ELECTRONICS, POLYETHYLENE, SILICA)}
+                               ALUMINIUM_7075, BRONZE_C938, TRACKER_MANIFOLD, G10, ELECTRONICS, POLYETHYLENE, SILICA,
+                               MYLAR)}

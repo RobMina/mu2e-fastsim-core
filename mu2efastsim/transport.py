@@ -4,7 +4,9 @@
   with correlated (displacement, angle) Highland multiple scattering in two transverse planes (PDG eq. 34.20);
 * slab_loss: energy loss through a thick layer integrated in slices so dE/dx follows the slowing muon;
 * world_loss: material column of the GDML world between a track origin and a horizontal plane, in height bands
-  (energy loss per material, x/X0 and lever arm per band for msc_to_plane).
+  (energy loss per material, x/X0 and lever arm per band for msc_to_plane);
+* scattering pieces for detector packages: highland_var_increment (Highland per layer of a stack), chi_c2,
+  theta_nuclear, tail_threshold and single_scatter_tail (the Rutherford tail above the Gaussian core).
 
 Detector packages own the geometry-specific parts (which plane, which footprint, which world bands).
 """
@@ -14,7 +16,8 @@ from . import eloss, materials
 from . import world as world_mod
 
 
-def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, band_h=None, band_p=None):
+def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, band_h=None, band_p=None,
+                 band_chic2=None, band_thn=None, tail_k=None):
     """Move each track from o to the plane y = y_plane through a uniform slab, with PDG (eq. 34.20) correlated MSC.
 
     Two independent transverse planes per track: y_plane displacement and angle from (z1, z2) unit Gaussians,
@@ -25,6 +28,10 @@ def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, ba
     scatters with its own 1/(beta p)^2: theta0^2 = sum_k (13.6/(beta_k p_k))^2 x_k (1 + 0.038 ln(X/beta^2))^2, the
     Highland log term on the total x/X0 (Lynch-Dahl / PDG 34.16 summed over layers), so soft muons that lose most of
     their energy in the concrete scatter most near the plane. Without band_p one |p| (`p`) is used for the column.
+
+    band_chic2, band_thn [N, nbands] (world_loss return_tail=True): add the single-scattering tail
+    (single_scatter_tail) above the column's Gaussian core, each tail scatter at its band's lever arm. tail_k: the
+    tail threshold in units of the column theta0 (None = where the tail density crosses the Gaussian, tail_threshold).
     """
     L = (o[:, 1] - y_plane) / -d[:, 1]
     th0 = eloss.highland_theta0(p, L / x0_mm if x_over_x0 is None else x_over_x0)
@@ -53,6 +60,12 @@ def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, ba
         z_y = rng.standard_normal((len(p), 2))
         dth = z_t * a[:, None]
         dy = z_t * (s_yt / np.maximum(a, 1e-30))[:, None] + z_y * b[:, None]
+        if band_chic2 is not None:
+            th_min = tail_threshold(band_chic2.sum(1), th0, tail_k)
+            for k in range(band_chic2.shape[1]):
+                tt = single_scatter_tail(rng, band_chic2[:, k], th_min, band_thn[:, k])
+                dth += tt
+                dy += tt * band_h[:, [k]]
         return _apply_msc(o, d, L, dth, dy, y_plane)
     z1 = rng.standard_normal((len(p), 2))
     z2 = rng.standard_normal((len(p), 2))
@@ -75,6 +88,103 @@ def _apply_msc(o, d, L, dth, dy, y_plane):
     back = (end[:, 1] - y_plane) / dn[:, 1]
     end = end - dn * back[:, None]
     return end, dn, L - back
+
+
+HBARC_MEV_FM = 197.3269804
+R_NUCLEUS_FM = 1.2           # nuclear radius R = 1.2 fm A^(1/3) (form factor of single scattering)
+THETA_TAIL_MAX = 1.0         # rad: cap of the single-scattering tail (the 1/theta^3 form is a small-angle approximation)
+
+
+ME_OVER_MMU = eloss.ME / eloss.MMU     # rad: largest muon deflection on a free electron
+
+
+def _zz_over_a(mat, electrons):
+    from .materials import ELEMENTS
+    return sum(w * ELEMENTS[e][0] * (ELEMENTS[e][0] + (1 if electrons else 0)) / ELEMENTS[e][1]
+               for e, w in mat.fractions.items())
+
+
+def chi_c2(mat, length_mm, p, mass=eloss.MMU, electrons=True):
+    """Single-scattering scale chi_c^2 [rad^2] of a unit-charge particle through `length_mm` of `mat`.
+
+    chi_c^2 = 0.157 sum_i w_i Z_i (Z_i + 1) / A_i  rho t / (p beta)^2, t in cm, p beta in MeV (Moliere / Lynch-Dahl
+    NIM B58 (1991) 6; Z+1 counts scattering on atomic electrons). The mean number of single scatters with space angle
+    above theta (theta_core << theta << theta_nuclear) is chi_c^2 / theta^2. electrons=False: Z^2 only, the nuclear
+    part, for the tail (a muon is deflected by at most m_e / m_mu = 4.8 mrad on an electron, ME_OVER_MMU).
+    """
+    p = np.maximum(np.asarray(p, float), 1e-3)
+    pb = p * p / np.sqrt(p * p + mass * mass)
+    return 0.157 * _zz_over_a(mat, electrons) * mat.rho * 0.1 * np.asarray(length_mm, float) / pb ** 2
+
+
+def theta_nuclear(mat, p):
+    """Form-factor angle [rad] of single scattering: theta_n = sqrt(20) hbar c / (p R), R = 1.2 fm A_eff^(1/3).
+
+    The nucleus is an exponential charge distribution with the rms radius of a uniform sphere of radius R (rms^2 =
+    3/5 R^2 = 12 a^2), form factor F(q) = (1 + q^2 R^2 / 20)^-2, so F^2 = (1 + theta^2 / theta_n^2)^-4 with q = p theta.
+    A_eff^(1/3) is the mass-weighted A^(1/3) of the material."""
+    from .materials import ELEMENTS
+    a13 = sum(w * ELEMENTS[e][1] ** (1 / 3) for e, w in mat.fractions.items())
+    return np.sqrt(20.0) * HBARC_MEV_FM / (np.maximum(np.asarray(p, float), 1e-3) * R_NUCLEUS_FM * a13)
+
+
+def highland_var_increment(p, x_prev, x_new, mass=eloss.MMU):
+    """Plane-projected variance [rad^2] that a layer adds when the traversed x/X0 grows from x_prev to x_new.
+
+    Highland with the log term on the cumulative thickness (Lynch-Dahl): (13.6/(beta p))^2 [g(x_new) - g(x_prev)],
+    g(x) = x (1 + 0.038 ln(x / beta^2))^2, so a stack of thin layers sums to the Highland width of the stack instead of
+    the (too small) quadrature sum of thin-layer widths. g is increasing for x / beta^2 > 4e-12."""
+    p = np.maximum(np.asarray(p, float), 1e-3)
+    beta2 = p * p / (p * p + mass * mass)
+
+    def g(x):
+        x = np.maximum(np.asarray(x, float), 0.0)
+        return np.where(x > 0, x * (1 + 0.038 * np.log(np.maximum(x, 1e-30) / beta2)) ** 2, 0.0)
+
+    return (13.6 ** 2 / (beta2 * p * p)) * np.maximum(g(x_new) - g(x_prev), 0.0)
+
+
+def tail_threshold(chic2, theta0, k=None):
+    """Space angle [rad] above which single scatters are added to a Gaussian core of plane width theta0.
+
+    k given: k * theta0. k None: the larger angle where the single-scattering density 2 chi_c^2 / theta^3 equals the
+    Gaussian space-angle density theta / theta0^2 exp(-theta^2 / (2 theta0^2)), i.e. u^4 exp(-u^2/2) = 2 chi_c^2 /
+    theta0^2 with u = theta / theta0 (Newton from u = 6; at least u = 2, the maximum of the left side)."""
+    th0 = np.maximum(np.asarray(theta0, float), 1e-12)
+    if k is not None:
+        return k * th0
+    r = np.maximum(np.asarray(chic2, float) / th0 ** 2, 1e-300)
+    u = np.full(np.shape(r), 6.0)
+    for _ in range(30):
+        h = 4 * np.log(u) - 0.5 * u * u - np.log(2 * r)
+        u = np.maximum(u - h / (4 / u - u), 2.0)
+    return u * th0
+
+
+def single_scatter_tail(rng, chic2, theta_min, theta_n):
+    """Projected angles [N, 2] of the single scatters above space angle theta_min (screened Rutherford tail).
+
+    Rate per track dN/dtheta = 2 chi_c^2 / theta^3 F^2(theta), F^2 = (1 + theta^2 / theta_n^2)^-4 (theta_nuclear),
+    up to THETA_TAIL_MAX. Sampled by thinning: Poisson(chi_c^2 (1/theta_min^2 - 1/THETA_TAIL_MAX^2)) proposals from
+    the bare 1/theta^3 spectrum, each kept with probability F^2 (exact for a Poisson process); uniform azimuth; the
+    kept scatters of a track add."""
+    chic2 = np.asarray(chic2, float)
+    n = len(chic2)
+    out = np.zeros((n, 2))
+    a = 1.0 / np.maximum(theta_min, 1e-12) ** 2
+    b = 1.0 / THETA_TAIL_MAX ** 2
+    lam = np.clip(chic2 * (a - b), 0, None)
+    k = rng.poisson(lam)
+    if not k.any():
+        return out
+    idx = np.repeat(np.arange(n), k)
+    th = 1.0 / np.sqrt(a[idx] - rng.random(len(idx)) * (a[idx] - b))
+    tn = np.broadcast_to(np.asarray(theta_n, float), (n,))[idx]
+    keep = rng.random(len(idx)) < (1 + (th / tn) ** 2) ** -4
+    idx, th = idx[keep], th[keep]
+    ph = rng.random(len(idx)) * 2 * np.pi
+    np.add.at(out, idx, np.c_[th * np.cos(ph), th * np.sin(ph)])
+    return out
 
 
 N_SLICES_MAX = 200
@@ -126,7 +236,7 @@ def slab_loss(rng, mat, p, length):
     return np.where(stopped, tk0, np.minimum(lost, tk0))
 
 
-def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False):
+def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False, return_tail=False):
     """Material between o and the plane y = band_edges_y[-1] (tracks going down).
 
     band_edges_y: decreasing heights [mm]; the last is the plane. Returns (|p| at the plane, total x/X0, survived?,
@@ -134,6 +244,8 @@ def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False):
     entry and exit |p| of each band [N, nbands] (for sliced scattering in msc_to_plane). Loss per material is integrated in slices
     (slab_loss); materials without constants are treated as concrete. The band lever arms let msc_to_plane place the
     scattering where it happens (material close above the plane scatters with a short arm, distant air with a long one).
+    return_tail=True appends the single-scattering inputs per band: nuclear chi_c^2 [N, nbands] at the band's mean |p| and the
+    chi_c^2-weighted form-factor angle theta_nuclear (msc_to_plane band_chic2, band_thn).
     """
     edges = np.asarray(band_edges_y, float)
     y_plane = edges[-1]
@@ -143,6 +255,8 @@ def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False):
     band_h = np.zeros((len(p), nb))
     loss = np.zeros(len(p))
     band_p = np.zeros((len(p), nb))
+    band_chic2 = np.zeros((len(p), nb))
+    band_thw = np.zeros((len(p), nb))
     x0_air = eloss.radiation_length_mm(materials.AIR)
     for k in range(nb):
         y_top, y_bot = edges[k], edges[k + 1]
@@ -158,6 +272,7 @@ def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False):
             m: np.bincount(act, weights=v, minlength=len(p))
             for m, v in world_mod.column(band_pieces, (o + d * s_top[:, None])[act], d[act], seg[act]).items()}
         solid = np.zeros(len(p))
+        cols = []
         for name, c in col.items():
             if not c.any():
                 continue
@@ -166,16 +281,26 @@ def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False):
             loss[hit] += slab_loss(rng, mat, p[hit] - loss[hit], c[hit])
             band_xx0[:, k] += c / eloss.radiation_length_mm(mat)
             solid += c
+            cols.append((mat, c))
         air = np.clip(seg - solid, 0, None)
         loss += eloss.dedx_restricted(materials.AIR, np.maximum(p - loss, 1.0), 1e9) * air
         band_xx0[:, k] += air / x0_air
         band_h[:, k] = L - 0.5 * (s_top + s_bot)
         band_p[:, k] = 0.5 * (_p_after(p, loss_in) + _p_after(p, loss))
+        if return_tail:
+            pm = np.maximum(band_p[:, k], 1.0)
+            for mat, c in cols + [(materials.AIR, air)]:
+                x2 = chi_c2(mat, c, pm, electrons=False)
+                band_chic2[:, k] += x2
+                band_thw[:, k] += x2 * theta_nuclear(mat, pm)
     tk = np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU - loss
     p_plane = np.sqrt(np.clip((tk + eloss.MMU) ** 2 - eloss.MMU ** 2, 0, None))
+    out = (p_plane, band_xx0.sum(1), tk > 0.5, band_xx0, band_h)
     if return_band_p:
-        return p_plane, band_xx0.sum(1), tk > 0.5, band_xx0, band_h, band_p
-    return p_plane, band_xx0.sum(1), tk > 0.5, band_xx0, band_h
+        out += (band_p,)
+    if return_tail:
+        out += (band_chic2, np.where(band_chic2 > 0, band_thw / np.maximum(band_chic2, 1e-300), 1.0))
+    return out
 
 
 def _p_after(p, loss):

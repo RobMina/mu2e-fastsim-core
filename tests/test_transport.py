@@ -109,3 +109,74 @@ def test_slab_loss_range_out_follows_the_mean_range():
         s09 = np.mean(T.slab_loss(rng, M.CONCRETE_MARS, np.full(n, p0), np.full(n, 0.9 * R)) < tk0)
         s11 = np.mean(T.slab_loss(rng, M.CONCRETE_MARS, np.full(n, p0), np.full(n, 1.1 * R)) < tk0)
         assert s09 > 0.9 and s11 < 0.1, (p0, R, s09, s11)
+
+
+def test_highland_increments_sum_to_the_stack_width():
+    p = np.full(3, 1000.0)
+    x = np.linspace(0, 0.05, 11)
+    v = sum(T.highland_var_increment(p, a, b) for a, b in zip(x[:-1], x[1:]))
+    assert np.allclose(np.sqrt(v), E.highland_theta0(p, 0.05), rtol=1e-9)
+
+
+def test_single_scatter_tail_rate_and_spectrum():
+    rng = np.random.default_rng(21)
+    n = 200_000
+    chic2 = np.full(n, 1e-5)
+    # theta_n far above the angles: bare 1/theta^3 (up to THETA_TAIL_MAX)
+    th = T.single_scatter_tail(rng, chic2, np.full(n, 0.01), np.full(n, 1e6))
+    k = (th != 0).any(1)
+    lam = 1e-5 * (1 / 0.01 ** 2 - 1 / T.THETA_TAIL_MAX ** 2)
+    assert abs(k.mean() / (1 - np.exp(-lam)) - 1) < 0.03
+    sp = np.hypot(th[k, 0], th[k, 1])
+    assert abs((sp > 0.02).mean() - 0.25) < 0.02          # P(theta > 2 theta_min) = 1/4 for 1/theta^3
+    # form factor: rate suppressed by the integral of F^2 = (1 + t^2/tn^2)^-4 over the 1/theta^3 spectrum
+    tn = 0.02
+    t2 = T.single_scatter_tail(rng, chic2, np.full(n, 0.01), np.full(n, tn))
+    x = np.linspace(0.01, T.THETA_TAIL_MAX, 200_001)
+    f = 2e-5 / x ** 3 * (1 + (x / tn) ** 2) ** -4
+    lam2 = np.sum(0.5 * (f[1:] + f[:-1]) * np.diff(x))
+    assert abs((t2 != 0).any(1).mean() / (1 - np.exp(-lam2)) - 1) < 0.05
+
+
+def test_tail_threshold_crossing_and_fixed_k():
+    th0 = np.array([1e-3])
+    assert np.allclose(T.tail_threshold(None, th0, 3.0), 3e-3)
+    c = np.array([1e-8])
+    u = T.tail_threshold(c, th0)[0] / th0[0]
+    assert abs(u ** 4 * np.exp(-u * u / 2) - 2 * c[0] / th0[0] ** 2) < 1e-10 and u > 2
+
+
+def test_chic2_matches_lynch_dahl_aluminium():
+    # Lynch-Dahl: chi_c^2 = 0.157 Z(Z+1)/A rho t / (p beta)^2; 1 cm Al at 1 GeV/c
+    p = 1000.0
+    pb = p * p / np.sqrt(p * p + E.MMU ** 2)
+    ref = 0.157 * 13 * 14 / 26.981538 * 2.699 * 1.0 / pb ** 2
+    assert np.isclose(T.chi_c2(M.ALUMINIUM, 10.0, p), ref)
+    assert np.isclose(T.chi_c2(M.ALUMINIUM, 10.0, p, electrons=False), ref * 13 / 14)
+    # sqrt(20) hbar c / (p 1.2 fm A^(1/3)), A^(1/3) = 3.0 for Al
+    assert np.isclose(T.theta_nuclear(M.ALUMINIUM, p), np.sqrt(20) * 197.3269804 / (p * 1.2 * 26.981538 ** (1 / 3)))
+
+
+def test_msc_to_plane_tail_widens_only_the_tails():
+    rng = np.random.default_rng(5)
+    n = 200_000
+    o = np.tile([0.0, 3000.0, 0.0], (n, 1))
+    d = np.tile([0.0, -1.0, 0.0], (n, 1))
+    x0 = E.radiation_length_mm(M.CONCRETE_MARS)
+    bxx0 = np.tile([1000.0 / x0], (n, 1))
+    bh = np.tile([1500.0], (n, 1))
+    p = np.full(n, 3000.0)
+    chic2 = T.chi_c2(M.CONCRETE_MARS, np.full((n, 1), 1000.0), 3000.0, electrons=False)
+    thn = T.theta_nuclear(M.CONCRETE_MARS, np.full((n, 1), 3000.0))
+    _, d0, _ = T.msc_to_plane(rng, o, d, p, 0.0, x0, bxx0.sum(1), bxx0, bh)
+    _, d1, _ = T.msc_to_plane(rng, o, d, p, 0.0, x0, bxx0.sum(1), bxx0, bh, band_chic2=chic2, band_thn=thn)
+    a0, a1 = np.arctan2(d0[:, 0], -d0[:, 1]), np.arctan2(d1[:, 0], -d1[:, 1])
+    th0 = E.highland_theta0(3000.0, 1000.0 / x0)
+    # core unchanged (the tail starts where its density crosses the Gaussian, ~3.6 theta0 here); beyond 4 theta0 the
+    # Gaussian leaves ~13 of 2e5; the tail adds some tens (the form factor cuts it near theta_n ~ 6 theta0), and with
+    # no form factor (theta_n huge) many more
+    assert abs(np.median(np.abs(a1)) / np.median(np.abs(a0)) - 1) < 0.02
+    n0, n1 = (np.abs(a0) > 4 * th0).sum(), (np.abs(a1) > 4 * th0).sum()
+    _, d2, _ = T.msc_to_plane(rng, o, d, p, 0.0, x0, bxx0.sum(1), bxx0, bh, band_chic2=chic2, band_thn=thn * 1e6)
+    n2 = (np.abs(np.arctan2(d2[:, 0], -d2[:, 1])) > 4 * th0).sum()
+    assert n1 > 2 * max(n0, 1) and n2 > 5 * n1
