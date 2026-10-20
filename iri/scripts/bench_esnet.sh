@@ -14,7 +14,7 @@ for f in LookupTable_3200_0 photonMap.root; do
 done
 ls -la $L; export CRVFS_LOOKUP_DIR=$L
 python -c "import jax; print('jax', jax.__version__, jax.devices())"
-cd /opt/mu2e-fastsim
+cd /opt/mu2e-fastsim   # read-only for the pod uid: every --outdir goes to /tmp
 echo; echo "==== pytest per package (shared test basenames); tracker last (one test needs > 7 GB)"
 for p in core crv tracker; do echo "-- $p: $(python -m pytest -q -rfE -p no:cacheprovider $p/tests 2>&1 | tail -1)"; done
 B="python -m crvfastsim.response.bench --repeat 3"
@@ -23,7 +23,7 @@ $B --table 3200_0 --rows $NROWS --numpy-rows 20000 --seed 20261020 2>&1 | tail -
 echo; echo "==== SiPM charges, real photon map ($NSIPMS SiPMs; numpy 20k)"
 $B --stage sipm --photon-map $L/photonMap.root --sipms $NSIPMS --numpy-sipms 20000 --seed 20261120 2>&1 | tail -1
 echo; echo "==== reco chain, synthetic ($NEV events, JAX)"
-python -m crvfastsim reco-bench synthetic --stage chain --max-events $NEV 2>&1 | tail -3
+python -m crvfastsim reco-bench synthetic --stage chain --max-events $NEV --outdir /tmp/rb_$$ 2>&1 | tail -3; rm -rf /tmp/rb_$$
 echo; echo "==== R5/P6 reco-repro, synthetic (5000 events)"
 python -m crvfastsim reco-repro synthetic --max-events 5000 --outdir /tmp/repro_$$ 2>&1 | tail -3
 python -c "import json,glob;d=json.load(open(glob.glob('/tmp/repro_$$/*.json')[0]));print({k:d[k] for k in ('backend','device','pass_bit_identical','same_seed_identical','fingerprint')})"

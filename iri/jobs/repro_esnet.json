@@ -1,0 +1,21 @@
+{
+  "name": "mu2efastsim-repro",
+  "container": {
+    "image": "ghcr.io/robmina/mu2e-fastsim:${ESNET_IMAGE_TAG}"
+  },
+  "directory": "${ESNET_WORK}/repro",
+  "stdout_path": "${ESNET_WORK}/repro/repro.out",
+  "stderr_path": "${ESNET_WORK}/repro/repro.err",
+  "resources": {
+    "node_count": 1,
+    "process_count": 1,
+    "cpu_cores_per_process": 2,
+    "memory": 4294967296
+  },
+  "attributes": {
+    "duration": 900,
+    "queue_name": "default",
+    "account": "hackathon2610-project",
+    "custom_attributes": {}
+  }
+}
