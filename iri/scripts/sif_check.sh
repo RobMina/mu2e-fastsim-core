@@ -28,7 +28,9 @@ for V in ${VARIANTS:-full trim}; do
   L=/local/scratch/$USER/sif; rm -rf $L $APPTAINER_CACHEDIR/*; mkdir -p $L
   NV=--nv; [ $V = cpu ] && NV=
   t0=$(date +%s.%N); cp $S $L/img.sif; t1=$(date +%s.%N)
-  $A exec $NV --cleanenv $L/img.sif python -c "import jax, crvfastsim.cli, crvfastsim.reco.chain_jax; print('devices', jax.devices())" 2>&1 | grep -v "^INFO"
+  $A exec $NV --cleanenv $L/img.sif python -c "import jax, crvfastsim.cli, crvfastsim.reco.chain_jax; print('devices', jax.devices())" 2>&1 | grep -v "^INFO" | tail -3
+  if [ $V != cpu ] && ! $A exec --nv --cleanenv $L/img.sif python -c "import jax, sys; sys.exit(jax.default_backend() != 'gpu')" 2>/dev/null; then
+    echo "variant $V: JAX did not start on the GPU (falls back to CPU): not a usable GPU image"; rm -rf $L; continue; fi
   t2=$(date +%s.%N)
   echo "copy_to_local_s $(echo "$t1-$t0" | bc) cold_first_exec_s $(echo "$t2-$t1" | bc) cold_start_total_s $(echo "$t2-$t0" | bc)"
   $A exec $NV --cleanenv $L/img.sif tail -1 /opt/mu2e-fastsim/VERSION
