@@ -16,10 +16,10 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 | Module | What it holds |
 |---|---|
 | `mu2efastsim/eloss.py` | restricted Bethe mean loss (`G4MuBetheBlochModel`), Urban fluctuation sampler (`G4UniversalFluctuation` + `G4UrbanFluctuation`), Birks saturation, delta-ray rate and sampling, radiation length, Highland angle |
-| `mu2efastsim/materials.py` | `Material` with composition, density, I, Sternheimer parameters, Birks constant, fluctuation-model parameters; the materials of the extracted world |
+| `mu2efastsim/materials.py` | `Material` with composition, density, I, Sternheimer parameters, Birks constant, fluctuation-model parameters; the materials of the extracted world and the tracker (support alloys, electronics, Mylar, W and Au of the sense wire) |
 | `mu2efastsim/world.py` | GDML world -> global convex pieces; per-material path column of straight segments |
 | `mu2efastsim/crossings.py` | vectorised ray-box crossings (JAX on CPU/GPU, numpy fallback) |
-| `mu2efastsim/transport.py` | correlated multiple scattering to a plane (uniform or banded material), sliced slab loss with range-out |
+| `mu2efastsim/transport.py` | correlated multiple scattering to a plane (uniform or banded material, per-band \|p\|), sliced slab loss with range-out; scattering pieces for detector packages: Highland per layer with the log term on the cumulative x/X0 (`highland_var_increment`), the single-scattering tail (`chi_c2`, `chi_c2_electron`, `theta_nuclear`, `tail_threshold`, `single_scatter_tail`: screened Rutherford on nuclei with an exponential form factor, atomic electrons up to m_e/m_mu, optional in `msc_to_plane`/`world_loss`) |
 | `mu2efastsim/tables.py` | flat-table I/O in the art dumper layout (`dump/` directory, `(run, subrun, event)` keys) |
 | `mu2efastsim/stats.py`, `plots.py` | robust statistics and plotting/stats-JSON helpers shared by every comparison |
 | `mu2efastsim/match.py` | joins and lookups on multi-column integer keys, two-sample KS test (fast-vs-stock comparisons) |
@@ -36,6 +36,11 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 .venv/bin/python3 -m pip install -e path/to/mu2e-fastsim-core     # or put the umbrella repo root on PYTHONPATH
 .venv/bin/python3 -m pytest path/to/mu2e-fastsim-core/tests
 ```
+
+On a Mu2e GPVM no install is needed: `source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh && pyenv ana`, then
+`source site.env` in the umbrella clone (it puts `core/` on `PYTHONPATH`) and
+`python3 -m pytest -q -p no:cacheprovider core/tests`. The umbrella README and the tracker README describe the full
+setup and the validation runs.
 
 ```python
 from mu2efastsim import eloss, materials
