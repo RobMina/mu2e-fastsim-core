@@ -14,6 +14,7 @@
 PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
 F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
 JAXV=${JAXV:-0.11.2}
+OFFD=$F/offline_data   # fixed here: the frameworks module (un)load overwrites $F
 O=$F/probe/$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}
 mkdir -p "$O" || { echo "cannot create $O (set M2FS_FLARE)"; exit 2; }
 exec > >(tee "$O/probe.log") 2>&1
@@ -52,7 +53,7 @@ echo "pip $((SECONDS-t0)) s"; $V/bin/python -m pip freeze | grep -iE "^(jax|jaxl
 module unload frameworks 2>/dev/null
 # the pip oneAPI runtime (libur_loader 0.11) must shadow the default oneapi module's older one
 export LD_LIBRARY_PATH=$V/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-sh $CODE/container/fetch_offline_data.sh $F/offline_data && export MU2E_SEARCH_PATH=$F/offline_data
+sh $CODE/container/fetch_offline_data.sh $OFFD && export MU2E_SEARCH_PATH=$OFFD
 export JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false MPLBACKEND=Agg
 s "jax on the tiles"
 $V/bin/python - <<'EOF'
@@ -76,7 +77,7 @@ cd $CODE
 s "pytest (tile 0)"; ZE_AFFINITY_MASK=0 $V/bin/python -m pytest -q -p no:cacheprovider crv/tests/test_reco_jax.py core/tests 2>&1 | tail -4
 s "reco-bench synthetic, tile 0"
 for st in pulses chain; do
-  ZE_AFFINITY_MASK=0 timeout 600 $V/bin/python -m crvfastsim reco-bench synthetic --stage $st --max-events 100000 \
+  ZE_AFFINITY_MASK=0 timeout 600 $V/bin/python -m crvfastsim reco-bench synthetic --stage $st --max-events 20000 \
     --length 12 --batch 65536 --repeat 2 --outdir $O/xpu_$st > $O/xpu_$st.txt 2>&1; echo "$st exit=$? $(tail -1 $O/xpu_$st.txt)"
 done
 s "response bench synthetic, tile 0 (photons, sipm)"
