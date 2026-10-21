@@ -11,7 +11,7 @@
 # Aurora: V-R1 (JAX waveform synthesis vs stock CrvWaveforms/CrvDigi) on Intel PVC, MC 001400_00014516:
 #   noise off: crvreco_mcnonoise (every stock digi sample-identical); noise on: crvreco_mc vs the noise-free one.
 # Both references are Mu2e-internal: streamed into tmpfs by kpp_stream.sh (NAMES = space-separated basenames), deleted
-# on exit, never on Flare. Same commands on the node CPU as a control.
+# on exit, never on Flare. Same commands on the node CPU as a control. BRANCH: a crv branch to test (optional).
 PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
 F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
 FL=$F; V=$FL/venv/bin/python; CODE=$FL/code
@@ -20,7 +20,14 @@ O=$FL/bench/vr1_$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O; chmod 700 
 exec > >(tee "$O/run.log") 2>&1
 export http_proxy=http://proxy.alcf.anl.gov:3128 https_proxy=http://proxy.alcf.anl.gov:3128
 cd $CODE && git pull -q --ff-only && git submodule update -q --init --recursive
-echo "host=$(hostname) job=${PBS_JOBID:-none} out=$O"; git log -1 --format="umbrella %h %s"; git submodule status
+CRV=$CODE/crv
+if [ -n "${BRANCH:-}" ]; then   # test a crv branch without moving the umbrella pins (first on PYTHONPATH)
+  CRV=$FL/crv_$BRANCH
+  if [ -d $CRV/.git ]; then git -C $CRV fetch -q && git -C $CRV reset -q --hard origin/$BRANCH
+  else git clone -q -b $BRANCH https://github.com/RobMina/mu2e-crv-fastsim.git $CRV; fi
+fi
+export PYTHONPATH=$CRV:$CODE/core${PYTHONPATH:+:$PYTHONPATH}
+echo "host=$(hostname) job=${PBS_JOBID:-none} out=$O"; git log -1 --format="umbrella %h %s"; git -C $CRV log -1 --format="crv %h %s"
 export LD_LIBRARY_PATH=$FL/venv/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} MU2E_SEARCH_PATH=$FL/offline_data
 export JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false MPLBACKEND=Agg ZE_FLAT_DEVICE_HIERARCHY=FLAT
 L=/tmp/crvfs_vr1_$$; mkdir -p $L; chmod 700 $L
