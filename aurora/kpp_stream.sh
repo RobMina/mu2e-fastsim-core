@@ -2,7 +2,7 @@
 # Run from the laptop (it holds the ssh masters to a GPVM and to Aurora; the GPVM cannot reach Aurora).
 # Submits kpp_reco_aurora.sh, streams the Mu2e-internal reference file GPVM -> Aurora compute-node tmpfs (never on
 # Flare or the laptop disk), waits for the job, copies the outputs back to the GPVM data area and deletes them on Flare.
-# usage: kpp_stream.sh [gpvm] [job script] [reference files on the GPVM ...]
+# usage: [EXTRA_V=VAR=value] kpp_stream.sh [gpvm] [job script] [reference files on the GPVM ...]
 set -euo pipefail
 G=${1:-mu2egpvm03}
 JOB=${2:-kpp_reco_aurora.sh}
@@ -11,7 +11,7 @@ SRCS=("${@:-/exp/mu2e/data/users/ram2aq/crv_fastsim/reco_ref/crvreco_data.124155
 FL=/lus/flare/projects/GenesisHackathonOct26/ram2aq/mu2efastsim
 DEST=/exp/mu2e/data/users/ram2aq/crv_fastsim/reco_ref/checks_aurora
 NAME=$(basename "${SRCS[0]}")
-J=$(ssh aurora "cd ~/m2fs && cp $FL/code/core/aurora/$JOB . && qsub -v M2FS_FLARE=$FL,NAME=$NAME $JOB" </dev/null)
+J=$(ssh aurora "cd ~/m2fs && cp $FL/code/core/aurora/$JOB . && qsub -v M2FS_FLARE=$FL,NAME=$NAME${EXTRA_V:+,$EXTRA_V} $JOB" </dev/null)
 JID=${J%%.*}; echo "job $JID"
 until INBOX=$(ssh aurora "cat $FL/bench/kpp_inbox_$JID 2>/dev/null" </dev/null) && [ -n "$INBOX" ]; do sleep 30; done
 read -r HOST L O <<<"$INBOX"; echo "node $HOST tmpfs $L out $O"
