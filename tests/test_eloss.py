@@ -52,3 +52,19 @@ def test_delta_rate():
     rng = np.random.default_rng(2)
     idx, T = E.sample_deltas(rng, M.POLYSTYRENE, np.full(50_000, 3000.0), 20.0, TCUT)
     assert T.min() >= TCUT and abs(len(T) / 50_000 / n - 1) < 0.02
+
+
+def test_material_mass_fractions_sum_to_one():
+    """Every material's composition is complete (a dropped element lowers Z/A and the electron density, so dE/dx)."""
+    from mu2efastsim import materials as MM
+    bad = {n: round(sum(m.fractions.values()), 6) for n, m in MM.BY_NAME.items() if abs(sum(m.fractions.values()) - 1) > 1e-6}
+    assert not bad, bad
+
+
+def test_tracker_materials_match_the_gdml_export():
+    """Spot values of the v04 GDML for the tracker-interior alloys (I and the heavy constituents drive dE/dx and X0)."""
+    from mu2efastsim import materials as MM
+    assert abs(MM.BRONZE_C938.I_eV - 374.5128) < 1e-3 and abs(MM.BRONZE_C938.fractions["Pb"] - 0.145) < 1e-9
+    assert abs(MM.ELECTRONICS.I_eV - 226.4011) < 1e-3 and abs(MM.ELECTRONICS.fractions["Au"] - 0.034) < 1e-9
+    assert abs(MM.ALUMINIUM_7075.fractions["Zn"] - 0.056) < 1e-9
+    assert abs(MM.CONCRETE_MARS.fractions["Fe"] - 0.014) < 1e-9
