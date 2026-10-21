@@ -6,6 +6,7 @@ job script to a site, runs it and brings its output directory back. States are t
 same name twice with the same script returns the same job (idempotent), with a different script it is refused.
 
     slurm_ssh   Slurm over SSH (UVA Rivanna/Afton; any Slurm site reachable by ssh with a key)
+    eaf         Fermilab EAF: the user's JupyterHub server on an A100 MIG slice, driven with a hub token from a GPVM
 """
 from __future__ import annotations
 
@@ -99,4 +100,7 @@ def get(name: str, **kw) -> Endpoint:
     if name in ("uva", "slurm_ssh"):
         from .slurm_ssh import SlurmSSHEndpoint
         return SlurmSSHEndpoint(**kw)
-    raise EndpointError(f"unknown endpoint {name!r}; known: uva (slurm_ssh)")
+    if name == "eaf":
+        from .eaf import EAFEndpoint
+        return EAFEndpoint(**kw)
+    raise EndpointError(f"unknown endpoint {name!r}; known: uva (slurm_ssh), eaf")
