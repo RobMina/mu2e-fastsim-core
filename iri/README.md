@@ -1,4 +1,4 @@
-# IRI job drivers (ALCF Polaris)
+# IRI job drivers (ALCF Polaris, ESnet East)
 
 Jobs go to Polaris through the ALCF IRI API (`https://api.alcf.anl.gov`), with the genesis skill `amsc-skills/iri-api`
 scripts ([AI-ModCon/genesis-skills](https://github.com/AI-ModCon/genesis-skills)) and a Python with globus-sdk. Read
@@ -85,7 +85,7 @@ iri/tools/iri.sh cat $M2FS_EAGLE/hello/hello.out
 
 ## ESnet East (AWS EKS, IRI v2)
 
-`tools/esnet.sh` drives `https://iri-dev.ppg.es.net/api/v2` with curl + jq and an AmSC personal access token (MyAmSC,
+`IRI_FACILITY=esnet tools/iri.sh` drives `https://iri-dev.ppg.es.net/api/v2` with curl + jq and an AmSC personal access token (MyAmSC,
 project selected when it is made; 30 days) from `$AMSC_TOKEN` or the mode-600 file `$AMSC_TOKEN_FILE` (default
 `~/.amsc/pat`). No Globus login, no Cloudflare challenge: the laptop can submit. Every job is a Kubernetes pod running a
 **public** OCI image (`container.image`); resources are per pod (`cpu_cores_per_process`, `memory` in bytes,
@@ -97,18 +97,20 @@ shared EFS home: unique run directories, nothing non-public on EFS, cancel only 
 | compute resource | `fb0aafe1-c780-55c0-b635-a7121f1b0ce5` (Low Priority, Kueue) |
 | storage resource | `b6d59ba3-5c2d-57dd-b3b9-108832da0578` (EFS: `/data/home/<user>`, `/data/projects/<project>`) |
 | pod (probe 2026-10-20) | 80 GB overlay root, `/dev/shm` 64 MB, no GPU/FUSE/userns in a CPU pod; open egress (PyPI, GitHub, ghcr, CVMFS S1) |
-| files API | `mkdir`, `upload` (multipart), `ls`, `view`, `download` (base64, **max 2 MiB**), `rm` work |
+| files API | `mkdir`, `upload` (multipart), `ls`, `view`, `download` (base64, **max 2 MiB**), `rm` (recursive, `{path}` only) work |
 | image | public `ghcr.io/robmina/mu2e-fastsim:<umbrella sha7>-cpu\|gpu` (and `latest-*`), built by `.github/workflows/image.yml` of the umbrella from `container/Dockerfile`; `/opt/mu2e-fastsim` is read-only for the pod uid, so every `--outdir` goes to `/tmp` |
 
 ```bash
 RUN=$(date -u +%Y%m%dT%H%M%SZ)-$(python3 -c 'import uuid;print(uuid.uuid4().hex[:8])')
 export ESNET_WORK=/data/home/hackathon2610/mu2efastsim/$RUN
-tools/esnet.sh mkdir $ESNET_WORK/probe
+export IRI_FACILITY=esnet
+tools/iri.sh mkdir $ESNET_WORK/probe
 python3 tools/make_inline_job.py jobs/probe_esnet.json scripts/probe_esnet.sh --out /tmp/job.json
-tools/esnet.sh submit /tmp/job.json        # prints {"id": ...}
-tools/esnet.sh wait <id> 400
-tools/esnet.sh cat $ESNET_WORK/probe/probe.out
-tools/esnet.sh alloc                        # node-hours and bytes used / allocated
+tools/iri.sh submit /tmp/job.json          # prints {"id": ...}
+tools/iri.sh wait <id> 400
+tools/iri.sh cat $ESNET_WORK/probe/probe.out
+tools/iri.sh alloc                         # node-hours and bytes used / allocated (counters lag)
+tools/iri.sh rm $ESNET_WORK                # recursive; clean up the shared home when done
 # image jobs: ESNET_IMAGE_TAG=<sha7>-cpu with jobs/bench_esnet.json + scripts/bench_esnet.sh (real tables -> pod /tmp,
 # deleted on exit) or jobs/repro_esnet.json + scripts/repro_esnet.sh (R5/P6 npz under the download cap)
 ```
