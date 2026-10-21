@@ -168,3 +168,10 @@ def test_results_require_cleanup_record_for_table_tasks(site_ep, tmp_path):
     site.finish(ep.state.get("r1.resp").job_id)
     with pytest.raises(ValueError, match="cleanup record"):
         kit.results("r1.resp")       # the fake site's tar has no out/cleanup.txt
+
+
+def test_integral_floats_render_as_ints(site_ep, tmp_path):
+    _, ep = site_ep
+    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
+    body, _ = kit.render({"task": "reco_bench", "events": 200000.0, "seed": 20261021.0})   # as Mu2eBO sends them
+    assert "--max-events 200000 " in body and "--seed 20261021 " in body and "200000.0" not in body

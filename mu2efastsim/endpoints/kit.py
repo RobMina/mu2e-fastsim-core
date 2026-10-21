@@ -8,7 +8,7 @@ params, submits it through an endpoint (``mu2efastsim.endpoints``), and on compl
 resources, the params it accepts and the metrics it returns.
 
 Run as an MCP stdio server (``python -m mu2efastsim.endpoints.kit``) for a kits.toml entry, or use FastsimKit directly.
-Environment: FASTSIMKIT_ENDPOINT (default uva), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
+Environment: FASTSIMKIT_ENDPOINT (default uva; eaf), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
 FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_SIF (image path on the site).
 """
 from __future__ import annotations
@@ -36,8 +36,7 @@ class Task:
 
 _COMMON = """module load apptainer >/dev/null 2>&1
 M2FS_OUT=$(readlink -f "$M2FS_OUT")   # /scratch is a symlink on UVA: bind the real path
-A() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }
-echo "host $(hostname) job ${SLURM_JOB_ID:-none} out $M2FS_OUT"; nvidia-smi -L
+@runtime_a@echo "host $(hostname) job ${SLURM_JOB_ID:-none} out $M2FS_OUT"; nvidia-smi -L
 A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend() != 'gpu')" || { echo "JAX not on the GPU"; exit 5; }
 """
 
@@ -48,7 +47,7 @@ _TABLES = """L=${TMPDIR:-/tmp}/crvfs_kit_$$; mkdir -p "$L"; chmod 700 "$L"
 trap 'rm -rf "$L"; echo "$(date -Is) $(hostname) deleted $L" >> "$M2FS_OUT/cleanup.txt"' EXIT
 trap 'exit 143' TERM INT
 find ${TMPDIR:-/tmp} -maxdepth 1 -name 'crvfs_*' -user "$USER" ! -path "$L" -exec rm -rf {} + 2>/dev/null
-T() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L -B "$L" -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }
+@runtime_t@
 for f in @tables@; do
   T python -m mu2efastsim.cvmfsget mu2e.opensciencegrid.org /DataFiles/CRVConditions/v6_0/$f "$L/$f" >/dev/null || { echo "fetch $f failed"; exit 3; }
 done
@@ -120,7 +119,19 @@ T python -m crvfastsim v4sipm "$L/steps.root" --jax --no-stock --seed @p_seed@ -
     m[key + "_jax_s"] = j.get("time_s_fast", 0.0)""")),
 }
 
+# default runtime: the project image under Apptainer (Slurm sites); an endpoint with a runtime() method supplies its own
+# A/T definitions instead (EAF: a venv on /exp, since EAF starts its own images)
+APPTAINER_RUNTIME = {"a": 'A() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }\n',
+                     "t": 'T() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L -B "$L" -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }'}
+
 TABLE_TASKS = {"response_bench", "v4_response"}   # tasks that stage Mu2e-internal tables: cleanup record required
+
+
+def _arg(v) -> str:
+    """A param as a command-line word; Mu2eBO sends every "number" as a float, so 200000.0 becomes 200000."""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
 
 
 class FastsimKit:
@@ -147,11 +158,12 @@ class FastsimKit:
 
     def render(self, params: Dict[str, Any]) -> Tuple[str, Resources]:
         t = self._task(params)
-        subs = {"sif": shlex.quote(self.sif), **{f"p_{k}": shlex.quote(str(params[k])) for k in t.params}}
-        body = t.body
+        rt = self.ep.runtime() if hasattr(self.ep, "runtime") else APPTAINER_RUNTIME
+        body = t.body.replace("@runtime_a@", rt["a"]).replace("@runtime_t@", rt["t"])
+        subs = {"sif": shlex.quote(self.sif), **{f"p_{k}": shlex.quote(_arg(params[k])) for k in t.params}}
         for k, v in subs.items():
             body = body.replace(f"@{k}@", v)
-        if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@")):
+        if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@", "@runtime_")):
             raise ValueError(f"fastsimkit: unfilled placeholder in task {params['task']!r}")
         return body, t.resources
 
