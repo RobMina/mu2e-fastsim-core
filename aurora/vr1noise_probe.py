@@ -17,15 +17,15 @@ import time
 STRESS = [  # name, noise, extra env; each run R times with repeat 5
     ("noise0", 0, {}),
     ("noise1", 1, {}),
-    ("noise1_rbg", 1, {"JAX_DEFAULT_PRNG_IMPL": "rbg"}),
-    ("noise1_unsafe_rbg", 1, {"JAX_DEFAULT_PRNG_IMPL": "unsafe_rbg"}),
-    ("noise1_host_eps", 1, {"M2FS_HOST_EPS": "1"}),
-    ("noise1_serialize", 1, {"UR_L0_SERIALIZE": "2"}),
-    ("noise1_no_immediate_cl", 1, {"UR_L0_USE_IMMEDIATE_COMMANDLISTS": "0"}),
-    ("noise1_no_event_cache", 1, {"UR_L0_DISABLE_EVENTS_CACHING": "1"}),
-    ("noise1_no_counter_events", 1, {"UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS": "0"}),
-    ("noise1_prealloc", 1, {"XLA_PYTHON_CLIENT_PREALLOCATE": "true"}),
-    ("noise1_sync_all", 1, {"M2FS_SYNC_ALL": "1"}),
+    ("noise1_single_thread_mode", 1, {"UR_L0_SINGLE_THREAD_MODE": "1"}),
+    ("noise1_hold_lock", 1, {"UR_L0_QUEUE_FINISH_HOLD_LOCK": "1"}),
+    ("noise1_sync_blocking", 1, {"UR_L0_QUEUE_SYNCHRONIZE_NON_BLOCKING": "0"}),
+    ("noise1_batch_completions_off", 1, {"UR_L0_IMMEDIATE_COMMANDLISTS_BATCH_EVENT_COMPLETIONS": "0"}),
+    ("noise1_no_copy_engine", 1, {"UR_L0_USE_COPY_ENGINE": "0"}),
+    ("noise1_device_scope_events", 1, {"UR_L0_DEVICE_SCOPE_EVENTS": "1"}),
+    ("noise1_one_cpu_thread", 1, {"M2FS_CPU_THREADS": "1"}),
+    ("noise1_gc_each_batch", 1, {"M2FS_GC_EACH_BATCH": "1"}),
+    ("noise1_keep_refs", 1, {"M2FS_KEEP_REFS": "1"}),
 ]
 CASES = [(f"{n}_r{r}", z, 5, e) for n, z, e in STRESS for r in range(3)]
 
@@ -54,6 +54,21 @@ def child(noise, n_events, repeat):
             jax.effects_barrier()
             return r
         WJ.pack = pk_sync
+    if os.environ.get("M2FS_GC_EACH_BATCH") == "1" or os.environ.get("M2FS_KEEP_REFS") == "1":
+        import gc
+        keep = []
+        orig3 = WJ.synth_dense
+        refs = os.environ.get("M2FS_KEEP_REFS") == "1"
+
+        def wrap(*a, **k):
+            r = orig3(*a, **k)
+            if refs:          # device outputs stay alive (no buffer/event release while later batches run)
+                keep.append(r)
+            else:
+                jax.block_until_ready(r)
+                gc.collect()
+            return r
+        WJ.synth_dense = wrap
     sync = os.environ.get("M2FS_SYNC_EACH_BATCH") == "1"
     if sync:  # block on every batch's outputs before the next dispatch
         orig = WJ.synth_dense
@@ -83,6 +98,9 @@ def child(noise, n_events, repeat):
 
 def run_case(name, noise, repeat, env_extra, n_events, timeout):
     env = dict(os.environ, **env_extra)
+    if env_extra.get("M2FS_CPU_THREADS"):   # XLA host threads and the PJRT client to one core
+        env["XLA_FLAGS"] = (env.get("XLA_FLAGS", "") + " --xla_cpu_multi_thread_eigen=false").strip()
+        env["OMP_NUM_THREADS"] = "1"
     t0 = time.perf_counter()
     try:
         p = subprocess.run([sys.executable, __file__, "--child", str(noise), "--events", str(n_events), "--repeat",
