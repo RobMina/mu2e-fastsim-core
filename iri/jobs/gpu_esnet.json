@@ -1,0 +1,22 @@
+{
+  "name": "mu2efastsim-gpu",
+  "container": {
+    "image": "ghcr.io/robmina/mu2e-fastsim:${ESNET_IMAGE_TAG}"
+  },
+  "directory": "${ESNET_WORK}/gpu",
+  "stdout_path": "${ESNET_WORK}/gpu/gpu.out",
+  "stderr_path": "${ESNET_WORK}/gpu/gpu.err",
+  "resources": {
+    "node_count": 1,
+    "process_count": 1,
+    "cpu_cores_per_process": 3,
+    "gpu_cores_per_process": 1,
+    "memory": 12884901888
+  },
+  "attributes": {
+    "duration": 2400,
+    "queue_name": "default",
+    "account": "hackathon2610-project",
+    "custom_attributes": {}
+  }
+}
