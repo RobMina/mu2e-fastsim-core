@@ -18,6 +18,8 @@ G=$D/geometry
 O=${OUT:-$D/bench/eaf_p2_$(date +%Y%m%d_%H%M%S)}; mkdir -p "$O" || exit 4
 { hostname; git -C "$M2FS_CODE" log -1 --format="umbrella %h"; git -C "$M2FS_CODE/crv" log -1 --format="crv %h"
   nvidia-smi --query-gpu=name,memory.total,power.limit,clocks.max.sm --format=csv,noheader 2>/dev/null || echo "no nvidia-smi"
+  nvidia-smi -L 2>/dev/null   # lists MIG devices when the session gets a slice
+  "$PY" -c "import jax; d=jax.devices()[0]; print('jax memory_stats', {k: v for k, v in (d.memory_stats() or {}).items() if 'limit' in k})" 2>/dev/null
   "$PY" -c "import jax; print('jax', jax.__version__, jax.devices())"; } | tee "$O/env.txt"
 if [ -z "${CPU:-}" ] && ! grep -q -i cuda "$O/env.txt"; then echo "JAX sees no GPU: start the session with the A100 profile"; exit 5; fi
 shards=("$@"); [ ${#shards[@]} -eq 0 ] && shards=("$D"/g4ref_v1_tables/crvsteps.001400_000000{11,12,13}.root)
