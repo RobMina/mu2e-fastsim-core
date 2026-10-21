@@ -29,7 +29,8 @@ CASES = [  # name, noise, repeat, extra env
     ("noise1_x3_serialize", 1, 3, {"UR_L0_SERIALIZE": "2"}),
     ("noise1_x3_host_key", 1, 3, {"M2FS_HOST_KEY": "1"}),
     ("noise1_x3_single_key", 1, 3, {"M2FS_SINGLE_KEY": "1"}),
-]
+] + [(f"stress_noise1_x5_r{i}", 1, 5, {}) for i in range(8)] + [(f"stress_fused_x5_r{i}", 1, 5, {"M2FS_FORCE_FUSED": "1"})
+                                                              for i in range(4)]
 
 
 def child(noise, n_events, repeat):
@@ -39,6 +40,9 @@ def child(noise, n_events, repeat):
     cfg = waveform.WaveformConfig()
     row, t, q, tdc0 = repro._charges(n_events, 20261021)
     Q = {"row": row, "time": t, "charge": q}
+    if os.environ.get("M2FS_FORCE_FUSED") == "1" and hasattr(WJ, "SPLIT_NOISE"):
+        WJ.SPLIT_NOISE = False
+    print("split_noise", getattr(WJ, "_split_noise", lambda: None)(), flush=True)
     sync = os.environ.get("M2FS_SYNC_EACH_BATCH") == "1"
     if sync:  # block on every batch's outputs before the next dispatch
         orig = WJ.synth_dense
