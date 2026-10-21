@@ -124,82 +124,7 @@ T python -m crvfastsim v4sipm "$L/steps.root" --jax --no-stock --seed @p_seed@ -
 APPTAINER_RUNTIME = {"a": 'A() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }\n',
                      "t": 'T() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L -B "$L" -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }'}
 
-# Tasks on Mu2e-internal inputs read in place (G4 gen shards, the tier-1b library, CRVCalib/CRVPhoton CSVs under
-# @fnal_data@): only on an endpoint that mounts that storage (EAF; `endpoint.fnal_data`). Elsewhere the kit refuses them
-# at check and submit: those inputs may not be copied off site except copy-compute-delete, which these tasks do not do.
-_FNAL_INPUTS = """D=@fnal_data@
-G=$D/geometry; LIB=$D/tier1b_v7/lib_prod_as_20files.root
-CAL=$G/crvcalib_sim_best_v1_5_run1400.csv; DEVF=$G/crvphoton_sim_best_v1_5_run1400.csv
-for f in "$LIB" "$CAL" "$DEVF"; do [ -r "$f" ] || { echo "missing $f"; exit 3; }; done
-"""
-
-TASKS.update({
-    # the whole fast chain on real CRY gen shards (runchain: transport -> tier 1b -> photons -> SiPM -> waveforms ->
-    # pulses -> coincidences), JAX on the GPU; clusters per generated event per sector type vs the stock chain's
-    "chain": Task(
-        params=("shards", "max_events", "seed"),
-        metrics=("events_with_steps_per_s", "ms_per_event_with_steps", "generated_events", "events_with_steps",
-                 "clusters_per_generated_EX", "clusters_per_generated_T1", "clusters_per_generated_T2",
-                 "clusters_per_generated_M", "max_abs_cluster_rate_rel"),
-        resources=Resources(cores=8, mem_gb=32, gpus=1, gpu_type="a100", minutes=60),
-        body=_COMMON + _TABLES.replace("@tables@", "LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root")
-        + _FNAL_INPUTS + """GEN=(); REF=()
-N=@p_shards@; [ "$N" -ge 1 ] && [ "$N" -le 10 ] || { echo "shards must be 1..10 (held-out G4 shards 11-20)"; exit 2; }
-for i in $(seq 11 $((10 + N))); do   # stock chain (G4 + digi + reco) on the same shards: the V2 reference tables
-  GEN+=("$D/g4ref_v1_tables/gen.001400_000000$i.root"); r="$D/v2_fastC_v1/ref.001400_000000$i.root"
-  [ -r "$r" ] && REF+=("$r"); done
-T python -m crvfastsim runchain "${GEN[@]}" --library "$LIB" --calib "$CAL" --deviation "$DEVF" --jax \
-  --max-events @p_max_events@ --seed @p_seed@ ${REF:+--compare "${REF[@]}"} --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1 || exit 6
-""" + _METRICS.replace("@metrics_py@", """j = load("chain/runchain_stats.json")
-T = j["timers"]; nev = max(T.get("events_with_steps", 1), 1)
-work = sum(v for k, v in T.items() if k.endswith("_s") and k != "setup_s")
-m.update(events_with_steps_per_s=nev / max(work, 1e-9), ms_per_event_with_steps=1e3 * work / nev,
-         generated_events=j["generated_events"], events_with_steps=nev)
-for k, v in j.get("clusters_per_generated", {}).items():
-    m["clusters_per_generated_" + k] = v
-ref = j.get("clusters_per_generated_ref")
-if ref:
-    m["max_abs_cluster_rate_rel"] = max(abs(j["clusters_per_generated"].get(k, 0.0) / v - 1) for k, v in ref.items() if v)""")),
-    # regression set on the endpoint (veto plan E-P6): unit tests, V4 photons and SiPM (JAX and fused device), the
-    # reco reproducibility check (R5/P6: same seed bit-identical, CPU vs GPU statistical) and the chain on one shard;
-    # regression_pass = 1 only if every part passes
-    "regression": Task(
-        params=("events", "seed"),
-        metrics=("pytest_failed", "v4_photons_pass", "v4_sipm_jax_pass", "v4_sipm_device_pass", "repro_bit_identical",
-                 "repro_cpu_gpu_statistical", "chain_ok", "regression_pass"),
-        resources=Resources(cores=8, mem_gb=32, gpus=1, gpu_type="a100", minutes=90),
-        body=_COMMON + _TABLES.replace("@tables@", "LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root")
-        + _FNAL_INPUTS + """T python -m pytest -q -p no:cacheprovider crv/tests core/tests > "$M2FS_OUT/pytest.txt" 2>&1
-T python -m crvfastsim.response.synthsteps --events @p_events@ --seed @p_seed@ --out "$L/steps.root" > "$M2FS_OUT/steps.txt" 2>&1 || exit 6
-T python -m crvfastsim v4photons "$L/steps.root" --jax --no-stock --seed @p_seed@ --outdir "$M2FS_OUT/v4ph" > "$M2FS_OUT/v4ph.txt" 2>&1
-T python -m crvfastsim v4sipm "$L/steps.root" --jax --no-stock --seed @p_seed@ --outdir "$M2FS_OUT/v4si_jax" > "$M2FS_OUT/v4si_jax.txt" 2>&1
-T python -m crvfastsim v4sipm "$D/g4ref_v1_tables/crvsteps.001400_00000012.root" --device --no-stock --seed @p_seed@ \
-  --calib "$CAL" --deviation "$DEVF" --outdir "$M2FS_OUT/v4si_dev" > "$M2FS_OUT/v4si_dev.txt" 2>&1
-A python -m crvfastsim reco-repro synthetic --max-events 5000 --outdir "$M2FS_OUT/repro_gpu" > "$M2FS_OUT/repro_gpu.txt" 2>&1
-RX=$(ls "$M2FS_OUT"/repro_gpu/repro_*.npz 2>/dev/null | head -1)
-JAX_PLATFORMS=cpu A python -m crvfastsim reco-repro synthetic --max-events 5000 --outdir "$M2FS_OUT/repro_cpu" ${RX:+--against "$RX"} > "$M2FS_OUT/repro_cpu.txt" 2>&1
-T python -m crvfastsim runchain "$D/g4ref_v1_tables/gen.001400_00000011.root" --library "$LIB" --calib "$CAL" --deviation "$DEVF" \
-  --jax --max-events 10000 --seed @p_seed@ --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1
-find "$M2FS_OUT" -name '*.npz' -delete
-""" + _METRICS.replace("@metrics_py@", """import re
-txt = open(os.path.join(o, "pytest.txt")).read() if os.path.exists(os.path.join(o, "pytest.txt")) else ""
-fm = re.search(r"(\\d+) failed", txt); pm = re.search(r"(\\d+) passed", txt)
-m["pytest_failed"] = float(fm.group(1)) if fm else (0.0 if pm else 1.0)
-for key, f in (("v4_photons_pass", "v4ph/v4photons_stats.json"), ("v4_sipm_jax_pass", "v4si_jax/v4sipm_stats.json"),
-               ("v4_sipm_device_pass", "v4si_dev/v4sipm_stats.json")):
-    j = load(f); m[key] = 1.0 if j and j.get("pass") else 0.0
-g, c = load("repro_gpu/repro_stats.json"), load("repro_cpu/repro_stats.json")
-m["repro_bit_identical"] = 1.0 if g and g.get("pass_bit_identical") else 0.0
-m["repro_cpu_gpu_statistical"] = 1.0 if c and c.get("pass_statistical") else 0.0
-ch = load("chain/runchain_stats.json")
-m["chain_ok"] = 1.0 if ch and ch.get("clusters_per_generated") else 0.0
-m["regression_pass"] = float(m["pytest_failed"] == 0 and all(m[k] == 1.0 for k in (
-    "v4_photons_pass", "v4_sipm_jax_pass", "v4_sipm_device_pass", "repro_bit_identical", "repro_cpu_gpu_statistical", "chain_ok")))""")),
-})
-
-FNAL_TASKS = {"chain", "regression"}
-
-TABLE_TASKS = {"response_bench", "v4_response", "chain", "regression"}   # stage Mu2e-internal tables: cleanup record required
+TABLE_TASKS = {"response_bench", "v4_response"}   # tasks that stage Mu2e-internal tables: cleanup record required
 
 
 def _arg(v) -> str:
@@ -233,18 +158,12 @@ class FastsimKit:
 
     def render(self, params: Dict[str, Any]) -> Tuple[str, Resources]:
         t = self._task(params)
-        fnal = getattr(self.ep, "fnal_data", None)
-        if params["task"] in FNAL_TASKS and not fnal:
-            raise ValueError(f"fastsimkit: task {params['task']!r} reads Mu2e-internal inputs in place and needs an "
-                             f"endpoint that mounts FNAL storage (eaf); {getattr(self.ep, 'name', '?')!r} does not")
         rt = self.ep.runtime() if hasattr(self.ep, "runtime") else APPTAINER_RUNTIME
         body = t.body.replace("@runtime_a@", rt["a"]).replace("@runtime_t@", rt["t"])
         subs = {"sif": shlex.quote(self.sif), **{f"p_{k}": shlex.quote(_arg(params[k])) for k in t.params}}
-        if fnal:
-            subs["fnal_data"] = shlex.quote(fnal)
         for k, v in subs.items():
             body = body.replace(f"@{k}@", v)
-        if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@", "@runtime_", "@fnal_data@")):
+        if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@", "@runtime_")):
             raise ValueError(f"fastsimkit: unfilled placeholder in task {params['task']!r}")
         return body, t.resources
 
@@ -289,8 +208,6 @@ class FastsimKit:
         if self._task_of(handle) in TABLE_TASKS and not (self.out_root / handle / "out" / "cleanup.txt").exists():
             raise ValueError(f"fastsimkit: {handle!r} staged Mu2e-internal tables but wrote no cleanup record")
         metrics = {k: float(v) for k, v in json.loads(mpath.read_text()).items()}
-        if hasattr(self.ep, "after_results"):      # EAF: launch the next queued point, or stop an idle server
-            self.ep.after_results(handle)
         return {"metrics": metrics,
                 "files": [{"name": p.name, "uri": p.resolve().as_uri(), "kind": "text"} for p in files
                           if p.suffix in (".json", ".txt", ".out", ".log")],
