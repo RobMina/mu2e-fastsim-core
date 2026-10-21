@@ -3,7 +3,8 @@
 # Submits kpp_reco_uva.sh, streams the Mu2e-internal reference file GPVM -> laptop pipe -> UVA compute-node tmpfs
 # (srun --overlap into the running job; never on /scratch or the laptop disk), waits for the job, copies the outputs
 # (stats only) to the GPVM data area and deletes them on UVA.
-# usage: kpp_stream_uva.sh [gpvm] [job script dir on UVA] [reference files on the GPVM ...]
+# usage: [JOB=kpp_reco_uva.sh] [EXPORTS=VAR=v,VAR2=w] [SBATCH_OPTS=...] kpp_stream_uva.sh [gpvm] [job dir on UVA] [files on the GPVM ...]
+# (EXPORTS is passed to sbatch --export: commas separate variables, so a value cannot contain one; RUNS="1 4" works)
 set -euo pipefail
 G=${1:-mu2egpvm03}
 JD=${2:-mu2e/fastsim_uva}
@@ -13,7 +14,8 @@ U=${UVA_HOST:-uva-hpc}
 F=/scratch/ram2aq/mu2efastsim
 DEST=/exp/mu2e/data/users/ram2aq/crv_fastsim/reco_ref/checks_uva
 NAME=$(basename "${SRCS[0]}")
-J=$(ssh "$U" "mkdir -p $F/kpp && cd $JD && sbatch --parsable --export=ALL,NAME=$NAME kpp_reco_uva.sh" </dev/null)
+JOB=${JOB:-kpp_reco_uva.sh}
+J=$(ssh "$U" "mkdir -p $F/kpp && cd $JD && sbatch --parsable ${SBATCH_OPTS:-} --export='ALL,NAME=$NAME${EXPORTS:+,$EXPORTS}' $JOB" </dev/null)
 JID=${J%%;*}; echo "job $JID"
 until INBOX=$(ssh "$U" "cat $F/kpp/inbox_$JID 2>/dev/null" </dev/null) && [ -n "$INBOX" ]; do
   st=$(ssh "$U" "squeue -h -j $JID -o %T" </dev/null || true)
@@ -30,6 +32,7 @@ for SRC in "${SRCS[@]}"; do
 done
 ssh "$U" "srun --jobid=$JID --overlap -N1 -n1 --mem=0 -w $HOST touch $L/ready" </dev/null
 while [ -n "$(ssh "$U" "squeue -h -j $JID -o %T" </dev/null)" ]; do sleep 60; done
+ssh "$U" "cp $F/kpp/slurm-$JID.out $O/slurm.out 2>/dev/null; rm -f $F/kpp/slurm-$JID.out" </dev/null
 ssh "$U" "sacct -j $JID -X -o JobID,Elapsed,State,ExitCode; tail -n 25 $O/run.log | cut -c1-400" </dev/null
 ssh "$U" "tar -C $O -cf - ." </dev/null | ssh "$G" "mkdir -p $DEST/$JID && tar -C $DEST/$JID -xf - && ls $DEST/$JID"
 ssh "$U" "rm -rf $O" </dev/null; echo "outputs in $G:$DEST/$JID; removed $O"
