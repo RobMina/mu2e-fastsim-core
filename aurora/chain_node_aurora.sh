@@ -13,10 +13,12 @@
 # (--reco-cpu), 8 cores per process (0 and 52 reserved). Inputs: CRY gen tables (one per process, cycled), the tier-1b
 # library, CRVCalib/CRVPhoton CSVs, GDML: all streamed by kpp_stream.sh into tmpfs and deleted on exit (the lookup
 # tables come from CVMFS, also into tmpfs). Never on Flare; per-shard JSONs and the merge go back to the GPVM.
-# usage (from the laptop): EXTRA_V=NPROC=12,MAXEV=50000 kpp_stream.sh mu2egpvm03 chain_node_aurora.sh <files...>
+# usage (from the laptop): EXTRA_V=NPROC=12,RUNS=1 kpp_stream.sh mu2egpvm03 chain_node_aurora.sh <files...>
+# (RUNS: space-separated files-per-process passes; qsub -v cannot carry spaces or commas, so set RUNSFILE instead)
 PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
 F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
 FL=$F; V=$FL/venv/bin/python; CODE=$FL/code; NP=${NPROC:-12}; MAXEV=${MAXEV:-}
+[ -n "${RUNSFILE:-}" ] && RUNS=$(cat $RUNSFILE)
 umask 077
 O=$FL/bench/chain_$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O; chmod 700 $O
 exec > >(tee "$O/run.log") 2>&1
@@ -48,16 +50,21 @@ GEN=($(ls $L/gen.*.root)); LIB=$(ls $L/lib*.root | head -1); CAL=$(ls $L/crvcali
 DEV=$(ls $L/crvphoton*.csv 2>/dev/null | head -1); GD=$(ls $L/*.gdml | head -1)
 echo "gen files ${#GEN[@]}; library $(basename $LIB); calib $(basename $CAL); gdml $(basename $GD)"
 cores() { local i=$1; [ $i -lt 6 ] && echo "$((1+8*i))-$((8+8*i))" || echo "$((53+8*(i-6)))-$((60+8*(i-6)))"; }
-t0=$(date +%s.%N); pids=()
-for i in $(seq 0 $((NP-1))); do
-  g=${GEN[$((i % ${#GEN[@]}))]}
-  ZE_AFFINITY_MASK=$i taskset -c $(cores $i) $V -m crvfastsim runchain $g --library $LIB --calib $CAL ${DEV:+--deviation $DEV} \
-    --gdml $GD --jax --reco-cpu --seed $((20261021+i)) ${MAXEV:+--max-events $MAXEV} --emit $O/shard_$i.json \
-    --outdir $O/p$i > $O/p$i.txt 2>&1 & pids+=($!)
+# RUNS: files per process for each pass (e.g. "1 4"); each pass is a separate node-wide measurement on the same inputs
+for FPP in ${RUNS:-1}; do
+  R=$O/fpp$FPP; mkdir -p $R
+  t0=$(date +%s.%N); pids=()
+  for i in $(seq 0 $((NP-1))); do
+    fl=(); for k in $(seq 0 $((FPP-1))); do fl+=(${GEN[$(((i*FPP+k) % ${#GEN[@]}))]}); done
+    ZE_AFFINITY_MASK=$i taskset -c $(cores $i) $V -m crvfastsim runchain "${fl[@]}" --library $LIB --calib $CAL \
+      ${DEV:+--deviation $DEV} --gdml $GD --jax --reco-cpu --seed $((20261021+i)) ${MAXEV:+--max-events $MAXEV} \
+      --emit $R/shard_$i.json --outdir $R/p$i > $R/p$i.txt 2>&1 & pids+=($!)
+  done
+  rc=0; for p in "${pids[@]}"; do wait $p || rc=$((rc+1)); done
+  WALL=$(awk -v a=$t0 -v b=$(date +%s.%N) 'BEGIN{printf "%.1f", b-a}')
+  echo "== pass files/process=$FPP: processes $NP, failed $rc, wall ${WALL} s"
+  for i in $(seq 0 $((NP-1))); do [ -f $R/shard_$i.json ] || { echo "-- p$i failed:"; grep -m3 -E "Error|Fatal|die:" $R/p$i.txt | cut -c1-250; }; done
+  $V -m crvfastsim runchain-merge "$R/shard_*.json" --wall $WALL --outdir $R/merge 2>&1 | \
+    grep -E '"(shards|generated_events|events_with_steps|wall_s|slowest_shard_wall_s|accepted_events_per_node_hour)"'
 done
-rc=0; for p in "${pids[@]}"; do wait $p || rc=$((rc+1)); done
-WALL=$(awk -v a=$t0 -v b=$(date +%s.%N) 'BEGIN{printf "%.1f", b-a}')
-echo "processes done: $NP, failed: $rc, wall ${WALL} s"
-for i in $(seq 0 $((NP-1))); do [ -f $O/shard_$i.json ] || { echo "-- p$i failed:"; grep -m3 -E "Error|Fatal|die:" $O/p$i.txt | cut -c1-250; }; done
-$V -m crvfastsim runchain-merge "$O/shard_*.json" --wall $WALL --outdir $O/merge 2>&1 | grep -v "^wrote"
 echo "outdir $O"; echo exit=0
