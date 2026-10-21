@@ -14,17 +14,17 @@ import subprocess
 import sys
 import time
 
-STRESS = [  # name, noise, extra env; each run R times with repeat 5
+STRESS = [  # name, noise, extra env; each run R times with repeat 5 (250 batches of 2,000 rows per synthesis)
     ("noise0", 0, {}),
     ("noise1", 1, {}),
+    ("noise1_batch10k", 1, {"M2FS_BATCH": "10000"}),
+    ("noise1_batch50k", 1, {"M2FS_BATCH": "50000"}),
+    ("noise1_batch250k", 1, {"M2FS_BATCH": "250000"}),
+    ("noise0_batch50k", 0, {"M2FS_BATCH": "50000"}),
+    ("noise1_cl_cleanup_1", 1, {"UR_L0_COMMANDLISTS_CLEANUP_THRESHOLD": "1"}),
+    ("noise1_icl_event_cleanup_1", 1, {"UR_L0_IMMEDIATE_COMMANDLISTS_EVENT_CLEANUP_THRESHOLD": "1"}),
+    ("noise1_big_event_pool", 1, {"UR_L0_MAX_NUMBER_OF_EVENTS_PER_EVENT_POOL": "65536"}),
     ("noise1_single_thread_mode", 1, {"UR_L0_SINGLE_THREAD_MODE": "1"}),
-    ("noise1_hold_lock", 1, {"UR_L0_QUEUE_FINISH_HOLD_LOCK": "1"}),
-    ("noise1_sync_blocking", 1, {"UR_L0_QUEUE_SYNCHRONIZE_NON_BLOCKING": "0"}),
-    ("noise1_batch_completions_off", 1, {"UR_L0_IMMEDIATE_COMMANDLISTS_BATCH_EVENT_COMPLETIONS": "0"}),
-    ("noise1_no_copy_engine", 1, {"UR_L0_USE_COPY_ENGINE": "0"}),
-    ("noise1_device_scope_events", 1, {"UR_L0_DEVICE_SCOPE_EVENTS": "1"}),
-    ("noise1_one_cpu_thread", 1, {"M2FS_CPU_THREADS": "1"}),
-    ("noise1_gc_each_batch", 1, {"M2FS_GC_EACH_BATCH": "1"}),
     ("noise1_keep_refs", 1, {"M2FS_KEEP_REFS": "1"}),
 ]
 CASES = [(f"{n}_r{r}", z, 5, e) for n, z, e in STRESS for r in range(3)]
@@ -88,7 +88,8 @@ def child(noise, n_events, repeat):
     hs = []
     t0 = time.perf_counter()
     for r in range(repeat):
-        out = RC._synth_jax_batched(WJ, Q, tdc0, cfg, 2000, noise=cfg.noise if noise else 0.0, seed=7 + r)
+        out = RC._synth_jax_batched(WJ, Q, tdc0, cfg, int(os.environ.get("M2FS_BATCH", 2000)),
+                                    noise=cfg.noise if noise else 0.0, seed=7 + r)
         h = hashlib.sha256(out["adc"].tobytes()).hexdigest()[:16]
         hs.append(h)
     dt = time.perf_counter() - t0
