@@ -1,0 +1,187 @@
+"""fastsimkit: the Mu2eBO evaluator-contract kit for the fast chain on a compute endpoint.
+
+Contract (Mu2eBO core/contract.py): submit(name, params, files, inputs) -> {"handle": name};
+status(handle) -> {"state", "message", "poll_ms", "progress"}; results(handle) -> {"metrics", "files", "metadata"};
+check, describe, cancel. One BO point = one job: the kit renders a job body from a task template and the point's
+params, submits it through an endpoint (``mu2efastsim.endpoints``), and on completion fetches ``out/`` and reads
+``out/metrics.json`` (a flat {name: number} map written by the task). Tasks are templates in TASKS; a task names its
+resources, the params it accepts and the metrics it returns.
+
+Run as an MCP stdio server (``python -m mu2efastsim.endpoints.kit``) for a kits.toml entry, or use FastsimKit directly.
+Environment: FASTSIMKIT_ENDPOINT (default uva), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
+FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_SIF (image path on the site).
+"""
+from __future__ import annotations
+
+import json
+import os
+import shlex
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+from . import EndpointError, Resources, get
+
+VERSION = "1"
+POLL_MS = 60_000
+
+
+@dataclass(frozen=True)
+class Task:
+    params: Tuple[str, ...]
+    metrics: Tuple[str, ...]
+    resources: Resources
+    body: str           # bash; @sif@ and @p_<param>@ are substituted (shell-quoted); writes $M2FS_OUT/metrics.json
+
+
+_COMMON = """module load apptainer >/dev/null 2>&1
+M2FS_OUT=$(readlink -f "$M2FS_OUT")   # /scratch is a symlink on UVA: bind the real path
+A() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }
+echo "host $(hostname) job ${SLURM_JOB_ID:-none} out $M2FS_OUT"; nvidia-smi -L
+A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend() != 'gpu')" || { echo "JAX not on the GPU"; exit 5; }
+"""
+
+TASKS: Dict[str, Task] = {
+    # synthetic CRV reco chain throughput: a smoke task for the endpoint (no Mu2e-internal input)
+    "reco_bench": Task(
+        params=("events", "seed"), metrics=("events_per_s", "first_call_s", "events"),
+        resources=Resources(cores=8, mem_gb=48, gpus=1, gpu_type="a100", minutes=30),
+        body=_COMMON + """A python -m crvfastsim reco-bench synthetic --stage chain --max-events @p_events@ --length 12 \\
+  --batch 65536 --repeat 3 --seed @p_seed@ --outdir "$M2FS_OUT/bench" > "$M2FS_OUT/bench.txt" 2>&1 || exit 6
+A python - "$M2FS_OUT" <<'EOF'
+import glob, json, sys
+j = json.load(open(sorted(glob.glob(sys.argv[1] + "/bench/*.json"))[-1]))
+def find(d, k):
+    if isinstance(d, dict):
+        if k in d and isinstance(d[k], (int, float)): return d[k]
+        for v in d.values():
+            r = find(v, k)
+            if r is not None: return r
+    return None
+m = {k: float(find(j, k)) for k in ("events_per_s", "first_call_s", "events") if find(j, k) is not None}
+json.dump(m, open(sys.argv[1] + "/metrics.json", "w"))
+EOF
+"""),
+}
+
+
+class FastsimKit:
+    def __init__(self, endpoint=None, state_dir: str | Path | None = None, sif: str | None = None):
+        root = Path(state_dir or os.environ.get("FASTSIMKIT_STATE_DIR", "~/.mu2efastsim/kit")).expanduser()
+        self.out_root = root / "out"
+        self.out_root.mkdir(parents=True, exist_ok=True)
+        self.sif = sif or os.environ.get("FASTSIMKIT_SIF", "/scratch/ram2aq/mu2efastsim/mu2efastsim.sif")
+        self.ep = endpoint or get(os.environ.get("FASTSIMKIT_ENDPOINT", "uva"), state_dir=root / "jobs",
+                                  max_su_per_job=float(os.environ.get("FASTSIMKIT_MAX_SU_PER_JOB", "500")))
+
+    @staticmethod
+    def _task(params: Dict[str, Any]) -> Task:
+        name = params.get("task")
+        if name not in TASKS:
+            raise ValueError(f"fastsimkit: unknown task {name!r}; choose from {sorted(TASKS)}")
+        t = TASKS[name]
+        extra = set(params) - set(t.params) - {"task"}
+        missing = set(t.params) - set(params)
+        if extra or missing:
+            raise ValueError(f"fastsimkit: task {name!r} takes {list(t.params)}; extra {sorted(extra)}, "
+                             f"missing {sorted(missing)}")
+        return t
+
+    def render(self, params: Dict[str, Any]) -> Tuple[str, Resources]:
+        t = self._task(params)
+        subs = {"sif": shlex.quote(self.sif), **{f"p_{k}": shlex.quote(str(params[k])) for k in t.params}}
+        body = t.body
+        for k, v in subs.items():
+            body = body.replace(f"@{k}@", v)
+        if "@p_" in body or "@sif@" in body:
+            raise ValueError(f"fastsimkit: unfilled placeholder in task {params['task']!r}")
+        return body, t.resources
+
+    # -- contract ------------------------------------------------------------------------------------------------
+    def check(self, name, params, files, inputs) -> Dict[str, Any]:
+        try:
+            self.render(params)
+        except ValueError as e:
+            return {"ok": False, "message": str(e)}
+        return {"ok": True, "message": ""}
+
+    def submit(self, name, params, files, inputs) -> Dict[str, Any]:
+        if files or inputs:
+            raise ValueError("fastsimkit: files and inputs are not supported yet (tasks take params only)")
+        script, res = self.render(params)
+        try:
+            self.ep.submit(name, script, res)
+        except EndpointError as e:
+            raise ValueError(str(e))
+        return {"handle": name}
+
+    def status(self, handle) -> Dict[str, Any]:
+        s = self.ep.status(handle)
+        return {"state": s.state, "message": f"{s.site_state} {s.message}".strip(),
+                "poll_ms": POLL_MS if s.state == "working" else 0, "progress": None}
+
+    def results(self, handle) -> Dict[str, Any]:
+        s = self.ep.status(handle)
+        if s.state != "completed":
+            raise ValueError(f"fastsimkit: {handle!r} is {s.state}, not completed")
+        files = self.ep.fetch(handle, self.out_root)
+        mpath = self.out_root / handle / "out" / "metrics.json"
+        if not mpath.exists():
+            raise ValueError(f"fastsimkit: {handle!r} wrote no out/metrics.json")
+        metrics = {k: float(v) for k, v in json.loads(mpath.read_text()).items()}
+        return {"metrics": metrics,
+                "files": [{"name": p.name, "uri": p.resolve().as_uri(), "kind": "text"} for p in files
+                          if p.suffix in (".json", ".txt", ".out", ".log")],
+                "metadata": {"endpoint": self.ep.name, "job_id": s.job_id, "site_state": s.site_state}}
+
+    def cancel(self, handle) -> Dict[str, Any]:
+        return {"state": self.ep.cancel(handle)}
+
+    @staticmethod
+    def describe() -> Dict[str, Any]:
+        params = sorted({"task", *[p for t in TASKS.values() for p in t.params]})
+        metrics = sorted({m for t in TASKS.values() for m in t.metrics})
+        return {"params": params, "metrics": metrics, "accepts_lists": False}
+
+
+def make_server(kit: FastsimKit):
+    from mcp.server.mcpserver import MCPServer
+
+    server = MCPServer(name="fastsimkit", version=VERSION)
+
+    @server.tool(structured_output=True)
+    def submit(name: str, params: dict[str, Any], files: list[dict[str, Any]],
+               inputs: list[dict[str, Any]]) -> dict[str, Any]:
+        return kit.submit(name, params, files, inputs)
+
+    @server.tool(structured_output=True)
+    def status(handle: str) -> dict[str, Any]:
+        return kit.status(handle)
+
+    @server.tool(structured_output=True)
+    def results(handle: str) -> dict[str, Any]:
+        return kit.results(handle)
+
+    @server.tool(structured_output=True)
+    def check(name: str, params: dict[str, Any], files: list[dict[str, Any]],
+              inputs: list[dict[str, Any]]) -> dict[str, Any]:
+        return kit.check(name, params, files, inputs)
+
+    @server.tool(structured_output=True)
+    def describe() -> dict[str, Any]:
+        return kit.describe()
+
+    @server.tool(structured_output=True)
+    def cancel(handle: str) -> dict[str, Any]:
+        return kit.cancel(handle)
+
+    return server
+
+
+def main() -> int:
+    make_server(FastsimKit()).run("stdio")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

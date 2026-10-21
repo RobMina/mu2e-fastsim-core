@@ -1,0 +1,35 @@
+# UVA Rivanna/Afton endpoint
+
+Slurm jobs for the fast chain on UVA HPC (allocation `ldmxuva`; reachable only from the UVA network or the UVA Anywhere
+VPN, key-based `ssh uva-hpc`). Image: `mu2efastsim.sif` built on an `interactive` node with `container/build.sh`
+(gpu variant keeps cuDNN and cuFFT). Measured cost ~60 SU per A100-hour (8-16 cores).
+
+| Script | What | Inputs |
+|---|---|---|
+| `probe_uva.sh` | node/storage/network inventory, venv JAX on one A100, pytest, synthetic benches, R5 | synthetic |
+| `validate_uva.sh` | inside the SIF: pytest, R5, V4 photons and SiPM with the real CRVConditions v6_0 tables (copy-compute-delete to tmpfs), real-table and chain benches; aborts if JAX is not on the GPU. Other GPUs: `sbatch --gres=gpu:b200:1 validate_uva.sh` | real tables, fetched per job from the CVMFS Stratum-1 |
+| `kpp_reco_uva.sh` + `kpp_stream_uva.sh` | V-R2 and V-R3 on KPP data run 124155: the laptop streams the reference file GPVM -> job tmpfs with `srun --overlap`; outputs go back to the GPVM and are removed on UVA | Mu2e-internal reference file, never on UVA disk |
+
+## Mu2eBO kit (`mu2efastsim.endpoints`)
+
+`endpoints/slurm_ssh.py` is the endpoint adapter (submit / status / fetch / cancel over `ssh` + Slurm, local job records,
+per-job SU cap); `endpoints/kit.py` is `fastsimkit`, an MCP server speaking the Mu2eBO evaluator contract on top of it
+(one BO point = one job; tasks in `TASKS`, each writing `out/metrics.json`). A Mu2eBO `kits.toml` entry:
+
+```toml
+[fastsimkit]
+command = ["${PYTHON}", "-m", "mu2efastsim.endpoints.kit"]
+env_passthrough = ["SSH_AUTH_SOCK"]
+set = { PYTHONPATH = "${M2FS_CODE}/core:${M2FS_CODE}/crv:${M2FS_CODE}/tracker", FASTSIMKIT_ENDPOINT = "uva", FASTSIMKIT_STATE_DIR = "${DATA_ROOT}/fastsimkit", FASTSIMKIT_MAX_SU_PER_JOB = "200" }
+study_keys = {}
+fixed_keys = { task = "string", events = "number", seed = "number" }
+accepts_lists = false
+check = true
+executors = ["grid"]
+launch_stagger_s = 0
+poll_s = [30.0, 300.0]
+timeouts = { start = 60, submit = 120, status = 120, results = 900, check = 30, describe = 30, cancel = 120 }
+```
+
+The kit host must reach UVA by ssh (laptop on the UVA network/VPN today; FNAL hosts cannot). `tests/test_endpoints.py`
+runs the adapter and the kit against a fake Slurm site.

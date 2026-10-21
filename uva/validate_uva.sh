@@ -49,7 +49,7 @@ A python -m crvfastsim v4photons $L/steps.root --jax --no-stock --seed 1 --outdi
 A python -m crvfastsim v4sipm $L/steps.root --jax --no-stock --seed 1 --outdir $OR/v4si_jax > $O/v4si_jax.txt 2>&1; echo "v4sipm jax exit=$?"
 A python -m crvfastsim v4sipm $L/steps.root --device --no-stock --seed 1 --outdir $OR/v4si_dev > $O/v4si_dev.txt 2>&1; echo "v4sipm device exit=$?"
 for f in v4ph v4si_jax v4si_dev; do echo "-- $f"; tail -8 $O/$f.txt | cut -c1-300; done
-sec "response bench, real table 3200_0 and real photon map, one A100"
+sec "response bench, real table 3200_0 and real photon map, one GPU"
 B="python -m crvfastsim.response.bench --repeat 3"
 A $B --table 3200_0 --rows 1000000 --numpy-rows 0 --seed 20261021 --outdir $OR/ph_real > $O/ph_real.txt 2>&1; echo "photons $(tail -1 $O/ph_real.txt)"
 A $B --stage sipm --photon-map $L/photonMap.root --sipms 500000 --numpy-sipms 0 --seed 20261121 --outdir $OR/si_real > $O/si_real.txt 2>&1
