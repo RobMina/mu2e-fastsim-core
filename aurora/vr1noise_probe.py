@@ -14,23 +14,20 @@ import subprocess
 import sys
 import time
 
-CASES = [  # name, noise, repeat, extra env
-    ("noise0", 0, 1, {}),
-    ("noise1", 1, 1, {}),
-    ("noise1_x3", 1, 3, {}),
-    ("noise0_x3", 0, 3, {}),
-    ("noise1_x2", 1, 2, {}),
-    ("noise1_x3_sync_dispatch", 1, 3, {"M2FS_SYNC_EACH_BATCH": "1"}),
-    ("noise1_x3_no_immediate_cl", 1, 3, {"UR_L0_USE_IMMEDIATE_COMMANDLISTS": "0"}),
-    ("noise1_x3_no_event_cache", 1, 3, {"UR_L0_DISABLE_EVENTS_CACHING": "1"}),
-    ("noise1_x3_no_reuse_events", 1, 3, {"UR_L0_REUSE_DISCARDED_EVENTS": "0"}),
-    ("noise1_x3_no_counter_events", 1, 3, {"UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS": "0"}),
-    ("noise1_x3_no_inorder_lists", 1, 3, {"UR_L0_USE_DRIVER_INORDER_LISTS": "0"}),
-    ("noise1_x3_serialize", 1, 3, {"UR_L0_SERIALIZE": "2"}),
-    ("noise1_x3_host_key", 1, 3, {"M2FS_HOST_KEY": "1"}),
-    ("noise1_x3_single_key", 1, 3, {"M2FS_SINGLE_KEY": "1"}),
-] + [(f"stress_noise1_x5_r{i}", 1, 5, {}) for i in range(8)] + [(f"stress_fused_x5_r{i}", 1, 5, {"M2FS_FORCE_FUSED": "1"})
-                                                              for i in range(4)]
+STRESS = [  # name, noise, extra env; each run R times with repeat 5
+    ("noise0", 0, {}),
+    ("noise1", 1, {}),
+    ("noise1_rbg", 1, {"JAX_DEFAULT_PRNG_IMPL": "rbg"}),
+    ("noise1_unsafe_rbg", 1, {"JAX_DEFAULT_PRNG_IMPL": "unsafe_rbg"}),
+    ("noise1_host_eps", 1, {"M2FS_HOST_EPS": "1"}),
+    ("noise1_serialize", 1, {"UR_L0_SERIALIZE": "2"}),
+    ("noise1_no_immediate_cl", 1, {"UR_L0_USE_IMMEDIATE_COMMANDLISTS": "0"}),
+    ("noise1_no_event_cache", 1, {"UR_L0_DISABLE_EVENTS_CACHING": "1"}),
+    ("noise1_no_counter_events", 1, {"UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS": "0"}),
+    ("noise1_prealloc", 1, {"XLA_PYTHON_CLIENT_PREALLOCATE": "true"}),
+    ("noise1_sync_all", 1, {"M2FS_SYNC_ALL": "1"}),
+]
+CASES = [(f"{n}_r{r}", z, 5, e) for n, z, e in STRESS for r in range(3)]
 
 
 def child(noise, n_events, repeat):
@@ -43,6 +40,20 @@ def child(noise, n_events, repeat):
     if os.environ.get("M2FS_FORCE_FUSED") == "1" and hasattr(WJ, "SPLIT_NOISE"):
         WJ.SPLIT_NOISE = False
     print("split_noise", getattr(WJ, "_split_noise", lambda: None)(), flush=True)
+    if os.environ.get("M2FS_HOST_EPS") == "1":   # noise drawn with numpy on the host (diagnostic only: other bits)
+        WJ.SPLIT_NOISE = True
+        hr = np.random.default_rng(1)
+        WJ._normal = lambda key, shape: jax.device_put(hr.standard_normal(shape))
+    if os.environ.get("M2FS_SYNC_ALL") == "1":   # every jax op blocks (no async dispatch at all)
+        jax.config.update("jax_disable_jit", False)
+        os.environ["M2FS_SYNC_EACH_BATCH"] = "1"
+        _orig_pk = WJ.pack
+
+        def pk_sync(*a, **k):
+            r = _orig_pk(*a, **k)
+            jax.effects_barrier()
+            return r
+        WJ.pack = pk_sync
     sync = os.environ.get("M2FS_SYNC_EACH_BATCH") == "1"
     if sync:  # block on every batch's outputs before the next dispatch
         orig = WJ.synth_dense
