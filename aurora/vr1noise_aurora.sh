@@ -10,7 +10,7 @@
 #PBS -o m2fs_vr1n.out
 # Aurora: isolate the V-R1 noise-on runtime abort with vr1noise_probe.py on synthetic charges (no Mu2e input), on one
 # tile. BRANCH (optional) tests a crv branch first on PYTHONPATH, as devfix_aurora.sh.
-# usage: qsub [-v M2FS_FLARE=...,EV=events,CASES=a,b,BRANCH=...] vr1noise_aurora.sh
+# usage: qsub [-v M2FS_FLARE=...,EV=events,CASES=one_case,CASEFILE=file_with_a,b,c,BRANCH=...] vr1noise_aurora.sh (qsub -v cannot carry commas)
 PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
 F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
 FL=$F; V=$FL/venv/bin/python; CODE=$FL/code
@@ -28,5 +28,5 @@ fi
 echo "host=$(hostname) job=${PBS_JOBID:-none} out=$O"; git log -1 --format="umbrella %h"; git -C $CRV log -1 --format="crv %h %s"
 export PYTHONPATH=$CRV:$CODE/core LD_LIBRARY_PATH=$FL/venv/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} MU2E_SEARCH_PATH=$FL/offline_data
 export JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false MPLBACKEND=Agg ZE_FLAT_DEVICE_HIERARCHY=FLAT ZE_AFFINITY_MASK=0
-taskset -c 1-51 $V $CODE/core/aurora/vr1noise_probe.py --events ${EV:-25000} --timeout 500 ${CASES:+--cases $CASES} --out $O/probe.json
+taskset -c 1-51 $V $CODE/core/aurora/vr1noise_probe.py --events ${EV:-25000} --timeout 500 ${CASES:+--cases $CASES} ${CASEFILE:+--cases $(cat $CASEFILE)} --out $O/probe.json
 echo "outdir $O"; echo exit=0
