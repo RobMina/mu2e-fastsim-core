@@ -41,6 +41,32 @@ echo "host $(hostname) job ${SLURM_JOB_ID:-none} out $M2FS_OUT"; nvidia-smi -L
 A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend() != 'gpu')" || { echo "JAX not on the GPU"; exit 5; }
 """
 
+# Copy-compute-delete (E9): the CRVConditions tables are Mu2e-internal. They are fetched per job from the CVMFS
+# Stratum-1 into node tmpfs (mode 700), used through CRVFS_LOOKUP_DIR and deleted by an EXIT trap; the deletion is
+# recorded in out/cleanup.txt (the kit refuses results without it). Never on shared or scratch storage.
+_TABLES = """L=${TMPDIR:-/tmp}/crvfs_kit_$$; mkdir -p "$L"; chmod 700 "$L"
+trap 'rm -rf "$L"; echo "$(date -Is) $(hostname) deleted $L" >> "$M2FS_OUT/cleanup.txt"' EXIT
+trap 'exit 143' TERM INT
+find ${TMPDIR:-/tmp} -maxdepth 1 -name 'crvfs_*' -user "$USER" ! -path "$L" -exec rm -rf {} + 2>/dev/null
+T() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L -B "$L" -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }
+for f in @tables@; do
+  T python -m mu2efastsim.cvmfsget mu2e.opensciencegrid.org /DataFiles/CRVConditions/v6_0/$f "$L/$f" >/dev/null || { echo "fetch $f failed"; exit 3; }
+done
+ls -la "$L"
+"""
+
+# json -> metrics.json helper run inside the image: flattens chosen keys of the task's JSON outputs
+_METRICS = """A python - "$M2FS_OUT" <<'EOF'
+import json, os, sys
+o = sys.argv[1]; m = {}
+def load(p):
+    p = os.path.join(o, p)
+    return json.load(open(p)) if os.path.exists(p) else None
+@metrics_py@
+json.dump({k: float(v) for k, v in m.items()}, open(os.path.join(o, "metrics.json"), "w"))
+EOF
+"""
+
 TASKS: Dict[str, Task] = {
     # synthetic CRV reco chain throughput: a smoke task for the endpoint (no Mu2e-internal input)
     "reco_bench": Task(
@@ -62,7 +88,39 @@ m = {k: float(find(j, k)) for k in ("events_per_s", "first_call_s", "events") if
 json.dump(m, open(sys.argv[1] + "/metrics.json", "w"))
 EOF
 """),
+    # CRV response throughput with the REAL v6_0 lookup table and photon map (copy-compute-delete)
+    "response_bench": Task(
+        params=("rows", "sipms", "seed"),
+        metrics=("photon_rows_per_s", "photons_per_row", "sipms_per_s", "charges_per_photon"),
+        resources=Resources(cores=8, mem_gb=64, gpus=1, gpu_type="a100", minutes=30),
+        body=_COMMON + _TABLES.replace("@tables@", "LookupTable_3200_0 photonMap.root") + """B="python -m crvfastsim.response.bench --repeat 3"
+T $B --table 3200_0 --rows @p_rows@ --numpy-rows 0 --seed @p_seed@ --outdir "$M2FS_OUT/ph" > "$M2FS_OUT/ph.txt" 2>&1 || exit 6
+T $B --stage sipm --photon-map "$L/photonMap.root" --sipms @p_sipms@ --numpy-sipms 0 --seed @p_seed@ --outdir "$M2FS_OUT/si" > "$M2FS_OUT/si.txt" 2>&1 || exit 6
+""" + _METRICS.replace("@metrics_py@", """ph, si = load("ph/photon_bench.json"), load("si/sipm_bench.json")
+m.update(photon_rows_per_s=ph["jax_rows_per_s"], photons_per_row=ph["jax_photons_per_row"],
+         sipms_per_s=si["jax_sipms_per_s"], charges_per_photon=si["jax_charges_per_photon"])""")),
+    # V4: JAX photon and SiPM response vs the numpy ports on synthetic muon CrvSteps, real tables; pass flags per
+    # check and the largest |relative PE deviation| over the four sector groups
+    "v4_response": Task(
+        params=("events", "seed"),
+        metrics=("v4_photons_pass", "v4_sipm_pass", "v4_photons_max_abs_pe_rel", "v4_sipm_max_abs_pe_rel",
+                 "v4_photons_jax_s", "v4_sipm_jax_s"),
+        resources=Resources(cores=16, mem_gb=96, gpus=1, gpu_type="a100", minutes=45),
+        body=_COMMON + _TABLES.replace("@tables@", "LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root")
+        + """T python -m crvfastsim.response.synthsteps --events @p_events@ --seed @p_seed@ --out "$L/steps.root" > "$M2FS_OUT/steps.txt" 2>&1 || exit 6
+T python -m crvfastsim v4photons "$L/steps.root" --jax --no-stock --seed @p_seed@ --outdir "$M2FS_OUT/v4ph" > "$M2FS_OUT/v4ph.txt" 2>&1
+T python -m crvfastsim v4sipm "$L/steps.root" --jax --no-stock --seed @p_seed@ --outdir "$M2FS_OUT/v4si" > "$M2FS_OUT/v4si.txt" 2>&1
+""" + _METRICS.replace("@metrics_py@", """for key, f in (("v4_photons", "v4ph/v4photons_stats.json"), ("v4_sipm", "v4si/v4sipm_stats.json")):
+    j = load(f)
+    if j is None:
+        m[key + "_pass"] = 0.0
+        continue
+    m[key + "_pass"] = 1.0 if j.get("pass") else 0.0
+    m[key + "_max_abs_pe_rel"] = max(abs(g["pe_per_sipm_rel"]) for g in j["groups"].values())
+    m[key + "_jax_s"] = j.get("time_s_fast", 0.0)""")),
 }
+
+TABLE_TASKS = {"response_bench", "v4_response"}   # tasks that stage Mu2e-internal tables: cleanup record required
 
 
 class FastsimKit:
@@ -93,7 +151,7 @@ class FastsimKit:
         body = t.body
         for k, v in subs.items():
             body = body.replace(f"@{k}@", v)
-        if "@p_" in body or "@sif@" in body:
+        if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@")):
             raise ValueError(f"fastsimkit: unfilled placeholder in task {params['task']!r}")
         return body, t.resources
 
@@ -105,6 +163,10 @@ class FastsimKit:
             return {"ok": False, "message": str(e)}
         return {"ok": True, "message": ""}
 
+    def _task_of(self, handle) -> str:
+        p = self.out_root.parent / "tasks" / f"{handle}.txt"
+        return p.read_text().strip() if p.exists() else ""
+
     def submit(self, name, params, files, inputs) -> Dict[str, Any]:
         if files or inputs:
             raise ValueError("fastsimkit: files and inputs are not supported yet (tasks take params only)")
@@ -113,6 +175,9 @@ class FastsimKit:
             self.ep.submit(name, script, res)
         except EndpointError as e:
             raise ValueError(str(e))
+        tdir = self.out_root.parent / "tasks"
+        tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / f"{name}.txt").write_text(params["task"])
         return {"handle": name}
 
     def status(self, handle) -> Dict[str, Any]:
@@ -128,6 +193,8 @@ class FastsimKit:
         mpath = self.out_root / handle / "out" / "metrics.json"
         if not mpath.exists():
             raise ValueError(f"fastsimkit: {handle!r} wrote no out/metrics.json")
+        if self._task_of(handle) in TABLE_TASKS and not (self.out_root / handle / "out" / "cleanup.txt").exists():
+            raise ValueError(f"fastsimkit: {handle!r} staged Mu2e-internal tables but wrote no cleanup record")
         metrics = {k: float(v) for k, v in json.loads(mpath.read_text()).items()}
         return {"metrics": metrics,
                 "files": [{"name": p.name, "uri": p.resolve().as_uri(), "kind": "text"} for p in files

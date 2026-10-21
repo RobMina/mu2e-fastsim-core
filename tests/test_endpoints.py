@@ -147,3 +147,24 @@ def test_rendered_jobs_are_valid_bash(site_ep, tmp_path):
         script = ep.header("t", res) + body
         r = subprocess.run(["bash", "-n"], input=script.encode(), capture_output=True)
         assert r.returncode == 0, (name, r.stderr.decode())
+
+
+def test_table_tasks_stage_and_delete(site_ep, tmp_path):
+    from mu2efastsim.endpoints.kit import TABLE_TASKS, TASKS
+    _, ep = site_ep
+    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
+    for name in TABLE_TASKS:
+        params = {"task": name, **{p: 1 for p in TASKS[name].params}}
+        body, _ = kit.render(params)
+        assert "cvmfsget" in body and "trap 'rm -rf" in body and "cleanup.txt" in body
+        code = "\n".join(line.split("#")[0] for line in body.splitlines())
+        assert "chmod 700" in code and "/scratch" not in code   # tables never on scratch
+
+
+def test_results_require_cleanup_record_for_table_tasks(site_ep, tmp_path):
+    site, ep = site_ep
+    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
+    kit.submit("r1.resp", {"task": "response_bench", "rows": 10, "sipms": 10, "seed": 1}, [], [])
+    site.finish(ep.state.get("r1.resp").job_id)
+    with pytest.raises(ValueError, match="cleanup record"):
+        kit.results("r1.resp")       # the fake site's tar has no out/cleanup.txt

@@ -14,7 +14,8 @@ VPN, key-based `ssh uva-hpc`). Image: `mu2efastsim.sif` built on an `interactive
 
 `endpoints/slurm_ssh.py` is the endpoint adapter (submit / status / fetch / cancel over `ssh` + Slurm, local job records,
 per-job SU cap); `endpoints/kit.py` is `fastsimkit`, an MCP server speaking the Mu2eBO evaluator contract on top of it
-(one BO point = one job; tasks in `TASKS`, each writing `out/metrics.json`). A Mu2eBO `kits.toml` entry:
+(one BO point = one job; tasks in `TASKS`, each writing `out/metrics.json`: `reco_bench`, `response_bench`,
+`v4_response`; the last two stage the real tables copy-compute-delete and must leave `out/cleanup.txt`). A Mu2eBO `kits.toml` entry:
 
 ```toml
 [fastsimkit]
@@ -22,7 +23,7 @@ command = ["${PYTHON}", "-m", "mu2efastsim.endpoints.kit"]
 env_passthrough = ["SSH_AUTH_SOCK"]
 set = { PYTHONPATH = "${M2FS_CODE}/core:${M2FS_CODE}/crv:${M2FS_CODE}/tracker", FASTSIMKIT_ENDPOINT = "uva", FASTSIMKIT_STATE_DIR = "${DATA_ROOT}/fastsimkit", FASTSIMKIT_MAX_SU_PER_JOB = "200" }
 study_keys = {}
-fixed_keys = { task = "string", events = "number", seed = "number" }
+fixed_keys = { task = "string", events = "number", seed = "number", rows = "number", sipms = "number" }
 accepts_lists = false
 check = true
 executors = ["grid"]
