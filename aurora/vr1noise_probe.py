@@ -18,14 +18,17 @@ CASES = [  # name, noise, repeat, extra env
     ("noise0", 0, 1, {}),
     ("noise1", 1, 1, {}),
     ("noise1_x3", 1, 3, {}),
-    ("noise1_no_immediate_cl", 1, 1, {"UR_L0_USE_IMMEDIATE_COMMANDLISTS": "0"}),
-    ("noise1_immediate_cl", 1, 1, {"UR_L0_USE_IMMEDIATE_COMMANDLISTS": "1"}),
-    ("noise1_no_event_cache", 1, 1, {"UR_L0_DISABLE_EVENTS_CACHING": "1"}),
-    ("noise1_no_reuse_events", 1, 1, {"UR_L0_REUSE_DISCARDED_EVENTS": "0"}),
-    ("noise1_no_counter_events", 1, 1, {"UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS": "0"}),
-    ("noise1_no_inorder_lists", 1, 1, {"UR_L0_USE_DRIVER_INORDER_LISTS": "0"}),
-    ("noise1_serialize", 1, 1, {"UR_L0_SERIALIZE": "2"}),
-    ("noise1_sync_dispatch", 1, 1, {"M2FS_SYNC_EACH_BATCH": "1"}),
+    ("noise0_x3", 0, 3, {}),
+    ("noise1_x2", 1, 2, {}),
+    ("noise1_x3_sync_dispatch", 1, 3, {"M2FS_SYNC_EACH_BATCH": "1"}),
+    ("noise1_x3_no_immediate_cl", 1, 3, {"UR_L0_USE_IMMEDIATE_COMMANDLISTS": "0"}),
+    ("noise1_x3_no_event_cache", 1, 3, {"UR_L0_DISABLE_EVENTS_CACHING": "1"}),
+    ("noise1_x3_no_reuse_events", 1, 3, {"UR_L0_REUSE_DISCARDED_EVENTS": "0"}),
+    ("noise1_x3_no_counter_events", 1, 3, {"UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS": "0"}),
+    ("noise1_x3_no_inorder_lists", 1, 3, {"UR_L0_USE_DRIVER_INORDER_LISTS": "0"}),
+    ("noise1_x3_serialize", 1, 3, {"UR_L0_SERIALIZE": "2"}),
+    ("noise1_x3_host_key", 1, 3, {"M2FS_HOST_KEY": "1"}),
+    ("noise1_x3_single_key", 1, 3, {"M2FS_SINGLE_KEY": "1"}),
 ]
 
 
@@ -43,6 +46,15 @@ def child(noise, n_events, repeat):
         def synced(*a, **k):
             return jax.block_until_ready(orig(*a, **k))
         WJ.synth_dense = synced
+    if os.environ.get("M2FS_HOST_KEY") == "1" or os.environ.get("M2FS_SINGLE_KEY") == "1":
+        # build each batch key on the host (numpy threefry-free path) instead of fold_in on the device
+        orig2 = WJ.synth_dense
+        single = os.environ.get("M2FS_SINGLE_KEY") == "1"
+
+        def hostkey(T, W, n, ts, keep, tmpl, key, *rest):
+            k = np.asarray(jax.device_get(key)) if not single else np.array([0, 7], np.uint32)
+            return orig2(T, W, n, ts, keep, tmpl, jax.device_put(k), *rest)
+        WJ.synth_dense = hostkey
     hs = []
     t0 = time.perf_counter()
     for r in range(repeat):
