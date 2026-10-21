@@ -17,7 +17,7 @@ from . import world as world_mod
 
 
 def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, band_h=None, band_p=None,
-                 band_chic2=None, band_thn=None, tail_k=None):
+                 band_chic2=None, band_thn=None, tail_k=None, band_len=None):
     """Move each track from o to the plane y = y_plane through a uniform slab, with PDG (eq. 34.20) correlated MSC.
 
     Two independent transverse planes per track: y_plane displacement and angle from (z1, z2) unit Gaussians,
@@ -32,6 +32,9 @@ def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, ba
     band_chic2, band_thn [N, nbands] (world_loss return_tail=True): add the single-scattering tail
     (single_scatter_tail) above the column's Gaussian core, each tail scatter at its band's lever arm. tail_k: the
     tail threshold in units of the column theta0 (None = where the tail density crosses the Gaussian, tail_threshold).
+
+    band_len [N, nbands] (opt-in, world_loss return_band_len=True): path length of each band; each band's scattering is
+    then spread uniformly along it (adds w_k len_k^2 / 12 to the displacement variance) instead of sitting at its centre.
     """
     L = (o[:, 1] - y_plane) / -d[:, 1]
     th0 = eloss.highland_theta0(p, L / x0_mm if x_over_x0 is None else x_over_x0)
@@ -54,6 +57,8 @@ def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, ba
         s_tt = th0 ** 2
         s_yt = s_tt * (w * band_h).sum(1)
         s_yy = s_tt * (w * band_h ** 2).sum(1)
+        if band_len is not None:   # within-band spread of the scattering points (uniform along the band path)
+            s_yy = s_yy + s_tt * (w * band_len ** 2).sum(1) / 12.0
         a = np.sqrt(s_tt)
         b = np.sqrt(np.clip(s_yy - s_yt ** 2 / np.maximum(s_tt, 1e-30), 0, None))
         z_t = rng.standard_normal((len(p), 2))
@@ -246,7 +251,7 @@ def slab_loss(rng, mat, p, length):
     return np.where(stopped, tk0, np.minimum(lost, tk0))
 
 
-def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False, return_tail=False):
+def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False, return_tail=False, return_band_len=False):
     """Material between o and the plane y = band_edges_y[-1] (tracks going down).
 
     band_edges_y: decreasing heights [mm]; the last is the plane. Returns (|p| at the plane, total x/X0, survived?,
@@ -256,6 +261,7 @@ def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False, return_ta
     scattering where it happens (material close above the plane scatters with a short arm, distant air with a long one).
     return_tail=True appends the single-scattering inputs per band: nuclear chi_c^2 [N, nbands] at the band's mean |p| and the
     chi_c^2-weighted form-factor angle theta_nuclear (msc_to_plane band_chic2, band_thn).
+    return_band_len=True appends the path length in each band [N, nbands] (msc_to_plane band_len), after the tail outputs.
     """
     edges = np.asarray(band_edges_y, float)
     y_plane = edges[-1]
@@ -267,6 +273,7 @@ def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False, return_ta
     band_p = np.zeros((len(p), nb))
     band_chic2 = np.zeros((len(p), nb))
     band_thw = np.zeros((len(p), nb))
+    band_len = np.zeros((len(p), nb))
     x0_air = eloss.radiation_length_mm(materials.AIR)
     for k in range(nb):
         y_top, y_bot = edges[k], edges[k + 1]
@@ -296,6 +303,7 @@ def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False, return_ta
         loss += eloss.dedx_restricted(materials.AIR, np.maximum(p - loss, 1.0), 1e9) * air
         band_xx0[:, k] += air / x0_air
         band_h[:, k] = L - 0.5 * (s_top + s_bot)
+        band_len[:, k] = seg
         band_p[:, k] = 0.5 * (_p_after(p, loss_in) + _p_after(p, loss))
         if return_tail:
             pm = np.maximum(band_p[:, k], 1.0)
@@ -310,6 +318,8 @@ def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False, return_ta
         out += (band_p,)
     if return_tail:
         out += (band_chic2, np.where(band_chic2 > 0, band_thw / np.maximum(band_chic2, 1e-300), 1.0))
+    if return_band_len:
+        out += (band_len,)
     return out
 
 

@@ -211,3 +211,21 @@ def test_mpv_fit_is_stable_where_argmax_is_not():
     err = np.array([f[1] for f in fits])
     # the same distribution four times: fitted MPVs agree within their errors, and errors are ~2-4 %
     assert np.all(np.isfinite(mu)) and np.std(mu) < 3 * err.mean() and np.all(err / mu < 0.05)
+
+
+def test_band_len_spreads_displacement_and_lowers_correlation():
+    rng = np.random.default_rng(3)
+    n = 200000
+    o = np.tile([0.0, 10000.0, 0.0], (n, 1))
+    d = np.tile([0.0, -1.0, 0.0], (n, 1))
+    p = np.full(n, 1000.0)
+    bxx0 = np.full((n, 1), 5.0)
+    bh = np.full((n, 1), 5000.0)
+    blen = np.full((n, 1), 10000.0)
+    _, d0, _ = T.msc_to_plane(np.random.default_rng(3), o, d, p, 0.0, 1e9, 5.0, bxx0, bh)
+    e1, d1, _ = T.msc_to_plane(np.random.default_rng(3), o, d, p, 0.0, 1e9, 5.0, bxx0, bh, band_len=blen)
+    assert np.allclose(d0, d1)                                     # angles unchanged
+    y, t = e1[:, 0], np.arctan(d1[:, 0] / -d1[:, 1])
+    rho = np.corrcoef(y, t)[0, 1]
+    assert abs(rho - np.sqrt(3) / 2) < 0.01                        # one band spanning the whole path = uniform slab
+    assert abs(y.std() / (t.std() * 10000.0) - 1 / np.sqrt(3)) < 0.01
