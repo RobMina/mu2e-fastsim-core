@@ -112,3 +112,13 @@ tools/esnet.sh alloc                        # node-hours and bytes used / alloca
 # image jobs: ESNET_IMAGE_TAG=<sha7>-cpu with jobs/bench_esnet.json + scripts/bench_esnet.sh (real tables -> pod /tmp,
 # deleted on exit) or jobs/repro_esnet.json + scripts/repro_esnet.sh (R5/P6 npz under the download cap)
 ```
+
+### Globus (ESnet collection)
+
+`tools/globus_esnet.py` (globus-sdk >= 4; on the laptop the conda env `/opt/miniconda3/envs/globus_env`) moves files
+larger than the 2 MiB IRI download cap. Login once: `login-url` prints a URL, the user logs in and pastes the code to
+`login-code <CODE>`; refresh tokens go to `~/.globus/mu2efastsim_transfer_tokens.json` (mode 600). Then `ls esnet /`,
+`search <text>`, `transfer <src> <path> <dst> <path> [--recursive]`, `task <id> --wait 600`. The ESnet collection
+(`a4d0333d-b9f0-442f-8d14-7d3a32596cb9`, a GCS v5 guest collection) has no `data_access` scope; access needs membership
+in the Globus group "AmSC Genesis Hackathon 2610" (`54b528d9-c94d-11f1-aa50-0efff525aa9b`), otherwise every call answers
+`PermissionDenied: No effective ACL rules`.
