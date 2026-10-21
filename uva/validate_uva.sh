@@ -17,13 +17,13 @@ umask 077
 O=$F/probe/valid_$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-none}; mkdir -p $O
 exec > >(tee "$O/run.log") 2>&1
 module load apptainer >/dev/null 2>&1
-L=${TMPDIR:-/tmp}/crvfs_valid_$$; mkdir -p $L; chmod 700 $L
+L=${TMPDIR:-/tmp}/crvfs_valid_j${SLURM_JOB_ID:-0}_$$; mkdir -p $L; chmod 700 $L
 trap 'rm -rf $L; echo "$(date -Is) $(hostname) deleted $L" >> $O/cleanup.txt; echo "deleted $L"' EXIT   # file record: tee dies with the job
 trap 'exit 143' TERM INT
 OR=$(readlink -f $O)
 A() { apptainer exec --nv --cleanenv --env CRVFS_LOOKUP_DIR=$L,CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} -B $L -B $OR --pwd /opt/mu2e-fastsim "$SIF" "$@"; }
 sec() { echo; echo "==== $*"; }
-ls -d ${TMPDIR:-/tmp}/crvfs_* 2>/dev/null | grep -v "^$L$" | sed 's/^/stale (removing): /'; find ${TMPDIR:-/tmp} -maxdepth 1 -name 'crvfs_*' -user $USER ! -path $L -exec rm -rf {} + 2>/dev/null
+for d in ${TMPDIR:-/tmp}/crvfs_*_j*; do [ -d "$d" ] && [ "$d" != "$L" ] && [ -O "$d" ] || continue; j=${d##*_j}; j=${j%%_*}; squeue -h -j "$j" -o %i 2>/dev/null | grep -q . || rm -rf "$d"; done   # only dirs of finished jobs: several jobs share a node
 sec "node, image"; echo "host=$(hostname) job=${SLURM_JOB_ID:-none} out=$O sif=$SIF $(apptainer --version)"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 t0=$SECONDS; A python -c "import jax; print('jax', jax.__version__, jax.devices())"; echo "cold start $((SECONDS-t0)) s"

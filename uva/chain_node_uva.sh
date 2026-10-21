@@ -23,15 +23,17 @@ umask 077
 O=$F/kpp/chain_$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-none}; mkdir -p $O
 exec > >(tee "$O/run.log") 2>&1
 module load apptainer >/dev/null 2>&1
-L=${TMPDIR:-/tmp}/crvfs_chain_$$; mkdir -p $L; chmod 700 $L
+L=${TMPDIR:-/tmp}/crvfs_chain_j${SLURM_JOB_ID:-0}_$$; mkdir -p $L; chmod 700 $L
 trap 'rm -rf $L; echo "$(date -Is) $(hostname) deleted $L" >> $O/cleanup.txt; echo "deleted $L"' EXIT
 trap 'exit 143' TERM INT
-find ${TMPDIR:-/tmp} -maxdepth 1 -name 'crvfs_*' -user $USER ! -path $L -exec rm -rf {} + 2>/dev/null
+for d in ${TMPDIR:-/tmp}/crvfs_*_j*; do [ -d "$d" ] && [ "$d" != "$L" ] && [ -O "$d" ] || continue; j=${d##*_j}; j=${j%%_*}; squeue -h -j "$j" -o %i 2>/dev/null | grep -q . || rm -rf "$d"; done   # only dirs of finished jobs: several jobs share a node
 OR=$(readlink -f $O)
-CODE=$F/chain_code
-if [ -d $CODE/.git ]; then git -C $CODE fetch -q origin && git -C $CODE checkout -q $REF && git -C $CODE reset -q --hard origin/$REF 2>/dev/null || git -C $CODE checkout -q $REF
-else git clone -q https://github.com/RobMina/mu2e-fastsim.git $CODE && git -C $CODE checkout -q $REF; fi
-git -C $CODE submodule update -q --init --recursive
+CODE=${CODE_DIR:-$F/chain_code}
+if [ "${CODE_READY:-0}" != 1 ]; then   # array runs prepare one checkout on the login node and set CODE_READY=1
+  if [ -d $CODE/.git ]; then git -C $CODE fetch -q origin && git -C $CODE checkout -q $REF && git -C $CODE reset -q --hard origin/$REF 2>/dev/null || git -C $CODE checkout -q $REF
+  else git clone -q https://github.com/RobMina/mu2e-fastsim.git $CODE && git -C $CODE checkout -q $REF; fi
+  git -C $CODE submodule update -q --init --recursive
+fi
 CR=$(readlink -f $CODE)
 A() { apptainer exec --nv --cleanenv --env "PYTHONPATH=$CR/crv:$CR/core:$CR/tracker,CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,$1" \
       -B $L -B $OR -B $CR --pwd $CR "$SIF" "${@:2}"; }
@@ -42,8 +44,9 @@ A CUDA_VISIBLE_DEVICES=0 python -c "import jax, sys, crvfastsim, os; print(jax.d
   || { echo "JAX not on the GPU or code not importable: abort"; exit 5; }
 A CUDA_VISIBLE_DEVICES= python -m crvfastsim runchain-merge --help >/dev/null 2>&1 || { echo "runchain-merge missing in $REF"; exit 5; }
 echo "$(hostname) $L $O" > $F/kpp/inbox_${SLURM_JOB_ID}
-echo "waiting for $L/ready (up to 30 min)"
+echo "waiting for $L/ready (up to 30 min)"; tw=$SECONDS
 for i in $(seq 360); do [ -f $L/ready ] && break; sleep 5; done
+echo "input wait $((SECONDS-tw)) s (charged; streaming time)"
 rm -f $F/kpp/inbox_${SLURM_JOB_ID}
 [ -f $L/ready ] || { echo "no input arrived"; exit 3; }
 for f in LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root; do
@@ -59,8 +62,10 @@ for FPP in ${RUNS:-1}; do
   t0=$(date +%s.%N); pids=()
   for i in $(seq 0 $((NP-1))); do
     fl=(); for k in $(seq 0 $((FPP-1))); do fl+=(${GEN[$(((i*FPP+k) % ${#GEN[@]}))]}); done
+    PIN=""   # one process: the Slurm cgroup already holds the job's cores (a fixed list fails on a shared node)
+    [ $NP -gt 1 ] && PIN="taskset -c $((i*CPP))-$((i*CPP+CPP-1))"   # whole-node jobs only: split the node's cores
     ( A CUDA_VISIBLE_DEVICES=$i,XLA_PYTHON_CLIENT_PREALLOCATE=false,JAX_ENABLE_X64=1 \
-        taskset -c $((i*CPP))-$((i*CPP+CPP-1)) python -m crvfastsim runchain "${fl[@]}" --library $LIB --calib $CAL \
+        $PIN python -m crvfastsim runchain "${fl[@]}" --library $LIB --calib $CAL \
         ${DEV:+--deviation $DEV} --gdml $GD --jax --seed $((20261021+i)) ${MAXEV:+--max-events $MAXEV} \
         --emit $R/shard_$i.json --outdir $R/p$i ) > $R/p$i.txt 2>&1 & pids+=($!)
   done

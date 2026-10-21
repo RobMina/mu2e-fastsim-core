@@ -19,10 +19,10 @@ umask 077
 O=$F/kpp/kpp_$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-none}; mkdir -p $O
 exec > >(tee "$O/run.log") 2>&1
 module load apptainer >/dev/null 2>&1
-L=${TMPDIR:-/tmp}/crvfs_kpp_$$; mkdir -p $L; chmod 700 $L
+L=${TMPDIR:-/tmp}/crvfs_kpp_j${SLURM_JOB_ID:-0}_$$; mkdir -p $L; chmod 700 $L
 trap 'rm -rf $L; echo "$(date -Is) $(hostname) deleted $L" >> $O/cleanup.txt; echo "deleted $L"' EXIT
 trap 'exit 143' TERM INT
-find ${TMPDIR:-/tmp} -maxdepth 1 -name 'crvfs_*' -user $USER ! -path $L -exec rm -rf {} + 2>/dev/null
+for d in ${TMPDIR:-/tmp}/crvfs_*_j*; do [ -d "$d" ] && [ "$d" != "$L" ] && [ -O "$d" ] || continue; j=${d##*_j}; j=${j%%_*}; squeue -h -j "$j" -o %i 2>/dev/null | grep -q . || rm -rf "$d"; done   # only dirs of finished jobs: several jobs share a node
 OR=$(readlink -f $O)
 A() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} -B $L -B $OR --pwd /opt/mu2e-fastsim "$SIF" "$@"; }
 echo "host=$(hostname) job=${SLURM_JOB_ID:-none} out=$O sif=$SIF"; A grep -E "umbrella|crv" /opt/mu2e-fastsim/VERSION
