@@ -10,7 +10,7 @@
 set -uo pipefail
 G=${1:-mu2egpvm03}
 N=${N:-8}; FPP=${FPP:-4}; GRES=${GRES:-gpu:a100:1}; CONSTRAINT=${CONSTRAINT:-a100}; CPUS=${CPUS:-16}
-MEM=${MEM:-110G}; WALL=${WALL:-00:45:00}; REF=${REF:-main}; MAXEV=${MAXEV:-}
+MEM=${MEM:-110G}; WALL=${WALL:-00:45:00}; REF=${REF:-main}; MAXEV=${MAXEV:-}; CRV_REF=${CRV_REF:-}   # CRV_REF: a crv branch to test
 U=${UVA_HOST:-uva-hpc}; F=/scratch/ram2aq/mu2efastsim; JD=mu2e/fastsim_uva
 D=/exp/mu2e/data/users/ram2aq/crv_fastsim
 COMMON=("$D/tier1b_v7/lib_prod_as_20files.root" "$D/geometry/crvcalib_sim_best_v1_5_run1400.csv"
@@ -19,18 +19,20 @@ NGEN=${NGEN:-20}
 TAG=array_$(date +%Y%m%d_%H%M%S)
 LOG=${LOGDIR:-$HOME/mu2e/scratch_uva}/$TAG; mkdir -p "$LOG"
 DEST=$D/reco_ref/checks_uva/$TAG
-CODE=$F/chain_code_$REF
-echo "tag $TAG: N=$N FPP=$FPP gres=$GRES constraint=$CONSTRAINT cpus=$CPUS mem=$MEM wall=$WALL ref=$REF; log $LOG"
+CODE=$F/chain_code_$REF${CRV_REF:+_crv-$CRV_REF}
+echo "tag $TAG: N=$N FPP=$FPP gres=$GRES constraint=$CONSTRAINT cpus=$CPUS mem=$MEM wall=$WALL ref=$REF crv=${CRV_REF:-pinned}; log $LOG"
 
 # one checkout for all jobs (login node: git only, no compute)
 ssh "$U" "set -e; if [ -d $CODE/.git ]; then git -C $CODE fetch -q origin; git -C $CODE checkout -q $REF; git -C $CODE reset -q --hard origin/$REF; \
   else git clone -q https://github.com/RobMina/mu2e-fastsim.git $CODE; git -C $CODE checkout -q $REF; fi; \
-  git -C $CODE submodule update -q --init --recursive; git -C $CODE log -1 --format='code %h %s' | cut -c1-100" </dev/null || exit 2
+  git -C $CODE submodule update -q --init --recursive; \
+  if [ -n '$CRV_REF' ]; then git -C $CODE/crv fetch -q origin $CRV_REF && git -C $CODE/crv checkout -q FETCH_HEAD; fi; \
+  git -C $CODE log -1 --format='code %h %s' | cut -c1-100; git -C $CODE/crv log -1 --format='crv %h %s' | cut -c1-100" </dev/null || exit 2
 
 JIDS=()
 for k in $(seq 0 $((N-1))); do
   J=$(ssh "$U" "cd $JD && sbatch --parsable -J m2fs_arr$k --gres=$GRES -C $CONSTRAINT -c $CPUS --mem=$MEM -t $WALL \
-      --export='ALL,NPROC=1,RUNS=1,CODE_DIR=$CODE,CODE_READY=1${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
+      --export='ALL,NPROC=1,RUNS=$FPP,SEED_BASE=$((20261021 + 1000*k)),CODE_DIR=$CODE,CODE_READY=1${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
   JIDS+=("${J%%;*}"); echo "job $k -> ${J%%;*}"
 done
 printf "%s\n" "${JIDS[@]}" > "$LOG/jobids.txt"
@@ -87,6 +89,6 @@ open(f"{log}/jobs.tsv", "w").write("\n".join(rows) + "\n")
 print(f"{len(rows) - 1} jobs with accounting -> {log}/jobs.tsv")
 EOF
 scp -q "$LOG/jobs.tsv" "$G:$DEST/jobs.tsv"
-ssh "$G" "cd $DEST && python3 /exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim/core/uva/throughput_uva.py jobs.tsv */fpp1/shard_0.json --out throughput.json" </dev/null \
+ssh "$G" "cd $DEST && python3 /exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim/core/uva/throughput_uva.py jobs.tsv */fpp$FPP/shard_0.json --out throughput.json" </dev/null \
   | tee "$LOG/throughput.txt"
 echo "outputs in $G:$DEST"

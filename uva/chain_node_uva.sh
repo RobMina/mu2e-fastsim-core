@@ -66,7 +66,7 @@ for FPP in ${RUNS:-1}; do
     [ $NP -gt 1 ] && PIN="taskset -c $((i*CPP))-$((i*CPP+CPP-1))"   # whole-node jobs only: split the node's cores
     ( A CUDA_VISIBLE_DEVICES=$i,XLA_PYTHON_CLIENT_PREALLOCATE=false,JAX_ENABLE_X64=1 \
         $PIN python -m crvfastsim runchain "${fl[@]}" --library $LIB --calib $CAL \
-        ${DEV:+--deviation $DEV} --gdml $GD --jax --seed $((20261021+i)) ${MAXEV:+--max-events $MAXEV} \
+        ${DEV:+--deviation $DEV} --gdml $GD --jax --seed $((${SEED_BASE:-20261021}+i)) ${MAXEV:+--max-events $MAXEV} \
         --emit $R/shard_$i.json --outdir $R/p$i ) > $R/p$i.txt 2>&1 & pids+=($!)
   done
   rc=0; for p in "${pids[@]}"; do wait $p || rc=$((rc+1)); done
