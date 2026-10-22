@@ -9,11 +9,18 @@ nothing Mu2e-internal leaves FNAL. The adapter
 * starts the server when none runs, trying slices in ``slices`` order (largest first by default; a slice that does not
   become ready within ``start_timeout_s`` counts as unavailable and its spawn is cancelled), and reports "no capacity"
   when none starts;
-* runs one job at a time (one slice per user): a submit while another job runs is refused;
+* runs one job at a time (one slice per user) and queues the rest: a submit while a job runs is recorded as queued
+  (state ``working``, message "queued") and launched, oldest first, by the next ``status`` call that finds the slice
+  free, so q points of a batch run back to back on one slice;
+* keeps the server alive while jobs run: every ``status`` call posts user activity to the hub (the idle culler counts
+  only activity) and jobs write a heartbeat; ``max_age_s`` (if the hub enforces one) refuses jobs whose wall time
+  would outlive the server, and a job that dies with its server is reported ``failed`` with that reason;
 * maps states from the files: ``job.done`` holds the exit code; no ``job.done`` and a live server is ``working``;
   no ``job.done`` and no server, or a job past its wall time, is ``failed``;
-* cancels by killing the job's process group (``job.pid``), not the server; ``stop_idle`` stops the server once no
-  job runs (the kit calls it after results, or a cron).
+* cancels by killing the job's process group (``job.pid``), not the server (a queued job is just dropped);
+* stops the server when it falls idle: ``after_results`` (the kit calls it after every results) and ``status`` stop it
+  once no job runs or waits and ``linger_s`` (default 120 s, $EAF_LINGER_S) have passed since the last job ended;
+  ``stop_idle`` does the same at once (CLI ``stop-idle``, or a cron).
 
 Configuration: ``token_file`` (default $EAF_TOKEN_FILE), ``hub`` (default https://analytics-hub.fnal.gov), ``workdir``
 (on /exp), ``state_dir`` (local job records). ``hub_client`` is injectable for tests (see FakeHub in the tests).
@@ -80,6 +87,9 @@ class HubClient:
     def stop(self) -> None:
         self.call("DELETE", f"/hub/api/users/{self.user()['name']}/server")
 
+    def user_name(self) -> str:
+        return self.user()["name"]
+
     def send(self, line: str) -> None:
         """Type one line into a new server terminal."""
         import websocket
@@ -106,14 +116,16 @@ def slice_of(options: Optional[dict]) -> str:
 
 class EAFEndpoint:
     def __init__(self, workdir: str = "/exp/mu2e/data/users/ram2aq/crv_fastsim/eafkit", code: str = CODE,
-                 venv: str = VENV, shared_prefix: str = "/exp/",
+                 venv: str = VENV, shared_prefix: str = "/exp/", fnal_data: str = "/exp/mu2e/data/users/ram2aq/crv_fastsim",
                  state_dir: str | Path = "~/.mu2efastsim/eaf", token_file: Optional[str] = None,
                  hub: str = "https://analytics-hub.fnal.gov", slices: Sequence[str] = ("4g.40gb", "2g.20gb", "1g.10gb"),
                  start_timeout_s: float = 420.0, poll_s: float = 10.0, hub_client: Optional[HubClient] = None,
+                 linger_s: Optional[float] = None, max_age_s: Optional[float] = None,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
                  name: str = "eaf", **_ignored):
         self.name = name
         self.workdir, self.code, self.venv = workdir.rstrip("/"), code.rstrip("/"), venv.rstrip("/")
+        self.fnal_data = fnal_data.rstrip("/")     # Mu2e-internal inputs read in place (kit FNAL_TASKS)
         if not self.workdir.startswith(shared_prefix):
             raise EndpointError(f"eaf: workdir must be under {shared_prefix} (shared by EAF and the GPVM)")
         bad = [s for s in slices if s not in SLICE_GB]
@@ -124,6 +136,9 @@ class EAFEndpoint:
         self.hub = hub_client or HubClient(hub, token_file or os.environ.get("EAF_TOKEN_FILE", ""))
         self.start_timeout_s, self.poll_s = start_timeout_s, poll_s
         self.clock, self.sleep = clock, sleep
+        self.linger_s = float(os.environ.get("EAF_LINGER_S", 120) if linger_s is None else linger_s)
+        env_age = os.environ.get("EAF_MAX_AGE_S")
+        self.max_age_s = float(env_age) if max_age_s is None and env_age else max_age_s
 
     # -- files on /exp -------------------------------------------------------------------------------------------
     def _dir(self, handle: str) -> Path:
@@ -136,6 +151,18 @@ class EAFEndpoint:
     # -- server --------------------------------------------------------------------------------------------------
     def _ready_server(self, resources: Resources) -> dict:
         """The running server, or start one: slices in order, skipping those too small for resources.mem_gb."""
+        s = self.hub.server()
+        if s and s.get("ready"):
+            return s
+        if s and s.get("pending") == "spawn":         # started by someone else just now: wait for it
+            t0 = self.clock()
+            while self.clock() - t0 < self.start_timeout_s:
+                self.sleep(self.poll_s)
+                s = self.hub.server()
+                if s and s.get("ready"):
+                    return s
+                if not (s and s.get("pending")):
+                    break
         s = self.hub.server()
         if s and s.get("ready"):
             return s
@@ -156,23 +183,39 @@ class EAFEndpoint:
         raise EndpointError(f"eaf: no capacity: no slice of {tried or list(self.slices)} started within "
                             f"{self.start_timeout_s:.0f} s")
 
+    def _records(self) -> List[JobRecord]:
+        return [JobRecord(**json.loads(p.read_text())) for p in sorted(self.state.root.glob("*.json"))]
+
     def _running_job(self) -> Optional[str]:
-        """Handle of a job that still runs here (one slice per user), or None."""
-        for p in sorted(self.state.root.glob("*.json")):
-            rec = JobRecord(**json.loads(p.read_text()))
-            if rec.final is None and self.status(rec.handle).state == "working":
+        """Handle of a launched job that still runs here (one slice per user), or None."""
+        for rec in self._records():
+            if rec.final is None and rec.resources.get("launched_at") and self._job_state(rec).state == "working":
                 return rec.handle
         return None
+
+    def _queue(self) -> List[JobRecord]:
+        """Jobs waiting for the slice, oldest first."""
+        q = [r for r in self._records() if r.final is None and not r.resources.get("launched_at")]
+        return sorted(q, key=lambda r: r.submitted_at)
+
+    def _server_age(self, s: dict) -> Optional[float]:
+        st = s.get("started")
+        if not st:
+            return None
+        import datetime as _dt
+        t = _dt.datetime.fromisoformat(st.replace("Z", "+00:00")).timestamp()
+        return self.clock() - t
 
     def launch_line(self, d: Path, resources: Resources) -> str:
         """The line typed into a server terminal: one detached process group (setsid), its leader's pid in job.pid
         for cancel, a watchdog for the wall time, and the exit code in job.done (143 on TERM, with a marker telling
         a cancel from a timeout)."""
-        q = {k: shlex.quote(str(d / k)) for k in ("job.sh", "job.log", "job.pid", "job.done", "timedout")}
+        q = {k: shlex.quote(str(d / k)) for k in ("job.sh", "job.log", "job.pid", "job.done", "timedout", "job.alive")}
         wall = max(1, int(resources.minutes)) * 60
         inner = (f"trap 'echo exit=143 > {q['job.done']}; exit 143' TERM; echo $$ > {q['job.pid']}; "
                  f"( sleep {wall}; echo 1 > {q['timedout']}; kill -TERM -- -$$ ) & w=$!; "
-                 f"bash {q['job.sh']}; rc=$?; kill $w 2>/dev/null; echo exit=$rc > {q['job.done']}")
+                 f"( while :; do date +%s > {q['job.alive']}; sleep 60; done ) & hb=$!; "
+                 f"bash {q['job.sh']}; rc=$?; kill $w $hb 2>/dev/null; echo exit=$rc > {q['job.done']}")
         return f"setsid nohup bash -c {shlex.quote(inner)} > {q['job.log']} 2>&1 < /dev/null &"
 
     def runtime(self) -> Dict[str, str]:
@@ -192,30 +235,79 @@ class EAFEndpoint:
         return {"a": a, "t": t}
 
     # -- interface -----------------------------------------------------------------------------------------------
+    def _lock(self):
+        """One submit/launch at a time across threads and processes (Mu2eBO runs independent steps in threads, and two
+        concurrent server starts get HTTP 500 from the hub): an flock on the state dir."""
+        import contextlib
+        import fcntl
+
+        @contextlib.contextmanager
+        def held():
+            with open(self.state.root / ".lock", "w") as fh:
+                fcntl.flock(fh, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+        return held()
+
     def submit(self, handle: str, script: str, resources: Resources) -> JobRecord:
+        with self._lock():
+            return self._submit(handle, script, resources)
+
+    def _submit(self, handle: str, script: str, resources: Resources) -> JobRecord:
         sha = spec_sha(script, resources)
         old = self.state.get(handle)
         if old is not None:
             if old.spec_sha != sha:
                 raise EndpointError(f"{handle!r} was already submitted with a different script or resources")
             return old
-        busy = self._running_job()
-        if busy:
-            raise EndpointError(f"eaf: job {busy!r} still runs (one MIG slice per user); retry after it finishes")
         if resources.gpus > 1:
             raise EndpointError("eaf: one MIG slice per user; gpus must be 0 or 1")
-        s = self._ready_server(resources)
+        if self.max_age_s and 60 * resources.minutes > self.max_age_s:
+            raise EndpointError(f"eaf: wall time {resources.minutes} min exceeds the server lifetime "
+                                f"{self.max_age_s / 60:.0f} min")
         d = self._dir(handle)
         (d / "out").mkdir(parents=True, exist_ok=True)
         os.chmod(d, 0o700)
-        q = {k: shlex.quote(str(d / k)) for k in ("job.sh", "job.log", "job.pid", "job.done")}
         header = (f"#!/bin/bash\nexport M2FS_JOB_DIR={shlex.quote(str(d))} M2FS_OUT={shlex.quote(str(d / 'out'))}\n"
                   "umask 077\nnvidia-smi -L\n")
         (d / "job.sh").write_text(header + script)
-        self.hub.send(self.launch_line(d, resources))
-        rec = JobRecord(handle, sha, "", str(d), self.clock(), dict(resources.__dict__, slice=slice_of(s.get("user_options"))))
-        self.state.put(rec)
+        rec = JobRecord(handle, sha, "", str(d), self.clock(), dict(resources.__dict__))
+        if self._running_job() or self._queue():
+            self.state.put(rec)                     # queued: launched by a later status call
+            return rec
+        self._launch(rec)                           # may raise "no capacity": nothing recorded then
         return rec
+
+    def _launch(self, rec: JobRecord) -> None:
+        res = Resources(**{k: rec.resources[k] for k in Resources.__dataclass_fields__ if k in rec.resources})
+        s = self._ready_server(res)
+        if self.max_age_s:
+            age = self._server_age(s) or 0.0
+            if age + 60 * res.minutes > self.max_age_s:
+                raise EndpointError(f"eaf: the server ({age / 60:.0f} min old) would reach its lifetime "
+                                    f"{self.max_age_s / 60:.0f} min before a {res.minutes} min job ends; retry after it stops")
+        self.hub.send(self.launch_line(Path(rec.remote_dir), res))
+        rec.resources.update(slice=slice_of(s.get("user_options")), launched_at=self.clock())
+        self.state.put(rec)
+
+    def _advance(self) -> None:
+        """Launch the oldest queued job if the slice is free (one job at a time)."""
+        with self._lock():
+            self._advance_locked()
+
+    def _advance_locked(self) -> None:
+        if self._running_job():
+            return
+        q = self._queue()
+        if not q:
+            return
+        try:
+            self._launch(q[0])
+        except EndpointError as e:              # no capacity now: stays queued, reported in its status message
+            q[0].resources["last_launch_error"] = str(e)[:200]
+            self.state.put(q[0])
 
     def _record(self, handle: str) -> JobRecord:
         rec = self.state.get(handle)
@@ -223,31 +315,62 @@ class EAFEndpoint:
             raise EndpointError(f"{self.name}: no job {handle!r}")
         return rec
 
-    def status(self, handle: str) -> JobStatus:
-        rec = self._record(handle)
+    def _job_state(self, rec: JobRecord) -> JobStatus:
+        """State of a launched job from its files and the server (no queue handling, no side effects but caching)."""
         if rec.final:
             return JobStatus(**rec.final)
-        slice_ = rec.resources.get("slice", "")
-        done = self._read(handle, "job.done")
+        slice_, t0 = rec.resources.get("slice", ""), rec.resources.get("launched_at", rec.submitted_at)
+        h = rec.handle
+        done = self._read(h, "job.done")
         if done is not None:
             code = done.strip().split("=")[-1]
-            cancelled, timedout = self._read(handle, "cancelled") is not None, self._read(handle, "timedout") is not None
+            cancelled, timedout = self._read(h, "cancelled") is not None, self._read(h, "timedout") is not None
             state = "completed" if code == "0" else ("cancelled" if cancelled and not timedout else "failed")
-            msg = "timed out (wall time)" if timedout else f"exit {code}"
-            js = JobStatus(state, msg, slice_, rec.job_id)
-        elif self.clock() - rec.submitted_at > 60 * rec.resources.get("minutes", 60) + 120:
+            js = JobStatus(state, "timed out (wall time)" if timedout else f"exit {code}", slice_, rec.job_id)
+        elif self.clock() - t0 > 60 * rec.resources.get("minutes", 60) + 120:
             js = JobStatus("failed", "no exit record after the wall time (server culled or stopped?)", slice_, rec.job_id)
-        elif self._read(handle, "job.pid") is None and self.clock() - rec.submitted_at > 120:
+        elif self._read(h, "job.pid") is None and self.clock() - t0 > 120:
             js = JobStatus("failed", "the job never started in the server terminal", slice_, rec.job_id)
         else:
             s = self.hub.server()
             if not (s and s.get("ready")):
-                js = JobStatus("failed", "the EAF server stopped before the job finished", slice_, rec.job_id)
+                alive = self._read(h, "job.alive")
+                last = f"; last heartbeat {self.clock() - float(alive):.0f} s ago" if alive and alive.strip().isdigit() else ""
+                js = JobStatus("failed", "the EAF server stopped before the job finished (culled, or stopped by hand)"
+                               + last, slice_, rec.job_id)
             else:
                 return JobStatus("working", "", slice_, rec.job_id)
         rec.final = js.__dict__.copy()
+        rec.resources["ended_at"] = self.clock()
         self.state.put(rec)
         return js
+
+    def status(self, handle: str) -> JobStatus:
+        rec = self._record(handle)
+        if rec.final:
+            return JobStatus(**rec.final)
+        self._advance()
+        rec = self._record(handle)
+        if not rec.resources.get("launched_at"):
+            ahead = [r.handle for r in self._queue()].index(handle)
+            err = rec.resources.get("last_launch_error", "")
+            return JobStatus("working", f"queued ({ahead} ahead){'; ' + err if err else ''}", "", rec.job_id)
+        js = self._job_state(rec)
+        if js.state == "working":
+            self.keepalive()
+        else:
+            self._advance()
+            self.stop_idle(linger=True)
+        return js
+
+    def keepalive(self) -> None:
+        """Tell the hub the server is in use (its idle culler counts activity, not CPU)."""
+        try:
+            import datetime as _dt
+            now = _dt.datetime.fromtimestamp(self.clock(), _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            self.hub.call("POST", f"/hub/api/users/{self.hub.user_name()}/activity", {"last_activity": now})
+        except (EndpointError, AttributeError, KeyError):
+            pass                                    # best effort: a failed ping must not fail a status call
 
     def fetch(self, handle: str, dest: Path) -> List[Path]:
         """Copy out/ and job.log into dest/<handle>/ (both are on /exp already)."""
@@ -263,7 +386,14 @@ class EAFEndpoint:
 
     def cancel(self, handle: str) -> str:
         rec = self._record(handle)
-        st = self.status(handle)
+        if rec.final:
+            return rec.final["state"]
+        if not rec.resources.get("launched_at"):            # queued: drop it
+            rec.final = JobStatus("cancelled", "cancelled while queued", "", rec.job_id).__dict__.copy()
+            rec.resources["ended_at"] = self.clock()
+            self.state.put(rec)
+            return "cancelled"
+        st = self._job_state(rec)
         if st.state != "working":
             return st.state
         pid = (self._read(handle, "job.pid") or "").strip()
@@ -273,10 +403,55 @@ class EAFEndpoint:
         self.hub.send(f"kill -TERM -- -{pid} 2>/dev/null || kill -TERM {pid}")
         return "cancelled"
 
-    def stop_idle(self) -> bool:
-        """Stop the server when no job runs; True if a stop was sent."""
-        if self._running_job():
+    def after_results(self, handle: str) -> None:
+        """Called by the kit once a job's results are read: launch the next queued job, or stop an idle server. With
+        a linger time and nothing left to run, a detached watcher stops the server once the linger has passed (the
+        engine may never call again after its last result)."""
+        self._advance()
+        if not self.stop_idle(linger=True) and self.linger_s > 0 and not (self._running_job() or self._queue()):
+            self._spawn_watcher()
+
+    def _spawn_watcher(self) -> None:
+        """Start `python -m mu2efastsim.endpoints.eaf stop-idle --wait` detached, unless one already waits."""
+        import subprocess
+        import sys
+        pidf = self.state.root / ".watcher.pid"
+        if pidf.exists():
+            try:
+                os.kill(int(pidf.read_text().strip()), 0)
+                return                                  # one is already waiting
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+        env = dict(os.environ, EAF_LINGER_S=str(self.linger_s))
+        env.setdefault("EAF_TOKEN_FILE", getattr(self.hub, "token_file", "") or "")
+        log = open(self.state.root / ".watcher.log", "a")
+        pr = subprocess.Popen([sys.executable, "-m", "mu2efastsim.endpoints.eaf", "stop-idle", "--wait",
+                               "--state-dir", str(self.state.root), "--workdir", self.workdir],
+                              stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env, start_new_session=True)
+        pidf.write_text(str(pr.pid))
+
+    def wait_and_stop(self, max_wait_s: float = 3600.0) -> bool:
+        """Sleep until linger_s after the last job ended, then stop the server if still idle (a new job resets it)."""
+        t0 = self.clock()
+        while self.clock() - t0 < max_wait_s:
+            if self._running_job() or self._queue():
+                return False                            # work arrived: its own after_results will handle the stop
+            ends = [r.resources.get("ended_at", 0.0) for r in self._records()]
+            left = self.linger_s - (self.clock() - max(ends)) if ends else 0.0
+            if left <= 0:
+                return self.stop_idle(linger=True)
+            self.sleep(min(left + 1, 60))
+        return False
+
+    def stop_idle(self, linger: bool = False) -> bool:
+        """Stop the server when no job runs or waits; with linger, only linger_s after the last job ended (so q
+        points arriving in a burst reuse the slice). True if a stop was sent."""
+        if self._running_job() or self._queue():
             return False
+        if linger:
+            ends = [r.resources.get("ended_at", 0.0) for r in self._records()]
+            if ends and self.clock() - max(ends) < self.linger_s:
+                return False
         s = self.hub.server()
         if s and (s.get("ready") or s.get("pending")):
             self.hub.stop()
@@ -290,15 +465,21 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=main.__doc__)
     ap.add_argument("cmd", choices=("server", "jobs", "stop-idle"))
     ap.add_argument("--state-dir", default=os.environ.get("FASTSIMKIT_STATE_DIR", "~/.mu2efastsim/kit") + "/jobs")
+    ap.add_argument("--workdir", default=None, help="job directories (default: the endpoint's)")
+    ap.add_argument("--wait", action="store_true", help="stop-idle: wait for the linger time first (the watcher)")
     a = ap.parse_args(argv)
-    ep = EAFEndpoint(state_dir=a.state_dir)
+    ep = EAFEndpoint(state_dir=a.state_dir, **({"workdir": a.workdir} if a.workdir else {}))
     if a.cmd == "server":
         s = ep.hub.server()
         print(json.dumps(s and {k: s.get(k) for k in ("ready", "pending", "started", "user_options")}, indent=1))
     elif a.cmd == "jobs":
-        for p in sorted(ep.state.root.glob("*.json")):
-            h = p.stem
-            print(h, ep.status(h).__dict__)
+        for rec in ep._records():
+            print(rec.handle, ep.status(rec.handle).__dict__)
+    elif a.wait:
+        try:
+            print(time.strftime("%F %T"), "watcher:", "stopped" if ep.wait_and_stop() else "not stopped (work arrived)")
+        finally:
+            (ep.state.root / ".watcher.pid").unlink(missing_ok=True)
     else:
         print("stopped" if ep.stop_idle() else "not stopped (a job runs, or no server)")
     return 0

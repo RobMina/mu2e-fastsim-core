@@ -1,5 +1,6 @@
 """EAF endpoint against a fake JupyterHub; the launch line runs for real in a local bash (no EAF, no network)."""
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -17,7 +18,7 @@ class FakeHub:
 
     def __init__(self, available=("2g.20gb",), run=True):
         self.available, self.run = set(available), run
-        self.srv, self.starts, self.stops, self.sent = None, [], 0, []
+        self.srv, self.starts, self.stops, self.sent, self.pings = None, [], 0, [], 0
 
     def server(self):
         return self.srv
@@ -30,6 +31,14 @@ class FakeHub:
     def stop(self):
         self.stops += 1
         self.srv = None
+
+    def user_name(self):
+        return "u"
+
+    def call(self, method, path, body=None):
+        if path.endswith("/activity"):
+            self.pings += 1
+        return 200, None
 
     def send(self, line):
         self.sent.append(line)
@@ -105,12 +114,15 @@ def test_failure_one_job_at_a_time_and_cancel(tmp_path):
     assert ep.status("bad").state == "failed" and "exit 3" in ep.status("bad").message
     ep.submit("long", "sleep 30\n", Resources(minutes=5))
     wait_pid(ep, "long")
-    with pytest.raises(EndpointError, match="still runs"):
-        ep.submit("other", "true\n", Resources(minutes=5))
+    ep.submit("other", "true\n", Resources(minutes=5))                 # slice busy: queued, not refused
+    st = ep.status("other")
+    assert st.state == "working" and st.message.startswith("queued")
     assert ep.cancel("long") == "cancelled"
     wait_done(ep, "long")
-    assert ep.status("long").state == "cancelled"
-    assert ep.stop_idle() and hub.srv is None                          # nothing runs: the server is stopped
+    assert ep.status("long").state == "cancelled"                      # this call also launches "other"
+    wait_done(ep, "other")
+    assert ep.status("other").state == "completed"
+    assert ep.stop_idle() and hub.srv is None                          # nothing runs or waits: the server is stopped
     assert not ep.stop_idle()                                          # and not stopped twice
 
 
@@ -155,3 +167,96 @@ def test_kit_renders_venv_runtime_for_eaf(tmp_path):
 def test_workdir_must_be_shared(tmp_path):
     with pytest.raises(EndpointError, match="shared"):
         EAFEndpoint(workdir="/tmp/x", state_dir=tmp_path, hub_client=FakeHub())
+
+
+def test_queue_order_keepalive_and_linger_stop(tmp_path):
+    hub = FakeHub(available=("4g.40gb",), run=False)   # first slice starts; jobs never run: files written by hand
+    ep, clock = make(tmp_path, hub, linger_s=120)
+    for h in ("a", "b", "c"):
+        ep.submit(h, f"echo {h}\n", Resources(minutes=5))
+        clock.t += 1
+    assert [r.handle for r in ep._queue()] == ["b", "c"]
+    assert ep.status("c").message == "queued (1 ahead)"
+    (ep._dir("a") / "job.pid").write_text("1")
+    assert ep.status("a").state == "working" and hub.pings == 1       # keepalive posted while working
+    (ep._dir("a") / "job.done").write_text("exit=0\n")
+    assert ep.status("a").state == "completed"                        # and "b" is launched in the same call
+    assert ep.state.get("b").resources.get("launched_at") and not ep.state.get("c").resources.get("launched_at")
+    assert ep.cancel("c") == "cancelled" and ep.status("c").state == "cancelled"
+    (ep._dir("b") / "job.pid").write_text("2"); (ep._dir("b") / "job.done").write_text("exit=0\n")
+    assert ep.status("b").state == "completed"
+    assert hub.srv is not None                                        # within linger: the server stays
+    clock.t += 121
+    ep.after_results("b")
+    assert hub.srv is None and hub.stops == 1                         # past linger, nothing queued: stopped
+
+
+def test_server_lifetime_cap_and_cull_report(tmp_path):
+    hub = FakeHub(run=False)
+    ep, clock = make(tmp_path, hub, max_age_s=3600)
+    with pytest.raises(EndpointError, match="lifetime"):
+        ep.submit("long", "true\n", Resources(minutes=90))
+    ep.submit("j", "true\n", Resources(minutes=5))
+    (ep._dir("j") / "job.pid").write_text("1"); (ep._dir("j") / "job.alive").write_text(str(int(clock.t)))
+    clock.t += 300
+    hub.srv = None                                                    # the hub culled the server
+    st = ep.status("j")
+    assert st.state == "failed" and "server stopped" in st.message and "last heartbeat 300 s ago" in st.message
+
+
+def test_kit_fnal_tasks_only_on_fnal_endpoints(tmp_path):
+    hub = FakeHub(run=False)
+    ep, _ = make(tmp_path, hub)
+    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit")
+    for task, p in (("chain", {"shards": 2, "max_events": 20000.0, "seed": 1}), ("regression", {"events": 5000, "seed": 1})):
+        body, _ = kit.render({"task": task, **p})
+        assert not re.search(r"@[a-z_]+@", body)                       # no unfilled kit placeholder
+        assert ep.fnal_data in body
+        if task == "chain":
+            assert "--max-events 20000 " in body and "v2_fastC_v1/ref." in body
+        subprocess.run(["bash", "-n"], input=body.encode(), check=True)
+    uva = FastsimKit(endpoint=type("U", (), {"name": "uva"})(), state_dir=tmp_path / "kit2", sif="/x.sif")
+    c = uva.check("n", {"task": "chain", "shards": 1, "max_events": 10, "seed": 1}, [], [])
+    assert not c["ok"] and "FNAL storage" in c["message"]
+
+
+def test_concurrent_submits_start_one_server(tmp_path):
+    """Mu2eBO submits independent steps from threads: one server start, the second job queued."""
+    import threading
+    hub = FakeHub(available=("4g.40gb",), run=False)
+    lock = threading.Lock()
+    orig = hub.start
+
+    def start(options):                        # a second start while one exists is the hub's HTTP 500
+        with lock:
+            assert hub.srv is None, "second server start"
+            orig(options)
+    hub.start = start
+    ep, _ = make(tmp_path, hub)
+    errs = []
+
+    def go(h):
+        try:
+            ep.submit(h, f"echo {h}\n", Resources(minutes=5))
+        except Exception as e:                 # noqa: BLE001
+            errs.append(e)
+    th = [threading.Thread(target=go, args=(h,)) for h in ("s1", "s2")]
+    [t.start() for t in th]
+    [t.join() for t in th]
+    assert not errs and len(hub.starts) == 1
+    launched = [h for h in ("s1", "s2") if ep.state.get(h).resources.get("launched_at")]
+    assert len(launched) == 1 and len(ep._queue()) == 1
+
+
+def test_watcher_stops_after_linger(tmp_path):
+    hub = FakeHub(available=("4g.40gb",), run=False)
+    ep, clock = make(tmp_path, hub, linger_s=120)
+    ep.submit("w", "true\n", Resources(minutes=5))
+    (ep._dir("w") / "job.pid").write_text("1"); (ep._dir("w") / "job.done").write_text("exit=0\n")
+    assert ep.status("w").state == "completed" and hub.srv is not None          # inside the linger: kept
+    spawned = []
+    ep._spawn_watcher = lambda: spawned.append(1)
+    ep.after_results("w")
+    assert spawned == [1]                                                       # nobody may call again: a watcher
+    assert ep.wait_and_stop() and hub.srv is None                               # sleeps out the linger, then stops
+    assert clock.t >= ep.state.get("w").resources["ended_at"] + 120
