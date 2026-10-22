@@ -30,7 +30,7 @@ PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall
 METRICS = ("accepted_events", "generated_events", "jobs_ok", "gpu_hours", "est_su", "accepted_per_gpu_hour",
            "accepted_per_est_su", "accepted_per_gpu_hour_chain", "input_wait_s_mean", "campaign_s",
            "clusters_per_generated_EX", "clusters_per_generated_T1", "clusters_per_generated_T2",
-           "clusters_per_generated_M")
+           "clusters_per_generated_M", "library_reused_jobs")
 SECTOR = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 N_GEN = 20                                                  # g4ref_v1 gen shards 1..20
 LIBRARY = "tier1b_v7/lib_prod_as_20files.root"
@@ -42,14 +42,24 @@ LIMITS = {"shards": (1, 32), "files_per_job": (1, 20), "shard_offset": (0, N_GEN
           "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180)}
 
 BODY = """@common@@tables@CODE=@code@
-C() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,PYTHONPATH=$CODE/crv:$CODE/core:$CODE/tracker" -B "$L" -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
+C() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,PYTHONPATH=$CODE/crv:$CODE/core:$CODE/tracker" -B "$L" -B /dev/shm -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
 C python -c "import crvfastsim.analyses.runchain as r; assert hasattr(r, 'merge')" || { echo "runchain --emit missing in $CODE"; exit 5; }
-echo "$(hostname) $L" > "$(dirname "$M2FS_OUT")/inbox"      # read by the kit, which then streams the inputs in
-tw=$SECONDS; for i in $(seq 360); do [ -f "$L/ready" ] && break; sleep 5; done
-echo "{\\"input_wait_s\\": $((SECONDS-tw))}" > "$M2FS_OUT/wait.json"
-[ -f "$L/ready" ] || { echo "no input arrived"; exit 3; }
+# library once per node: /dev/shm/crvfs_lib_<user>_<md5>, one holder file per job, deleted by the last holder (flock);
+# holders of jobs that left the queue are dropped first, so a killed job cannot keep the copy alive
+S=/dev/shm/crvfs_lib_${USER}_@libmd5@; LOCK=/dev/shm/crvfs_lib_${USER}.lock; J=${SLURM_JOB_ID:-0}
+lib_hold() { ( flock 9; mkdir -p "$S/holders"; chmod 700 "$S"
+  for h in "$S"/holders/*; do [ -e "$h" ] || continue; squeue -h -j "${h##*/}" -o %i 2>/dev/null | grep -q . || rm -f "$h"; done
+  touch "$S/holders/$J" ) 9>"$LOCK"; }
+lib_release() { ( flock 9; rm -f "$S/holders/$J"; [ -z "$(ls -A "$S/holders" 2>/dev/null)" ] && { rm -rf "$S"; echo "$(date -Is) $(hostname) deleted node library $S" >> "$M2FS_OUT/cleanup.txt"; } ) 9>"$LOCK"; }
+trap 'lib_release; rm -rf "$L"; echo "$(date -Is) $(hostname) deleted $L" >> "$M2FS_OUT/cleanup.txt"' EXIT
+lib_hold
+LIBSTATE=$( [ -f "$S/ready" ] && echo have || echo need )
+echo "$(hostname) $L $S $LIBSTATE" > "$(dirname "$M2FS_OUT")/inbox"      # read by the kit, which then streams the inputs in
+tw=$SECONDS; for i in $(seq 360); do [ -f "$L/ready" ] && [ -f "$S/ready" ] && break; sleep 5; done
+[ -f "$L/ready" ] && [ -f "$S/ready" ] || { echo "no input arrived"; exit 3; }
+echo "{\\"input_wait_s\\": $((SECONDS-tw)), \\"library\\": \\"$LIBSTATE\\"}" > "$M2FS_OUT/wait.json"
 GEN=($(ls "$L"/gen.*.root))
-C python -m crvfastsim runchain "${GEN[@]}" --library "$L/@lib@" --calib "$L/@calib@" --deviation "$L/@dev@" \\
+C python -m crvfastsim runchain "${GEN[@]}" --library "$S/@lib@" --calib "$L/@calib@" --deviation "$L/@dev@" \\
   --gdml "$L/@gdml@" --jax --seed @seed@ @maxev@ --emit "$M2FS_OUT/shard.json" --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1 || exit 6
 echo '{}' > "$M2FS_OUT/metrics.json"
 """
@@ -118,6 +128,8 @@ class ChainPoint:
         self.dir = Path(kit.out_root).parent / "chain_point"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._threads: Dict[str, threading.Thread] = {}
+        self._libmd5: Optional[str] = None
+        self._node_lib: Dict[str, threading.Lock] = {}     # one library stream per node at a time
         self._lock = threading.Lock()
 
     # -- records -------------------------------------------------------------------------------------------------
@@ -150,14 +162,20 @@ class ChainPoint:
         body = body.replace("@runtime_a@", APPTAINER_RUNTIME["a"]).replace("@runtime_t@", APPTAINER_RUNTIME["t"])
         subs = {"sif": sif, "code": shlex.quote(self.code), "lib": Path(LIBRARY).name, "calib": Path(CALIB).name,
                 "dev": Path(DEVIATION).name, "gdml": Path(GDML).name, "seed": str(p["seed"] + 1000 * k),
-                "maxev": f"--max-events {p['max_events']}" if p["max_events"] else ""}
+                "maxev": f"--max-events {p['max_events']}" if p["max_events"] else "",
+                "libmd5": self.lib_md5()[:12]}
         for a, b in subs.items():
             body = body.replace(f"@{a}@", b)
         import re
-        if re.search(r"@(sif|code|lib|calib|dev|gdml|seed|maxev|common|tables|runtime_a|runtime_t)@", body):
+        if re.search(r"@(sif|code|lib|calib|dev|gdml|seed|maxev|libmd5|common|tables|runtime_a|runtime_t)@", body):
             raise ValueError("fastsimkit: chain_point: unfilled placeholder")
         res = Resources(cores=16, mem_gb=110, gpus=1, gpu_type="a100", minutes=p["wall_minutes"])
         return body, res
+
+    def lib_md5(self) -> str:
+        if self._libmd5 is None:
+            self._libmd5 = self.source.md5(LIBRARY)
+        return self._libmd5
 
     # -- contract ------------------------------------------------------------------------------------------------
     def check(self, name, params) -> Dict[str, Any]:
@@ -228,6 +246,7 @@ class ChainPoint:
         if len(inbox) < 2:
             return "waiting"
         host, tmp = inbox[0], inbox[1]
+        shared, libstate = (inbox[2], inbox[3]) if len(inbox) >= 4 else (None, "need")
         p = self.record(name)["params"]
         from concurrent.futures import ThreadPoolExecutor
 
@@ -237,9 +256,27 @@ class ChainPoint:
                 got = self.ep.stream_in(sub, host, f"{tmp}/{Path(rel).name}", self.source.argv(rel))
             if got != want:
                 raise EndpointError(f"md5 mismatch for {rel}: {got} != {want}")
+        def library():   # once per node: the first sub-job there streams it, later ones find it (or wait for it)
+            if shared is None:
+                one(LIBRARY)
+                return
+            with self._node_lib.setdefault(host, threading.Lock()):
+                have = self.ep.run_on_node(sub, host, f"test -f {shlex.quote(shared)}/ready && echo have || true").strip()
+                if have == "have":
+                    self._mark(sub, "libreused", host)
+                    return
+                want = self.lib_md5()
+                with self._chan:
+                    got = self.ep.stream_in(sub, host, f"{shared}/{Path(LIBRARY).name}", self.source.argv(LIBRARY))
+                if got != want:
+                    raise EndpointError(f"md5 mismatch for {LIBRARY}: {got} != {want}")
+                self.ep.run_on_node(sub, host, f"touch {shlex.quote(shared)}/ready")
+                self._mark(sub, "libstreamed", host)
+
         try:
             with ThreadPoolExecutor(max_workers=self.streams) as ex:
-                for f in [ex.submit(one, rel) for rel in [LIBRARY, CALIB, DEVIATION, GDML] + gen_files(p, k)]:
+                futs = [ex.submit(library)] + [ex.submit(one, rel) for rel in [CALIB, DEVIATION, GDML] + gen_files(p, k)]
+                for f in futs:
                     f.result()
             self.ep.run_on_node(sub, host, f"touch {shlex.quote(tmp)}/ready")
         except EndpointError as e:
@@ -278,6 +315,7 @@ class ChainPoint:
         chain_s = gpu_s = wait = su = 0.0
         cl: Dict[int, int] = {}
         files, ends, ids = [], [], []
+        reused = 0
         for sub in self.subs(name):
             fs = self.ep.fetch(sub, self.kit.out_root)
             out = Path(self.kit.out_root) / sub / "out"
@@ -291,7 +329,9 @@ class ChainPoint:
             for k, v in s.get("cl_type_counts", {}).items():
                 cl[int(k)] = cl.get(int(k), 0) + int(v)
             w = out / "wait.json"
-            wait += json.loads(w.read_text()).get("input_wait_s", 0) if w.exists() else 0
+            wj = json.loads(w.read_text()) if w.exists() else {}
+            wait += wj.get("input_wait_s", 0)
+            reused += self._has(sub, "libreused")
             t = self.ep.times(sub)
             gpu_s += t["elapsed_s"]
             ends.append(t["end"])
@@ -303,7 +343,8 @@ class ChainPoint:
              "accepted_per_gpu_hour": 3600.0 * acc / gpu_s if gpu_s else 0.0,
              "accepted_per_est_su": acc / su if su else 0.0,
              "accepted_per_gpu_hour_chain": 3600.0 * acc / chain_s if chain_s else 0.0,
-             "input_wait_s_mean": wait / n, "campaign_s": max(ends) - rec["submitted_at"] if ends else 0.0}
+             "input_wait_s_mean": wait / n, "campaign_s": max(ends) - rec["submitted_at"] if ends else 0.0,
+             "library_reused_jobs": reused}
         for k, lab in SECTOR.items():
             m[f"clusters_per_generated_{lab}"] = cl.get(k, 0) / gen if gen else 0.0
         return {"metrics": {k: float(v) for k, v in m.items()},

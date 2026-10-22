@@ -41,6 +41,9 @@ class Site:
             out = self.files.get(path, "").encode()
         elif s.startswith("srun") and "touch" in s:
             self.node_files[s.split("touch ")[1].split()[0].strip("'\"")] = "ready"
+        elif s.startswith("srun") and "test -f" in s:
+            path = s.split("test -f ")[1].split()[0].strip("'\"")
+            out = b"have\n" if path in self.node_files else b""
         elif s.startswith("scancel"):
             self.state[s.split()[1]] = "CANCELLED"
         elif "tar -cf" in s:
@@ -65,7 +68,9 @@ class Site:
 
     def start(self, jid, ep_dir, node="udc-x"):
         self.state[jid] = "RUNNING"
-        self.files[f"{ep_dir}/inbox"] = f"{node} /tmp/crvfs_kit_j{jid}_1\n"
+        lib = f"/dev/shm/crvfs_lib_u_{node}"
+        have = "have" if f"{lib}/ready" in self.node_files else "need"
+        self.files[f"{ep_dir}/inbox"] = f"{node} /tmp/crvfs_kit_j{jid}_1 {lib} {have}\n"
 
 
 class Source(CP.FnalSource):
@@ -128,15 +133,16 @@ def test_fanout_stream_merge(tmp_path):
     site.start(jobs[0], ep.state.get("pt1.j0").remote_dir)
     kit.status("pt1")                               # streams sub-job 0 now that its inbox exists
     names = sorted(d.rsplit("/", 1)[1] for _, d in streamed)   # streamed in parallel: order not fixed
+    assert [d for r, d in streamed if r.endswith("lib_prod_as_20files.root")] == ["/dev/shm/crvfs_lib_u_udc-x/lib_prod_as_20files.root"]
     assert names == sorted(["lib_prod_as_20files.root", "crvcalib_sim_best_v1_5_run1400.csv",
                      "crvphoton_sim_best_v1_5_run1400.csv", "mu2e_extracted_v04.gdml",
                      "gen.001400_00000019.root", "gen.001400_00000020.root"])
-    assert all(d.startswith(f"/tmp/crvfs_kit_j{jobs[0]}_1/") for _, d in streamed)
+    assert all(d.startswith(f"/tmp/crvfs_kit_j{jobs[0]}_1/") for r, d in streamed if "lib_prod" not in r)
     assert any("touch" in c and "/ready" in c for c in site.cmds)
-    for j, k in zip(jobs[1:], (1, 2)):
+    for j, k in zip(jobs[1:], (1, 2)):           # same node: the library is already there
         site.start(j, ep.state.get(f"pt1.j{k}").remote_dir)
     kit.status("pt1")
-    assert len(streamed) == 18
+    assert len(streamed) == 6 + 2 * 5             # sub-jobs 1 and 2 get CSVs, GDML and gen files, not the library
     for j in jobs:
         site.state[j] = "COMPLETED"
     s = kit.status("pt1")
@@ -146,7 +152,7 @@ def test_fanout_stream_merge(tmp_path):
     assert m["accepted_events"] == 4400 * 3 + 3 and m["generated_events"] == 300000 and m["jobs_ok"] == 3
     assert m["accepted_per_gpu_hour"] == pytest.approx(m["accepted_events"] / (3 * 360 / 3600))
     assert m["accepted_per_gpu_hour_chain"] == pytest.approx(m["accepted_events"] / (3 * 120 / 3600))
-    assert m["input_wait_s_mean"] == 100 and m["clusters_per_generated_EX"] == pytest.approx(3 * 3900 / 300000)
+    assert m["input_wait_s_mean"] == 100 and m["library_reused_jobs"] == 2 and m["clusters_per_generated_EX"] == pytest.approx(3 * 3900 / 300000)
     assert r["metadata"]["job_ids"] == ",".join(jobs)
     assert {f["name"] for f in r["files"]} >= {"pt1.j0/out/shard.json", "pt1.j2/out/cleanup.txt", "pt1.j1/slurm.out"}
     assert kit.submit("pt1", P, [], []) == {"handle": "pt1"} and len(site.dirs) == 3      # idempotent
@@ -188,3 +194,22 @@ def test_body_is_valid_bash_and_keeps_inputs_off_disk(tmp_path):
     code = "\n".join(line.split("#")[0] for line in body.splitlines())
     assert "/scratch" not in code.replace("/scratch/u/code", "") and "--seed 1007" in body
     assert res.gpus == 1 and res.minutes == 45
+
+
+def test_library_streamed_once_per_node(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    kit.submit("pt4", {**P, "shards": 3, "files_per_job": 1}, [], [])
+    jobs = [ep.state.get(f"pt4.j{k}").job_id for k in range(3)]
+    for j, k, node in zip(jobs, range(3), ("nA", "nA", "nB")):
+        site.start(j, ep.state.get(f"pt4.j{k}").remote_dir, node=node)
+        kit.status("pt4")
+    libs = sorted(d for r, d in streamed if r.endswith("lib_prod_as_20files.root"))
+    assert libs == ["/dev/shm/crvfs_lib_u_nA/lib_prod_as_20files.root", "/dev/shm/crvfs_lib_u_nB/lib_prod_as_20files.root"]
+
+
+def test_body_shares_and_releases_the_node_library(tmp_path):
+    _, ep, kit, _ = make(tmp_path)
+    body, _ = kit.chain_point.render(CP.validate(P), 0)
+    assert "/dev/shm/crvfs_lib_${USER}_" in body and "flock 9" in body and "lib_release" in body
+    assert body.count("trap '") >= 1 and "deleted node library" in body
+    assert '--library "$S/lib_prod_as_20files.root"' in body
