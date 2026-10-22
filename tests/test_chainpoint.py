@@ -216,9 +216,15 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
 
 
 def test_gen_sets():
-    p = CP.validate({**P, "gen_set": 1, "shard_offset": 98, "files_per_job": 3})
+    p = CP.validate({**P, "gen_set": 1, "shard_offset": 92, "files_per_job": 3})
     assert CP.gen_files(p, 0) == ["crygen_v1_tables/gen.001400_00002099.root", "crygen_v1_tables/gen.001400_00002100.root",
                                   "crygen_v1_tables/gen.001400_00002001.root"]
+    p = CP.validate({**P, "gen_set": 1, "shard_offset": 9, "files_per_job": 2})     # 2011 is missing: skipped
+    assert CP.gen_files(p, 0) == ["crygen_v1_tables/gen.001400_00002010.root", "crygen_v1_tables/gen.001400_00002012.root"]
+    every = {f for k in range(94) for f in CP.gen_files({**p, "files_per_job": 1, "shard_offset": 0}, k)}
+    assert len(every) == 94 and not any(f"_0000{s}." in f for f in every for s in CP.CRYGEN_V1_MISSING)
+    with pytest.raises(ValueError):
+        CP.validate({**P, "gen_set": 1, "shard_offset": 94})
     assert CP.validate(P)["gen_set"] == 0                       # default: g4ref_v1
     with pytest.raises(ValueError):
         CP.validate({**P, "gen_set": 0, "shard_offset": 20})
