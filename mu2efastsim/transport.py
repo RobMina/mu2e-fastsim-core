@@ -17,7 +17,7 @@ from . import world as world_mod
 
 
 def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, band_h=None, band_p=None,
-                 band_chic2=None, band_thn=None, tail_k=None, band_len=None):
+                 band_chic2=None, band_thn=None, tail_k=None, band_len=None, core_scale=1.0):
     """Move each track from o to the plane y = y_plane through a uniform slab, with PDG (eq. 34.20) correlated MSC.
 
     Two independent transverse planes per track: y_plane displacement and angle from (z1, z2) unit Gaussians,
@@ -35,9 +35,13 @@ def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, ba
 
     band_len [N, nbands] (opt-in, world_loss return_band_len=True): path length of each band; each band's scattering is
     then spread uniformly along it (adds w_k len_k^2 / 12 to the displacement variance) instead of sitting at its centre.
+
+    core_scale (opt-in, default 1): factor on the Gaussian core width (angle and displacement). Highland fits the central
+    98 % of the full distribution, so with a single-scattering tail added on top the core is counted twice; the slab test
+    against Geant4 (trkfastsim slabcheck) fixes the factor.
     """
     L = (o[:, 1] - y_plane) / -d[:, 1]
-    th0 = eloss.highland_theta0(p, L / x0_mm if x_over_x0 is None else x_over_x0)
+    th0 = eloss.highland_theta0(p, L / x0_mm if x_over_x0 is None else x_over_x0) * core_scale
     if band_xx0 is not None:
         # scattering spread over path bands at distance band_h from the plane: exact Gaussian covariance
         if band_p is not None:
@@ -51,7 +55,7 @@ def msc_to_plane(rng, o, d, p, y_plane, x0_mm, x_over_x0=None, band_xx0=None, ba
             corr = (1 + 0.038 * np.log(xt / np.maximum(beta2_eff, 1e-6))) ** 2
             v_k = v_k * corr[:, None]
             w = v_k / np.maximum(v_k.sum(1, keepdims=True), 1e-30)
-            th0 = np.sqrt(v_k.sum(1))
+            th0 = np.sqrt(v_k.sum(1)) * core_scale
         else:
             w = band_xx0 / np.maximum(band_xx0.sum(1, keepdims=True), 1e-30)
         s_tt = th0 ** 2
