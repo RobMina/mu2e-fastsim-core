@@ -4,6 +4,8 @@
 # usage (make_inline_job.py --args): r3_polaris.sh [TARGET] [extra reco-r3 args ...]   (e.g. --v05 --knob cross_talk=0.06)
 #   TARGET: events with CRV steps for the node (default 1000000, split over the 4 GPUs); extras default "--v05".
 # Lookup tables come from CVMFS into /local/scratch and are deleted on exit. Outputs: $M2FS_EAGLE/r3/<time>_<jobid>/.
+# R3_KNOBFILE (env, a file on Eagle): one line per GPU of reco-r3 --knob values (empty line = nominal); each GPU then
+# runs its own point on all step tables with TARGET events, and the node merge is skipped (points must not be summed).
 T_JOB=$(date +%s)
 E=${M2FS_EAGLE:?}; V=$E/venv/bin/python; I=$E/r3_inputs
 TARGET=${1:-1000000}; shift || true; EXTRA=("$@"); [ ${#EXTRA[@]} -gt 0 ] || EXTRA=(--v05)
@@ -24,16 +26,21 @@ export CRVFS_LOOKUP_DIR=$L
 $V -c "import crvfastsim.objective.crvresponse, crvfastsim.reco.r3" || exit 5
 FILES=($I/steps/crvsteps.*.root); NG=4; PER=$(( (TARGET + NG - 1) / NG ))
 echo "target $TARGET ($PER per GPU), ${#FILES[@]} step tables, extras ${EXTRA[*]}, setup $(( $(date +%s) - T_JOB )) s"
+KN=(); if [ -n "${R3_KNOBFILE:-}" ]; then mapfile -t KN < "$R3_KNOBFILE"; PER=$TARGET; cp "$R3_KNOBFILE" $O/knobs.txt; fi
 pids=()
 for g in $(seq 0 $((NG-1))); do
-  mine=(); for k in "${!FILES[@]}"; do [ $((k % NG)) -eq $g ] && mine+=("${FILES[$k]}"); done
+  if [ -n "${R3_KNOBFILE:-}" ]; then mine=("${FILES[@]}"); KA=(); [ -n "${KN[$g]:-}" ] && KA=(--knob ${KN[$g]})
+  else mine=(); KA=(); for k in "${!FILES[@]}"; do [ $((k % NG)) -eq $g ] && mine+=("${FILES[$k]}"); done; fi
+  echo "gpu $g: ${#mine[@]} tables, target $PER, knobs: ${KN[$g]:-nominal}"
   CUDA_VISIBLE_DEVICES=$g $V -m crvfastsim reco-r3 "${mine[@]}" --calib $I/cond/crvcalib.csv \
-    --deviation $I/cond/crvphoton.csv --jax --objective --target $PER --seed $((1000 + g)) "${EXTRA[@]}" \
+    --deviation $I/cond/crvphoton.csv --jax --objective --target $PER --seed $((1000 + g)) "${EXTRA[@]}" "${KA[@]}" \
     --emit $O/r3.gpu$g.json > $O/r3.gpu$g.txt 2>&1 & pids+=($!)
 done
 rc=0; for g in $(seq 0 $((NG-1))); do wait ${pids[$g]} || { echo "gpu $g failed"; rc=6; }; done
 WALL=$(( $(date +%s) - T_JOB ))
 for g in $(seq 0 $((NG-1))); do echo "== gpu $g"; tail -3 $O/r3.gpu$g.txt; done
-$V -m crvfastsim reco-r3 "$O/r3.gpu*.json" --merge --wall $WALL --outdir $O > $O/r3_merge.txt 2>&1 || rc=7
-cat $O/r3_merge.txt | head -30
+if [ -z "${R3_KNOBFILE:-}" ]; then
+  $V -m crvfastsim reco-r3 "$O/r3.gpu*.json" --merge --wall $WALL --outdir $O > $O/r3_merge.txt 2>&1 || rc=7
+  cat $O/r3_merge.txt | head -30
+fi
 echo "job wall $WALL s (queue excluded); outdir $O"; echo exit=$rc; exit $rc
