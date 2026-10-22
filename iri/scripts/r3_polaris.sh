@@ -6,6 +6,7 @@
 # Lookup tables come from CVMFS into /local/scratch and are deleted on exit. Outputs: $M2FS_EAGLE/r3/<time>_<jobid>/.
 # R3_KNOBFILE (env, a file on Eagle): one line per GPU of reco-r3 --knob values (empty line = nominal); each GPU then
 # runs its own point on all step tables with TARGET events, and the node merge is skipped (points must not be summed).
+# R3_TABLES (env): space-separated step-table sequencers to use (e.g. "00000990 00001023"), default all staged tables.
 T_JOB=$(date +%s)
 E=${M2FS_EAGLE:?}; V=$E/venv/bin/python; I=$E/r3_inputs
 TARGET=${1:-1000000}; shift || true; EXTRA=("$@"); [ ${#EXTRA[@]} -gt 0 ] || EXTRA=(--v05)
@@ -24,7 +25,10 @@ for f in LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root
   $V -m mu2efastsim.cvmfsget mu2e.opensciencegrid.org /DataFiles/CRVConditions/v6_0/$f $L/$f || exit 4; done
 export CRVFS_LOOKUP_DIR=$L
 $V -c "import crvfastsim.objective.crvresponse, crvfastsim.reco.r3" || exit 5
-FILES=($I/steps/crvsteps.*.root); NG=4; PER=$(( (TARGET + NG - 1) / NG ))
+if [ -n "${R3_TABLES:-}" ]; then FILES=(); for q in $R3_TABLES; do FILES+=($I/steps/crvsteps.001400_$q.root); done
+else FILES=($I/steps/crvsteps.*.root); fi
+for f in "${FILES[@]}"; do [ -s "$f" ] || { echo "missing $f"; exit 3; }; done
+NG=4; PER=$(( (TARGET + NG - 1) / NG ))
 echo "target $TARGET ($PER per GPU), ${#FILES[@]} step tables, extras ${EXTRA[*]}, setup $(( $(date +%s) - T_JOB )) s"
 KN=(); if [ -n "${R3_KNOBFILE:-}" ]; then mapfile -t KN < "$R3_KNOBFILE"; PER=$TARGET; cp "$R3_KNOBFILE" $O/knobs.txt; fi
 pids=()
