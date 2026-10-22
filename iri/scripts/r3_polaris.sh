@@ -1,7 +1,7 @@
 #!/bin/bash
 # R3 on one Polaris node: cached MDC2025as CrvSteps (Eagle r3_inputs, staged by stage_r3_eagle.sh) replayed through the
 # fused device response, waveforms, reco and the crvresponse objective, one reco-r3 process per A100, then the node merge.
-# usage (make_inline_job.py --args): r3_polaris.sh [TARGET] [extra reco-r3 args ...]
+# usage (make_inline_job.py --args): r3_polaris.sh [TARGET] [extra reco-r3 args ...]   (e.g. --v05 --knob cross_talk=0.06)
 #   TARGET: events with CRV steps for the node (default 1000000, split over the 4 GPUs); extras default "--v05".
 # Lookup tables come from CVMFS into /local/scratch and are deleted on exit. Outputs: $M2FS_EAGLE/r3/<time>_<jobid>/.
 T_JOB=$(date +%s)
@@ -13,16 +13,15 @@ git pull -q --ff-only && git submodule update -q --init --recursive
 git log -1 --format="code %h %s"; git -C crv log -1 --format="crv %h"; git -C core log -1 --format="core %h"
 [ -s $I/MANIFEST.txt ] || { echo "no $I/MANIFEST.txt: run stage_r3_eagle.sh"; exit 3; }
 (cd $I && grep -v '^crvextrap' MANIFEST.txt | awk '{print $1"  "$2}' | md5sum -c --quiet) || { echo "r3_inputs md5 check failed"; exit 3; }
-grep '^crvextrap' $I/MANIFEST.txt
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export PYTHONPATH=$E/code/core:$E/code/crv:$I/crvextrap_current${PYTHONPATH:+:$PYTHONPATH}
+export PYTHONPATH=$E/code/core:$E/code/crv${PYTHONPATH:+:$PYTHONPATH}
 export MU2E_SEARCH_PATH=$E/offline_data
 O=$E/r3/$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O
 L=/local/scratch/crvfs_lookup_$$; mkdir -p $L; chmod 700 $L; trap 'rm -rf $L; echo "deleted $L"' EXIT
 for f in LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root; do
   $V -m mu2efastsim.cvmfsget mu2e.opensciencegrid.org /DataFiles/CRVConditions/v6_0/$f $L/$f || exit 4; done
 export CRVFS_LOOKUP_DIR=$L
-$V -c "import crvextrap.analyses.crvresponse, crvfastsim.reco.r3" || exit 5
+$V -c "import crvfastsim.objective.crvresponse, crvfastsim.reco.r3" || exit 5
 FILES=($I/steps/crvsteps.*.root); NG=4; PER=$(( (TARGET + NG - 1) / NG ))
 echo "target $TARGET ($PER per GPU), ${#FILES[@]} step tables, extras ${EXTRA[*]}, setup $(( $(date +%s) - T_JOB )) s"
 pids=()

@@ -2,14 +2,13 @@
 # Stage the R3 inputs GPVM -> Eagle by ssh stream through the laptop (no laptop copy), md5-checked, resumable.
 # Run on the laptop with a live ssh master to a Polaris login node (MobilePASS+); the GPVM cannot reach ALCF.
 #   stage_r3_eagle.sh [--dry-run] [--with-g4ref]
-# Env: GPVM (mu2egpvm03), POLARIS (ssh alias, default polaris), EAGLE_R3 (destination), CRVX_REPO (crvextrap repo on the GPVM).
+# Env: GPVM (mu2egpvm03), POLARIS (ssh alias, default polaris), EAGLE_R3 (destination).
 # Layout on Eagle (mode 700): steps/crvsteps.*.root, [g4ref/crvsteps.*.root], cond/{crvcalib,crvphoton}.csv,
-# crvextrap_<sha>/crvextrap/ (git archive of the committed package) + crvextrap_current symlink, MANIFEST.txt.
+# MANIFEST.txt. The objective code is in the public crv package (crvfastsim.objective), so no crvextrap archive.
 set -euo pipefail
 G=${GPVM:-mu2egpvm03}; P=${POLARIS:-polaris}
 DEST=${EAGLE_R3:-/eagle/GenesisHackathonOct26/ram2aq/crvfastsim/r3_inputs}
 D=/exp/mu2e/data/users/ram2aq/crv_fastsim
-CRVX=${CRVX_REPO:-/exp/mu2e/app/users/ram2aq/analysis/mu2e_track_crv_mcresponse}
 DRY=false; G4REF=false
 for a in "$@"; do case "$a" in --dry-run) DRY=true ;; --with-g4ref) G4REF=true ;; *) echo "unknown $a"; exit 2 ;; esac; done
 
@@ -42,17 +41,5 @@ while read -r SRC DST; do
   echo "$SUM  $DST  <- $G:$SRC" >> "$MAN"
 done <<< "$LIST"
 
-# crvextrap: committed package only, pinned by commit
-[ -z "$(ssh "$G" "git -C $CRVX status --porcelain -- crvextrap" </dev/null)" ] || { echo "crvextrap has uncommitted changes on $G"; exit 5; }
-SHA=$(ssh "$G" "git -C $CRVX rev-parse --short HEAD" </dev/null)
-if ssh "$P" "test -d $DEST/crvextrap_$SHA/crvextrap" </dev/null; then
-  echo "present  crvextrap_$SHA"
-else
-  ssh "$G" "git -C $CRVX archive --format=tar HEAD crvextrap" </dev/null \
-    | ssh "$P" "mkdir -p $DEST/crvextrap_$SHA && tar -x -C $DEST/crvextrap_$SHA" 
-  echo "unpacked crvextrap_$SHA"
-fi
-ssh "$P" "ln -sfn crvextrap_$SHA $DEST/crvextrap_current" </dev/null
-echo "crvextrap $SHA  crvextrap_current -> crvextrap_$SHA  <- $G:$CRVX" >> "$MAN"
 ssh "$P" "cat > $DEST/MANIFEST.txt && chmod -R go-rwx $DEST && du -sh $DEST" < "$MAN"
 echo "manifest $DEST/MANIFEST.txt ($(grep -c . "$MAN") entries)"
