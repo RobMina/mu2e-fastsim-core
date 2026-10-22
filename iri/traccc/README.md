@@ -36,6 +36,9 @@ module load cmake
 module load cudatoolkit-standalone/12.9.1
 g++ --version | head -1; nvcc --version | tail -1; cmake --version | head -1     # expect 14.3, 12.9, 3.30.5
 export CUDAHOSTCXX=$(which g++) CC=$(which gcc) CXX=$(which g++)
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1   # codegen Python x make -j hits the thread limit
+export PATH=/soft/applications/conda/2026-10-01/mconda3/bin:$PATH     # detray metadata script runs bare python3 (>= 3.7)
+python3 --version; which cmake g++ nvcc                              # expect 3.13, /soft/spack, gcc-native/14, 12.9.1
 T=/eagle/GenesisHackathonOct26/ram2aq/traccc; mkdir -p $T
 BOOST=$(ls -d /soft/spack/pe/*/base/install/*/*/boost-* 2>/dev/null | tail -1); echo "spack boost: ${BOOST:-none}"
 ls $BOOST/lib*/libboost_program_options* 2>/dev/null | head -1
@@ -44,9 +47,9 @@ ls $BOOST/lib*/libboost_program_options* 2>/dev/null | head -1
 If that prints a `libboost_program_options` path, set `export BOOST_ROOT=$BOOST` and skip 2a'.
 
 ```bash
-# 2a'. only if 2a found no Boost with program_options: Boost.ProgramOptions alone into $T/boost (~5 min)
+# 2a'. only if 2a found no Boost with program_options: Boost program_options + filesystem (the examples need both) into $T/boost (~5 min)
 cd $T && curl -sLO https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.gz && tar xzf boost_1_86_0.tar.gz
-cd boost_1_86_0 && ./bootstrap.sh --with-libraries=program_options --prefix=$T/boost && ./b2 -j 8 install
+cd boost_1_86_0 && ./bootstrap.sh --with-libraries=program_options,filesystem --prefix=$T/boost && ./b2 -j 8 install
 export BOOST_ROOT=$T/boost
 ```
 
@@ -60,7 +63,7 @@ cd $T
 
 # 2c. configure: float64 CUDA preset, A100 (sm_80), warnings not fatal, examples on
 cmake --preset cuda-fp64 -S traccc -B build-cuda-fp64 -DBoost_ROOT=$BOOST_ROOT \
-  -DCMAKE_CUDA_ARCHITECTURES=80 -DTRACCC_FAIL_ON_WARNINGS=FALSE -DTRACCC_BUILD_EXAMPLES=TRUE 2>&1 | tail -20
+  -DCMAKE_CUDA_ARCHITECTURES=80 -DTRACCC_FAIL_ON_WARNINGS=FALSE -DTRACCC_BUILD_EXAMPLES=TRUE -Wno-dev 2>&1 | tail -20
 
 # 2d. build
 cmake --build build-cuda-fp64 -j 8 2>&1 | tee $T/build.log | tail -30
@@ -70,7 +73,16 @@ ls build-cuda-fp64/bin | grep -E 'simulate_wire_chamber|truth_fitting_example'
 Expect 1-2 h for 2d at `-j 8` (detray, vecmem, ACTS headers, CUDA kernels). If the session drops, reattach (`screen -r`)
 or redo 2a and rerun 2d: it resumes.
 
-Known traps:
+Known traps (all hit on 2026-10-22):
+
+- Boost: the examples need `program_options` and `filesystem`; a Boost with only the first fails at configure
+  ("Could not find ... boost_filesystemConfig.cmake").
+- Thread limit: ACTS/detray run Python code generators (sympy, numpy) during the build; each starts OpenBLAS with 64
+  threads, and 8 of them in parallel exceed the login node's limit (`pthread_create failed`, then Error 130). 2a sets
+  `OPENBLAS_NUM_THREADS=1`.
+- Python: detray's `generate_metadata.sh` calls plain `python3` from `PATH` (not CMake's `Python_EXECUTABLE`); the
+  SLES system Python 3.6 fails with "namedtuple() got an unexpected keyword argument 'defaults'". 2a puts the ALCF
+  conda Python first.
 
 - traccc needs C++20 and CUDA >= 12 (its CI: gcc 13.3 + CUDA 12.6). If nvcc 12.9 still rejects gcc 14, add
   `-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler` in 2c (fresh build dir).
