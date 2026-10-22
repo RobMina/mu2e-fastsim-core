@@ -9,11 +9,11 @@ R=$T/runs/$(date +%Y%m%d_%H%M%S); mkdir -p $R; cd $R || exit 1
 export TRACCC_TEST_DATA_DIR=${TRACCC_TEST_DATA_DIR:-$T/traccc/data}
 ulimit -c 0
 echo "host $(hostname) job ${PBS_JOBID:-none} out $R"; nvidia-smi -L
-[ -x $B/traccc_test_cpu ] || { echo "no build at $B"; exit 2; }
+[ -x $B/traccc_test_cuda ] || { echo "no build at $B"; exit 2; }
 
 run() { local log="$R/$1.log"; shift; echo "== $*"; local t0=$SECONDS; "$@" > "$log" 2>&1; local rc=$?; echo "exit $rc ($((SECONDS - t0)) s)"; }   # no /usr/bin/time on Polaris compute nodes
 
-run cpu_wire $B/traccc_test_cpu --gtest_filter='*KalmanFittingWireChamber*'
+[ -s $B/traccc_test_cpu ] && run cpu_wire $B/traccc_test_cpu --gtest_filter='*KalmanFittingWireChamber*' || echo "skip cpu_wire: $B/traccc_test_cpu missing or empty"
 run cuda_kalman $B/traccc_test_cuda --gtest_filter='*Kalman*'
-for f in cpu_wire cuda_kalman; do echo "--- $f"; grep -E '^\[ *(RUN|  *OK|  FAILED|  PASSED|==========) ' $R/$f.log | tail -20; done
+for f in cpu_wire cuda_kalman; do [ -f $R/$f.log ] || continue; echo "--- $f"; grep -E '^\[ *(RUN|  *OK|  FAILED|  PASSED|==========) ' $R/$f.log | tail -20; done
 ls -la $R
