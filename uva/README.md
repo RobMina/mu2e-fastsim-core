@@ -15,7 +15,15 @@ VPN, key-based `ssh uva-hpc`). Image: `mu2efastsim.sif` built on an `interactive
 `endpoints/slurm_ssh.py` is the endpoint adapter (submit / status / fetch / cancel over `ssh` + Slurm, local job records,
 per-job SU cap); `endpoints/kit.py` is `fastsimkit`, an MCP server speaking the Mu2eBO evaluator contract on top of it
 (one BO point = one job; tasks in `TASKS`, each writing `out/metrics.json`: `reco_bench`, `response_bench`,
-`v4_response`; the last two stage the real tables copy-compute-delete and must leave `out/cleanup.txt`). A Mu2eBO `kits.toml` entry:
+`v4_response`; the last two stage the real tables copy-compute-delete and must leave `out/cleanup.txt`).
+`chain_point` (`endpoints/chainpoint.py`) is one BO point of the whole fast chain as N one-GPU sub-jobs (`<name>.j<k>`):
+params `shards`, `files_per_job`, `shard_offset`, `max_events`, `seed`, `wall_minutes`; when a sub-job starts it writes
+an `inbox` file and the kit streams the Mu2e-internal inputs from the FNAL host (`FASTSIMKIT_FNAL_HOST`,
+`FASTSIMKIT_FNAL_DATA`) through the kit host into its tmpfs (`srun --overlap`, md5 checked, never on disk), 2 files at a
+time per sub-job (`FASTSIMKIT_STREAMS`) and at most 6 streams overall (`FASTSIMKIT_MAX_CHANNELS`: one ssh connection per
+host carries at most 10 channels). Code comes from a checkout on `/scratch` (`FASTSIMKIT_CODE`, `FASTSIMKIT_CODE_REF`).
+Metrics: accepted and generated events, accepted per GPU-hour (charged and chain-only), per estimated SU, input wait,
+campaign time, clusters per generated event per sector type. The kit host must stay up and on the UVA network. A Mu2eBO `kits.toml` entry:
 
 ```toml
 [fastsimkit]
@@ -23,7 +31,7 @@ command = ["${PYTHON}", "-m", "mu2efastsim.endpoints.kit"]
 env_passthrough = ["SSH_AUTH_SOCK"]
 set = { PYTHONPATH = "${M2FS_CODE}/core:${M2FS_CODE}/crv:${M2FS_CODE}/tracker", FASTSIMKIT_ENDPOINT = "uva", FASTSIMKIT_STATE_DIR = "${DATA_ROOT}/fastsimkit", FASTSIMKIT_MAX_SU_PER_JOB = "200" }
 study_keys = {}
-fixed_keys = { task = "string", events = "number", seed = "number", rows = "number", sipms = "number" }
+fixed_keys = { task = "string", events = "number", seed = "number", rows = "number", sipms = "number", shards = "number", files_per_job = "number", shard_offset = "number", max_events = "number", wall_minutes = "number" }
 accepts_lists = false
 check = true
 executors = ["grid"]

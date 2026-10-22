@@ -53,7 +53,8 @@ class SlurmSSHEndpoint:
     def __init__(self, host: str = "uva-hpc", account: str = "ldmxuva", partition: str = "gpu",
                  workdir: str = "/scratch/ram2aq/mu2efastsim/kit", state_dir: str | Path = "~/.mu2efastsim/uva",
                  max_su_per_job: float = 500.0, runner: Optional[Runner] = None, name: str = "uva",
-                 su_per_gpu_h: float = 53.0, su_per_core_h: float = 0.5, timeout_s: float = 120.0):
+                 su_per_gpu_h: float = 53.0, su_per_core_h: float = 0.5, timeout_s: float = 120.0,
+                 stream_runner=None):
         self.name, self.host, self.account, self.partition = name, host, account, partition
         self.workdir = workdir.rstrip("/")
         self.state = StateDir(Path(state_dir).expanduser())
@@ -61,6 +62,7 @@ class SlurmSSHEndpoint:
         self.su_rates = (su_per_gpu_h, su_per_core_h)
         self.run = runner or ssh_runner(host)
         self.timeout_s = timeout_s
+        self.stream_runner = stream_runner   # tests: (source_argv, host, remote_cmd, timeout) -> node md5 output
 
     # -- helpers -------------------------------------------------------------------------------------------------
     def _sh(self, script: str, stdin: Optional[bytes] = None, timeout: Optional[float] = None) -> str:
@@ -144,6 +146,50 @@ class SlurmSSHEndpoint:
         with tarfile.open(fileobj=io.BytesIO(raw)) as t:
             t.extractall(target, filter="data")
         return sorted(p for p in target.rglob("*") if p.is_file())
+
+    # -- extras for kit tasks that stream inputs into a running job (chain_point) ----------------------------------
+    def read_file(self, handle: str, rel: str) -> str:
+        """Contents of <remote_dir>/<rel>, or "" if it does not exist yet."""
+        rec = self._record(handle)
+        return self._sh(f"cat {shlex.quote(rec.remote_dir + '/' + rel)} 2>/dev/null || true")
+
+    def _srun(self, rec: JobRecord, node: str) -> str:
+        return f"srun --jobid={rec.job_id} --overlap -N1 -n1 --mem=0 -w {shlex.quote(node)}"
+
+    def run_on_node(self, handle: str, node: str, cmd: str, timeout: float = 120) -> str:
+        """Run `cmd` as a step of the running job on its node (compute nodes take no ssh)."""
+        rec = self._record(handle)
+        return self._sh(f"{self._srun(rec, node)} sh -c {shlex.quote(cmd)}", timeout=timeout)
+
+    def stream_in(self, handle: str, node: str, dest: str, source_argv: Sequence[str], timeout: float = 3600) -> str:
+        """Pipe the stdout of `source_argv` (run on this host, e.g. `ssh <fnal> cat <file>`) into `dest` on the job's
+        node, without touching this host's disk; returns the md5 the node computed."""
+        rec = self._record(handle)
+        remote = f"{self._srun(rec, node)} sh -c {shlex.quote(f'cat > {shlex.quote(dest)} && md5sum {shlex.quote(dest)}')}"
+        if self.stream_runner is not None:
+            out = self.stream_runner(list(source_argv), self.host, remote, timeout)
+        else:
+            src = subprocess.Popen(list(source_argv), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            try:
+                p = subprocess.run(["ssh", "-o", "BatchMode=yes", self.host, remote], stdin=src.stdout,
+                                   capture_output=True, timeout=timeout)
+            finally:
+                src.stdout.close()
+                src.wait(timeout=60)
+            if p.returncode or src.returncode:
+                raise EndpointError(f"{self.name}: streaming into {dest} failed (rc {p.returncode}/{src.returncode}): "
+                                    f"{p.stderr.decode(errors='replace')[-300:]}")
+            out = p.stdout.decode()
+        return out.split()[0] if out.split() else ""
+
+    def times(self, handle: str) -> dict:
+        """Slurm start/end (epoch s) and elapsed seconds of a finished job."""
+        import datetime as dt
+        rec = self._record(handle)
+        a = self._sh(f"sacct -n -X -P -j {rec.job_id} -o Start,End,ElapsedRaw").strip().splitlines()
+        s, e, el = (a[0].split("|") + ["", "", "0"])[:3] if a else ("", "", "0")
+        ts = lambda x: dt.datetime.fromisoformat(x).timestamp() if x and x[0].isdigit() else time.time()
+        return {"start": ts(s), "end": ts(e), "elapsed_s": float(el or 0), "job_id": rec.job_id}
 
     def cancel(self, handle: str) -> str:
         rec = self._record(handle)

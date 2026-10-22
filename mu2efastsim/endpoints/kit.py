@@ -142,6 +142,20 @@ class FastsimKit:
         self.sif = sif or os.environ.get("FASTSIMKIT_SIF", "/scratch/ram2aq/mu2efastsim/mu2efastsim.sif")
         self.ep = endpoint or get(os.environ.get("FASTSIMKIT_ENDPOINT", "uva"), state_dir=root / "jobs",
                                   max_su_per_job=float(os.environ.get("FASTSIMKIT_MAX_SU_PER_JOB", "500")))
+        self._cp = None
+
+    @property
+    def chain_point(self):
+        """The fan-out task (chainpoint.py): one point = N one-GPU jobs with inputs streamed in; built on first use."""
+        if self._cp is None:
+            from .chainpoint import ChainPoint
+            self._cp = ChainPoint(self)
+        return self._cp
+
+    def _is_cp(self, params=None, handle=None) -> bool:
+        if params is not None:
+            return params.get("task") == "chain_point"
+        return self._task_of(handle) == "chain_point"
 
     @staticmethod
     def _task(params: Dict[str, Any]) -> Task:
@@ -169,6 +183,8 @@ class FastsimKit:
 
     # -- contract ------------------------------------------------------------------------------------------------
     def check(self, name, params, files, inputs) -> Dict[str, Any]:
+        if self._is_cp(params):
+            return self.chain_point.check(name, params)
         try:
             self.render(params)
         except ValueError as e:
@@ -182,22 +198,32 @@ class FastsimKit:
     def submit(self, name, params, files, inputs) -> Dict[str, Any]:
         if files or inputs:
             raise ValueError("fastsimkit: files and inputs are not supported yet (tasks take params only)")
+        if self._is_cp(params):
+            self._record_task(name, "chain_point")
+            return self.chain_point.submit(name, params)
         script, res = self.render(params)
         try:
             self.ep.submit(name, script, res)
         except EndpointError as e:
             raise ValueError(str(e))
-        tdir = self.out_root.parent / "tasks"
-        tdir.mkdir(parents=True, exist_ok=True)
-        (tdir / f"{name}.txt").write_text(params["task"])
+        self._record_task(name, params["task"])
         return {"handle": name}
 
+    def _record_task(self, name, task):
+        tdir = self.out_root.parent / "tasks"
+        tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / f"{name}.txt").write_text(task)
+
     def status(self, handle) -> Dict[str, Any]:
+        if self._is_cp(handle=handle):
+            return self.chain_point.status(handle)
         s = self.ep.status(handle)
         return {"state": s.state, "message": f"{s.site_state} {s.message}".strip(),
                 "poll_ms": POLL_MS if s.state == "working" else 0, "progress": None}
 
     def results(self, handle) -> Dict[str, Any]:
+        if self._is_cp(handle=handle):
+            return self.chain_point.results(handle)
         s = self.ep.status(handle)
         if s.state != "completed":
             raise ValueError(f"fastsimkit: {handle!r} is {s.state}, not completed")
@@ -214,12 +240,15 @@ class FastsimKit:
                 "metadata": {"endpoint": self.ep.name, "job_id": s.job_id, "site_state": s.site_state}}
 
     def cancel(self, handle) -> Dict[str, Any]:
+        if self._is_cp(handle=handle):
+            return self.chain_point.cancel(handle)
         return {"state": self.ep.cancel(handle)}
 
     @staticmethod
     def describe() -> Dict[str, Any]:
-        params = sorted({"task", *[p for t in TASKS.values() for p in t.params]})
-        metrics = sorted({m for t in TASKS.values() for m in t.metrics})
+        from . import chainpoint
+        params = sorted({"task", *[p for t in TASKS.values() for p in t.params], *chainpoint.PARAMS})
+        metrics = sorted({m for t in TASKS.values() for m in t.metrics} | set(chainpoint.METRICS))
         return {"params": params, "metrics": metrics, "accepts_lists": False}
 
 
