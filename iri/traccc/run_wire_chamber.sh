@@ -16,9 +16,8 @@ for cfg in "p2:2:100" "p100:100:2000"; do
   ( cd $B && run sim_$tag ./traccc_simulate_wire_chamber --gen-vertex-xyz-mm=0:0:0 --gen-vertex-xyz-std-mm=0:0:0 \
       --gen-mom-gev=$p:$p --gen-phi-degree=0:360 --gen-events=10 --gen-nparticles=$n --output-directory=$sim/ \
       --gen-eta=-1:1 --constraint-step-size-mm=1 --search-window 3:3 )
-  D=$TRACCC_TEST_DATA_DIR/$sim
-  geo=$(ls $D/*geometry*.json 2>/dev/null | head -1); mat=$(ls $D/*material*.json 2>/dev/null | head -1)
-  grid=$(ls $D/*grid*.json 2>/dev/null | head -1)
+  # the simulator writes the detector JSONs to its working directory ($B), the events under the data directory
+  geo=$B/wire_chamber_geometry.json; mat=$B/wire_chamber_homogeneous_material.json; grid=$B/wire_chamber_surface_grids.json
   echo "detector files: $geo $mat $grid"
   for exe in traccc_truth_fitting_example traccc_truth_fitting_example_cuda; do
     [ -x $B/$exe ] || { echo "missing $exe"; continue; }
