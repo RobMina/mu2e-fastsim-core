@@ -1,29 +1,19 @@
 #!/bin/bash
-# traccc wire-chamber Kalman test on a Polaris compute node (no build: needs the build of README.md section 2).
-# Simulates the detray wire chamber, then runs the truth fitting example on CPU and CUDA with performance output.
+# traccc Kalman tests on a Polaris compute node (no build: needs the build of README.md section 2).
+# The upstream wire-chamber Kalman fit test (CPU; pulls of d0, z0, phi, theta, qop checked by the test itself) and the
+# CUDA Kalman test (telescope geometry; there is no CUDA wire-chamber test in v1.6.0). The examples (simulate +
+# truth_fitting_example) were dropped: in v1.6.0 the fitting example throws map::at on the simulated wire chamber.
 T=${TRACCC_AREA:-/eagle/GenesisHackathonOct26/ram2aq/traccc}
 B=$T/build-cuda-fp64/bin
 R=$T/runs/$(date +%Y%m%d_%H%M%S); mkdir -p $R; cd $R || exit 1
 export TRACCC_TEST_DATA_DIR=${TRACCC_TEST_DATA_DIR:-$T/traccc/data}
+ulimit -c 0
 echo "host $(hostname) job ${PBS_JOBID:-none} out $R"; nvidia-smi -L
-[ -x $B/traccc_simulate_wire_chamber ] || { echo "no build at $B"; exit 2; }
+[ -x $B/traccc_test_cpu ] || { echo "no build at $B"; exit 2; }
 
 run() { local log="$R/$1.log"; shift; echo "== $*"; local t0=$SECONDS; "$@" > "$log" 2>&1; local rc=$?; echo "exit $rc ($((SECONDS - t0)) s)"; }   # no /usr/bin/time on Polaris compute nodes
 
-for cfg in "p2:2:100" "p100:100:2000"; do
-  IFS=: read tag p n <<< "$cfg"
-  sim=detray_simulation/wire_chamber/${tag}
-  ( cd $B && run sim_$tag ./traccc_simulate_wire_chamber --gen-vertex-xyz-mm=0:0:0 --gen-vertex-xyz-std-mm=0:0:0 \
-      --gen-mom-gev=$p:$p --gen-phi-degree=0:360 --gen-events=10 --gen-nparticles=$n --output-directory=$sim/ \
-      --gen-eta=-1:1 --constraint-step-size-mm=1 --search-window 3:3 )
-  # the simulator writes the detector JSONs to its working directory ($B), the events under the data directory
-  geo=$B/wire_chamber_geometry.json; mat=$B/wire_chamber_homogeneous_material.json; grid=$B/wire_chamber_surface_grids.json
-  echo "detector files: $geo $mat $grid"
-  for exe in traccc_truth_fitting_example traccc_truth_fitting_example_cuda; do
-    [ -x $B/$exe ] || { echo "missing $exe"; continue; }
-    ( cd $R && run ${exe#traccc_}_$tag $B/$exe --input-directory=$sim/ --check-performance --detector-file=$geo \
-        --material-file=$mat --grid-file=$grid --input-events=10 --constraint-step-size-mm=1 --search-window 3:3 )
-  done
-done
+run cpu_wire $B/traccc_test_cpu --gtest_filter='*KalmanFittingWireChamber*'
+run cuda_kalman $B/traccc_test_cuda --gtest_filter='*Kalman*'
+for f in cpu_wire cuda_kalman; do echo "--- $f"; grep -E '^\[ *(RUN|  *OK|  FAILED|  PASSED|==========) ' $R/$f.log | tail -20; done
 ls -la $R
-grep -h -i -E 'fitted|tracks|throughput|time|chi|pull' $R/*truth_fitting*.log | head -40
