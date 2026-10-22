@@ -24,7 +24,8 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 | `mu2efastsim/stats.py`, `plots.py` | robust statistics (core sigma, binned-ratio band, MPV by Moyal fit `mpv_fit` and by histogram peak `mpv`) and plotting/stats-JSON helpers shared by every comparison |
 | `mu2efastsim/match.py` | joins and lookups on multi-column integer keys, two-sample KS test (fast-vs-stock comparisons) |
 | `iri/` | ALCF Polaris job drivers through the IRI API (inline job shipping, venv setup, GPU smoke test, git sync) |
-| `mu2efastsim/endpoints/` | compute endpoints behind one interface (`submit`/`status`/`fetch`/`cancel`): `slurm_ssh` (any Slurm site over `ssh`; UVA today), and `kit` = `fastsimkit`, the Mu2eBO evaluator-contract MCP server (one point = one job) |
+| `mu2efastsim/endpoints/` | compute endpoints behind one interface (`submit`/`status`/`fetch`/`cancel`): `slurm_ssh` (any Slurm site over `ssh`; UVA today), `eaf` (Fermilab EAF: jobs in the user's JupyterHub server on an A100 MIG slice, driven with a hub token from the Fermilab network; one slice with a queue, auto-stop, keepalive), and `kit` = `fastsimkit`, the Mu2eBO evaluator-contract MCP server (one point = one job; tasks that read Fermilab-resident inputs in place run only on `eaf`) |
+| `eaf/` | Fermilab EAF tools: `eafhub.py` (start, run, wait, stop a session from a GPVM), the P2 script on real steps, live tests of the kit and its queue, read-only probes of slice usage and server lifetime |
 | `uva/` | UVA Rivanna/Afton Slurm jobs: step-0 probe, in-image validation with the real tables, KPP V-R2/V-R3 with a streamed reference; see `uva/README.md` |
 
 ## Backends
