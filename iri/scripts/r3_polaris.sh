@@ -6,6 +6,8 @@
 # Lookup tables come from CVMFS into /local/scratch and are deleted on exit. Outputs: $M2FS_EAGLE/r3/<time>_<jobid>/.
 # R3_KNOBFILE (env, a file on Eagle): one line per GPU of reco-r3 --knob values (empty line = nominal); each GPU then
 # runs its own point on all step tables with TARGET events, and the node merge is skipped (points must not be summed).
+# R3_ARGFILE (env, a file on Eagle): like R3_KNOBFILE but each line is extra reco-r3 arguments for that GPU (e.g.
+# "--time-shift .../cond/corr_P4_v2feb.json --knob pe_stretch=0.95"); takes precedence over R3_KNOBFILE.
 # R3_TABLES (env): space-separated step-table sequencers to use (e.g. "00000990 00001023"), default all staged tables.
 T_JOB=$(date +%s)
 E=${M2FS_EAGLE:?}; V=$E/venv/bin/python; I=$E/r3_inputs
@@ -31,11 +33,13 @@ for f in "${FILES[@]}"; do [ -s "$f" ] || { echo "missing $f"; exit 3; }; done
 NG=4; PER=$(( (TARGET + NG - 1) / NG ))
 echo "target $TARGET ($PER per GPU), ${#FILES[@]} step tables, extras ${EXTRA[*]}, setup $(( $(date +%s) - T_JOB )) s"
 KN=(); if [ -n "${R3_KNOBFILE:-}" ]; then mapfile -t KN < "$R3_KNOBFILE"; PER=$TARGET; cp "$R3_KNOBFILE" $O/knobs.txt; fi
+AR=(); if [ -n "${R3_ARGFILE:-}" ]; then mapfile -t AR < "$R3_ARGFILE"; PER=$TARGET; cp "$R3_ARGFILE" $O/args.txt; R3_KNOBFILE=${R3_KNOBFILE:-$R3_ARGFILE}; fi
 pids=()
 for g in $(seq 0 $((NG-1))); do
-  if [ -n "${R3_KNOBFILE:-}" ]; then mine=("${FILES[@]}"); KA=(); [ -n "${KN[$g]:-}" ] && KA=(--knob ${KN[$g]})
+  if [ -n "${R3_ARGFILE:-}" ]; then mine=("${FILES[@]}"); KA=(${AR[$g]:-})
+  elif [ -n "${R3_KNOBFILE:-}" ]; then mine=("${FILES[@]}"); KA=(); [ -n "${KN[$g]:-}" ] && KA=(--knob ${KN[$g]})
   else mine=(); KA=(); for k in "${!FILES[@]}"; do [ $((k % NG)) -eq $g ] && mine+=("${FILES[$k]}"); done; fi
-  echo "gpu $g: ${#mine[@]} tables, target $PER, knobs: ${KN[$g]:-nominal}"
+  echo "gpu $g: ${#mine[@]} tables, target $PER, args: ${KA[*]:-nominal}"
   CUDA_VISIBLE_DEVICES=$g $V -m crvfastsim reco-r3 "${mine[@]}" --calib $I/cond/crvcalib.csv \
     --deviation $I/cond/crvphoton.csv --jax --objective --target $PER --seed $((1000 + g)) "${EXTRA[@]}" "${KA[@]}" \
     --emit $O/r3.gpu$g.json > $O/r3.gpu$g.txt 2>&1 & pids+=($!)
