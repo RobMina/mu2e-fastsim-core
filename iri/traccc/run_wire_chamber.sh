@@ -8,7 +8,7 @@ export TRACCC_TEST_DATA_DIR=${TRACCC_TEST_DATA_DIR:-$T/traccc/data}
 echo "host $(hostname) job ${PBS_JOBID:-none} out $R"; nvidia-smi -L
 [ -x $B/traccc_simulate_wire_chamber ] || { echo "no build at $B"; exit 2; }
 
-run() { local log="$R/$1.log"; shift; echo "== $*"; /usr/bin/time -v "$@" > "$log" 2>&1; echo "exit $? ($(grep -m1 'Elapsed' "$log"))"; }
+run() { local log="$R/$1.log"; shift; echo "== $*"; local t0=$SECONDS; "$@" > "$log" 2>&1; local rc=$?; echo "exit $rc ($((SECONDS - t0)) s)"; }   # no /usr/bin/time on Polaris compute nodes
 
 for cfg in "p2:2:100" "p100:100:2000"; do
   IFS=: read tag p n <<< "$cfg"
