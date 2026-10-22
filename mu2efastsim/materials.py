@@ -125,6 +125,7 @@ ELECTRONICS = Material("Electronics", 0.58, 226.40105018703,
                        {"Si": 0.103, "Al": 0.034, "Au": 0.034, "Cu": 0.691, "C": 0.118166876291217,
                         "H": 0.0198331237087827})
 TUNGSTEN = Material("G4_W", 19.30, 727.0, {"W": 1.0}, sternheimer=(5.4059, 0.2167, 3.4960, 0.15509, 2.8447, 0.14))
+LEAD = Material("G4_Pb", 11.35, 823.0, {"Pb": 1.0}, sternheimer=(6.2018, 0.3776, 3.8073, 0.09359, 3.1608, 0.14))   # slab test (NIST)
 GOLD = Material("G4_Au", 19.32, 790.0, {"Au": 1.0}, sternheimer=(5.5747, 0.2021, 3.6979, 0.09756, 3.1101, 0.14))
 MYLAR = Material("G4_MYLAR", 1.40, 78.7, {"C": 0.625010832340889, "H": 0.0419607170679432, "O": 0.333028450591168})
 POLYETHYLENE = Material("G4_POLYETHYLENE", 0.94, 57.4, {"C": 0.856, "H": 0.144})
@@ -133,4 +134,4 @@ SILICA = Material("G4_SILICON_DIOXIDE", 2.32, 139.2, {"Si": 0.4674, "O": 0.5326}
 BY_NAME = {m.name: m for m in (POLYSTYRENE, ALUMINIUM, AIR, CONCRETE_MARS, MB_OVERBURDEN, MILD_STEEL,
                                SHIELDING_CONCRETE, COPPER, SILICON, ELECTRONICS2, CUW1090, ALUMINIUM_6061,
                                ALUMINIUM_7075, BRONZE_C938, TRACKER_MANIFOLD, G10, ELECTRONICS, POLYETHYLENE, SILICA,
-                               MYLAR, TUNGSTEN, GOLD)}
+                               MYLAR, TUNGSTEN, GOLD, LEAD)}
