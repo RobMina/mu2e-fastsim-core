@@ -213,3 +213,14 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
     assert "/dev/shm/crvfs_lib_${USER}_" in body and "flock 9" in body and "lib_release" in body
     assert body.count("trap '") >= 1 and "deleted node library" in body
     assert '--library "$S/lib_prod_as_20files.root"' in body
+
+
+def test_gen_sets():
+    p = CP.validate({**P, "gen_set": 1, "shard_offset": 98, "files_per_job": 3})
+    assert CP.gen_files(p, 0) == ["crygen_v1_tables/gen.001400_00002099.root", "crygen_v1_tables/gen.001400_00002100.root",
+                                  "crygen_v1_tables/gen.001400_00002001.root"]
+    assert CP.validate(P)["gen_set"] == 0                       # default: g4ref_v1
+    with pytest.raises(ValueError):
+        CP.validate({**P, "gen_set": 0, "shard_offset": 20})
+    with pytest.raises(ValueError):
+        CP.validate({**P, "gen_set": 2})

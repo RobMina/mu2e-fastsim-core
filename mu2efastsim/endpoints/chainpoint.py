@@ -26,20 +26,23 @@ from typing import Any, Dict, List, Optional
 from . import EndpointError, Resources
 from .slurm_ssh import su_estimate
 
-PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall_minutes")
+PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall_minutes", "gen_set")
 METRICS = ("accepted_events", "generated_events", "jobs_ok", "gpu_hours", "est_su", "accepted_per_gpu_hour",
            "accepted_per_est_su", "accepted_per_gpu_hour_chain", "input_wait_s_mean", "campaign_s",
            "clusters_per_generated_EX", "clusters_per_generated_T1", "clusters_per_generated_T2",
            "clusters_per_generated_M", "library_reused_jobs")
 SECTOR = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
-N_GEN = 20                                                  # g4ref_v1 gen shards 1..20
+# gen sets (CRY primaries of every generated event): number -> (file pattern, first subrun, shards); datasets registry
+GEN_SETS = {0: ("g4ref_v1_tables/gen.001400_{:08d}.root", 1, 20),           # 20 x 50 k, with a G4 reference
+            1: ("crygen_v1_tables/gen.001400_{:08d}.root", 2001, 100)}      # 100 x 1 M, CRY only (no G4 reference)
+N_GEN = 20                                                  # g4ref_v1 gen shards 1..20 (gen_set 0)
 LIBRARY = "tier1b_v7/lib_prod_as_20files.root"
 CALIB = "geometry/crvcalib_sim_best_v1_5_run1400.csv"
 DEVIATION = "geometry/crvphoton_sim_best_v1_5_run1400.csv"
 GDML = "geometry/mu2e_extracted_v04.gdml"
 GEN = "g4ref_v1_tables/gen.001400_{:08d}.root"
-LIMITS = {"shards": (1, 32), "files_per_job": (1, 20), "shard_offset": (0, N_GEN - 1), "max_events": (0, 10 ** 7),
-          "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180)}
+LIMITS = {"shards": (1, 32), "files_per_job": (1, 25), "shard_offset": (0, 99), "max_events": (0, 10 ** 7),
+          "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180), "gen_set": (0, max(GEN_SETS))}
 
 BODY = """@common@@tables@CODE=@code@
 C() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,PYTHONPATH=$CODE/crv:$CODE/core:$CODE/tracker" -B "$L" -B /dev/shm -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
@@ -88,6 +91,7 @@ class FnalSource:
 
 
 def validate(params: Dict[str, Any]) -> Dict[str, int]:
+    params = {"gen_set": 0, **params}                     # optional: older studies name no gen set
     missing = [k for k in PARAMS if k not in params]
     extra = sorted(set(params) - set(PARAMS) - {"task"})
     if missing or extra:
@@ -101,13 +105,17 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
         if not lo <= int(v) <= hi:
             raise ValueError(f"fastsimkit: chain_point {k} must be in [{lo}, {hi}], got {v!r}")
         out[k] = int(v)
+    n = GEN_SETS[out["gen_set"]][2]
+    if out["shard_offset"] >= n:
+        raise ValueError(f"fastsimkit: chain_point shard_offset must be < {n} for gen_set {out['gen_set']}")
     return out
 
 
 def gen_files(p: Dict[str, int], k: int) -> List[str]:
     """Gen tables of sub-job k: files_per_job consecutive shards starting at shard_offset + k * files_per_job (cycled)."""
     f, o = p["files_per_job"], p["shard_offset"]
-    return [GEN.format((o + k * f + i) % N_GEN + 1) for i in range(f)]
+    pat, first, n = GEN_SETS[p.get("gen_set", 0)]
+    return [pat.format(first + (o + k * f + i) % n) for i in range(f)]
 
 
 class ChainPoint:
