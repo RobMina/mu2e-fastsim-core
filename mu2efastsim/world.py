@@ -304,7 +304,7 @@ def column(pieces, o, d, t_max, chunk=4096):
     return out
 
 
-def load_tubes(gdml_path, keep_materials=None, bbox=None, skip_names=()):
+def load_tubes(gdml_path, keep_materials=None, bbox=None, skip_names=(), names=None):
     """Tube and polycone solids of the GDML world as cylindrical shells: list of (material, R [3x3], t [3], rmin, rmax,
     half z, phi0, dphi) in the global frame (R maps local to global). Polycones become one shell per z section with the
     section's smaller rmin and larger rmax. Boolean solids use their first constituent (as `load`).
@@ -312,6 +312,7 @@ def load_tubes(gdml_path, keep_materials=None, bbox=None, skip_names=()):
     keep_materials: names to keep (default: everything that is not air or vacuum). bbox: (lo, hi) global corners; keep
     only shells whose global bounding box overlaps it (the tracker region holds thousands of support pieces).
     skip_names: volume-name prefixes to drop with their daughters (e.g. the straws, which a detector package handles).
+    names: optional list; the logical-volume path (mother/.../volume) of each returned shell is appended (diagnostics).
     """
     root = ET.parse(gdml_path).getroot()
     vols = {v.get("name"): v for v in root.find("structure").findall("volume")}
@@ -341,7 +342,7 @@ def load_tubes(gdml_path, keep_materials=None, bbox=None, skip_names=()):
             return res
         return []
 
-    def walk(lv, R, t):
+    def walk(lv, R, t, path):
         for pv in vols[lv].findall("physvol"):
             child = pv.find("volumeref").get("ref")
             p = pv.find("position")
@@ -360,9 +361,11 @@ def load_tubes(gdml_path, keep_materials=None, bbox=None, skip_names=()):
                     if bbox is not None and (np.any(hi < bbox[0]) or np.any(lo > bbox[1])):
                         continue
                     out.append((mat, R2, tc, rmin, rmax, hz, phi0, dphi))
-            walk(child, R2, t2)
+                    if names is not None:
+                        names.append(path + _strip(child))
+            walk(child, R2, t2, path + _strip(child) + "/")
 
-    walk(world, np.eye(3), np.zeros(3))
+    walk(world, np.eye(3), np.zeros(3), "")
     return out
 
 
