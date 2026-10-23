@@ -189,13 +189,14 @@ class PieceSet:
         ix1 = np.clip(((self.hi[:, 0] - self.g0[0]) // cell).astype(int), 0, self.ng[0] - 1)
         iz0 = np.clip(((self.lo[:, 2] - self.g0[1]) // cell).astype(int), 0, self.ng[1] - 1)
         iz1 = np.clip(((self.hi[:, 2] - self.g0[1]) // cell).astype(int), 0, self.ng[1] - 1)
-        cells = [[] for _ in range(self.ng[0] * self.ng[1])]
-        for ip in range(len(self.mat)):
-            for ix in range(ix0[ip], ix1[ip] + 1):
-                for iz in range(iz0[ip], iz1[ip] + 1):
-                    cells[ix * self.ng[1] + iz].append(ip)
-        self.cell_start = np.r_[0, np.cumsum([len(c) for c in cells])]
-        self.cell_items = np.array([i for c in cells for i in c], np.int64)
+        nx, nz = ix1 - ix0 + 1, iz1 - iz0 + 1
+        cnt = nx * nz
+        ip = np.repeat(np.arange(len(self.mat)), cnt)
+        k = np.arange(cnt.sum()) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+        cid = (ix0[ip] + k // nz[ip]) * self.ng[1] + iz0[ip] + k % nz[ip]
+        order = np.lexsort((ip, cid))                       # by cell, pieces ascending within a cell
+        self.cell_items = ip[order].astype(np.int64)
+        self.cell_start = np.r_[0, np.cumsum(np.bincount(cid, minlength=self.ng[0] * self.ng[1]))]
         self.grid = True
         return self
 

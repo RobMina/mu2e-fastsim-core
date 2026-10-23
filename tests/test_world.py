@@ -136,3 +136,20 @@ def test_moments_coaxial_and_pieces():
     sp = W.SignedPieceSet([(1, "X", P, lo, hi) for _, P, lo, hi in PIECES])
     r = sp.column(np.array([[0.0, 5, 0]]), d, np.array([100.0]), moments=True)["X"]
     assert np.allclose([r[0][0], r[1][0], r[2][0]], [2.0, 10.0, 152 / 3])
+
+
+def test_build_grid_cells_match_reference_loop():
+    rng = np.random.default_rng(3)
+    lo = rng.uniform(0, 4000, (300, 3))
+    pieces = [("X", CUBE, l, l + rng.uniform(10, 900, 3)) for l in lo]
+    ps = W.PieceSet(pieces).build_grid(250.0)
+    g0, c, ng = ps.g0, ps.cell, ps.ng
+    cells = [[] for _ in range(ng[0] * ng[1])]
+    for ip in range(len(pieces)):
+        ix0, ix1 = [int(np.clip((v - g0[0]) // c, 0, ng[0] - 1)) for v in (ps.lo[ip, 0], ps.hi[ip, 0])]
+        iz0, iz1 = [int(np.clip((v - g0[1]) // c, 0, ng[1] - 1)) for v in (ps.lo[ip, 2], ps.hi[ip, 2])]
+        for ix in range(ix0, ix1 + 1):
+            for iz in range(iz0, iz1 + 1):
+                cells[ix * ng[1] + iz].append(ip)
+    assert np.array_equal(ps.cell_start, np.r_[0, np.cumsum([len(x) for x in cells])])
+    assert np.array_equal(ps.cell_items, [i for x in cells for i in x])
