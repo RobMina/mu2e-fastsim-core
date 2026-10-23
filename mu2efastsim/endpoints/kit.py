@@ -208,6 +208,11 @@ TASKS["veto_c4"] = Task(
 
 FNAL_TASKS = {"chain", "regression", "veto_c4"}
 
+# Delegated tasks: a task whose job needs more than a rendered body on some endpoints (inputs streamed into the running
+# job) names a factory here; DELEGATES[task](kit) returns a handler with check/submit/status/results/cancel, used when
+# its `applies(endpoint)` is true (otherwise the task renders as a plain body, e.g. on EAF).
+DELEGATES: Dict[str, Any] = {}
+
 # Beam stage (umbrella beam/, package beamfastsim): task beam_point, stopping-target metrics for one target geometry.
 # Registered when the umbrella's beam/ is on PYTHONPATH; FNAL endpoints only (reads the MuBeamCat-derived table in place).
 try:
@@ -216,6 +221,8 @@ except ImportError:
     _beam_task = None
 if _beam_task is not None:
     _beam_task.register(TASKS, Task, Resources, FNAL_TASKS)
+    if hasattr(_beam_task, "register_delegate"):
+        _beam_task.register_delegate(DELEGATES)
 
 TABLE_TASKS = {"response_bench", "v4_response", "chain", "regression"}   # stage Mu2e-internal tables: cleanup record required
 
@@ -236,6 +243,17 @@ class FastsimKit:
         self.ep = endpoint or get(os.environ.get("FASTSIMKIT_ENDPOINT", "uva"), state_dir=root / "jobs",
                                   max_su_per_job=float(os.environ.get("FASTSIMKIT_MAX_SU_PER_JOB", "500")))
         self._cp = None
+        self._delegates: Dict[str, Any] = {}
+
+    def _delegate(self, params=None, handle=None):
+        """Handler for a delegated task on this endpoint, or None (plain rendered task)."""
+        task = params.get("task") if params is not None else self._task_of(handle)
+        factory = DELEGATES.get(task)
+        if factory is None or not factory.applies(self.ep):
+            return None
+        if task not in self._delegates:
+            self._delegates[task] = factory.make(self)
+        return self._delegates[task]
 
     @property
     def chain_point(self):
@@ -284,6 +302,9 @@ class FastsimKit:
     def check(self, name, params, files, inputs) -> Dict[str, Any]:
         if self._is_cp(params):
             return self.chain_point.check(name, params)
+        d = self._delegate(params=params)
+        if d is not None:
+            return d.check(name, params)
         try:
             self.render(params)
         except ValueError as e:
@@ -300,6 +321,10 @@ class FastsimKit:
         if self._is_cp(params):
             self._record_task(name, "chain_point")
             return self.chain_point.submit(name, params)
+        d = self._delegate(params=params)
+        if d is not None:
+            self._record_task(name, params["task"])
+            return d.submit(name, params)
         script, res = self.render(params)
         try:
             self.ep.submit(name, script, res)
@@ -316,6 +341,9 @@ class FastsimKit:
     def status(self, handle) -> Dict[str, Any]:
         if self._is_cp(handle=handle):
             return self.chain_point.status(handle)
+        d = self._delegate(handle=handle)
+        if d is not None:
+            return d.status(handle)
         s = self.ep.status(handle)
         return {"state": s.state, "message": f"{s.site_state} {s.message}".strip(),
                 "poll_ms": POLL_MS if s.state == "working" else 0, "progress": None}
@@ -323,6 +351,9 @@ class FastsimKit:
     def results(self, handle) -> Dict[str, Any]:
         if self._is_cp(handle=handle):
             return self.chain_point.results(handle)
+        d = self._delegate(handle=handle)
+        if d is not None:
+            return d.results(handle)
         s = self.ep.status(handle)
         if s.state != "completed":
             raise ValueError(f"fastsimkit: {handle!r} is {s.state}, not completed")
@@ -343,6 +374,9 @@ class FastsimKit:
     def cancel(self, handle) -> Dict[str, Any]:
         if self._is_cp(handle=handle):
             return self.chain_point.cancel(handle)
+        d = self._delegate(handle=handle)
+        if d is not None:
+            return d.cancel(handle)
         return {"state": self.ep.cancel(handle)}
 
     @staticmethod
