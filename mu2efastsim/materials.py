@@ -20,7 +20,9 @@ ELEMENTS = {"H": (1, 1.00794), "C": (6, 12.0107), "N": (7, 14.0067), "O": (8, 15
             "Fe": (26, 55.845), "Mn": (25, 54.938049), "Cu": (29, 63.546), "W": (74, 183.84), "Au": (79, 196.967), "Mg": (12, 24.305),
             "Pb": (82, 207.2), "Sn": (50, 118.71), "Ni": (28, 58.6934), "Zn": (30, 65.38), "Sb": (51, 121.76),
             "Cl": (17, 35.453),
-            "B": (5, 10.811), "Ti": (22, 47.867), "F": (9, 18.9984032)}
+            "B": (5, 10.811), "Ti": (22, 47.867), "F": (9, 18.9984032),
+            "Ag": (47, 107.8682), "Cr": (24, 51.9961), "Cs": (55, 132.905), "I": (53, 126.904), "Lu": (71, 174.967),
+            "Y": (39, 88.9058), "Ce": (58, 140.116)}
 
 
 @dataclass(frozen=True)
@@ -131,7 +133,37 @@ MYLAR = Material("G4_MYLAR", 1.40, 78.7, {"C": 0.625010832340889, "H": 0.0419607
 POLYETHYLENE = Material("G4_POLYETHYLENE", 0.94, 57.4, {"C": 0.856, "H": 0.144})
 SILICA = Material("G4_SILICON_DIOXIDE", 2.32, 139.2, {"Si": 0.4674, "O": 0.5326})
 
+# tracker cable runs, calorimeter disk and the rest of the tracker region: density, I and composition as in the v04 GDML
+# export (read 2026-10-23); before, the first six were treated as G4_Al at 2.699 g/cm3
+ALUMINIUM_HONEYCOMB = Material("AluminumHoneycomb", 0.03, 166.0, {"Al": 1.0})
+CARBON_FIBER = Material("CarbonFiber", 1.422, 77.023718420056,
+                        {"C": 0.794002107481052, "H": 0.0280294500649256, "O": 0.177968442454022})
+CAL_CABLE_RUN_OUTER = Material("CalCableRunOuter", 6.844, 336.137388288734,
+                               {"Ag": 0.52603, "Cu": 0.34825, "F": 0.09553, "C": 0.03019})
+_CABLE_FIBER = {"C": 0.34093, "O": 0.28578, "Al": 0.28265, "H": 0.05676, "Si": 0.03172, "F": 0.00216}
+CAL_CABLE_RUN_FIBER = Material("CalCableRunFiber", 1.6575, 89.439662534022, _CABLE_FIBER)
+TRK_CABLE_RUN_FIBER = Material("TrkCableRunFiber", 1.6575, 89.439662534022, _CABLE_FIBER)
+TRK_CABLE_RUN_OUTER = Material("TrkCableRunOuter", 4.6254, 212.602169355846,
+                               {"Cu": 0.71458, "C": 0.10259, "H": 0.02099, "N": 0.00197, "O": 0.06161, "Si": 0.09826})
+CESIUM_IODIDE = Material("G4_CESIUM_IODIDE", 4.51, 553.1, {"Cs": 0.511548868591927, "I": 0.488451131408073},
+                         sternheimer=(6.2807, 0.0395, 3.3353, 0.25381, 2.6657, 0.0))
+POLYETHYLENE_092 = Material("Polyethylene092", 0.92, 56.6323346252475, {"H": 0.1428, "C": 0.8572})
+PEEK = Material("Polyetheretherketone", 1.32, 35.719636793795, {"C": 0.513514, "H": 0.405405, "O": 0.081081})  # GDML fractions as given
+LYSO = Material("Lyso_01", 7.4, 399.385743651319, {"Lu": 0.708935, "Si": 0.069895, "O": 0.17973, "Y": 0.03994, "Ce": 0.0015})
+STAINLESS_STEEL = Material("StainlessSteel", 8.02, 280.927103569437,
+                           {"Mn": 0.02, "Si": 0.01, "Cr": 0.19, "Ni": 0.1, "Fe": 0.68})
+
 BY_NAME = {m.name: m for m in (POLYSTYRENE, ALUMINIUM, AIR, CONCRETE_MARS, MB_OVERBURDEN, MILD_STEEL,
                                SHIELDING_CONCRETE, COPPER, SILICON, ELECTRONICS2, CUW1090, ALUMINIUM_6061,
                                ALUMINIUM_7075, BRONZE_C938, TRACKER_MANIFOLD, G10, ELECTRONICS, POLYETHYLENE, SILICA,
-                               MYLAR, TUNGSTEN, GOLD, LEAD)}
+                               MYLAR, TUNGSTEN, GOLD, LEAD, ALUMINIUM_HONEYCOMB, CARBON_FIBER, CAL_CABLE_RUN_OUTER,
+                               CAL_CABLE_RUN_FIBER, TRK_CABLE_RUN_FIBER, TRK_CABLE_RUN_OUTER, CESIUM_IODIDE,
+                               POLYETHYLENE_092, PEEK, LYSO, STAINLESS_STEEL)}
+
+
+def get(name):
+    """Material by GDML name; a name without constants is an error (no silent default)."""
+    try:
+        return BY_NAME[name]
+    except KeyError:
+        raise KeyError(f"material {name!r} has no constants: add it to mu2efastsim.materials from the GDML") from None

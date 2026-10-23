@@ -71,6 +71,48 @@ def _in_tri(p, a, b, c):
     return not (neg and pos)
 
 
+def _pieces_of(solid, solids, R, t, mat, y_min=None, clip=None):
+    """Global-frame convex pieces (mat, planes, lo, hi) of a box or xtru solid (booleans: first constituent).
+
+    clip: optional extra half-space planes [K, 4] (n . x <= d, global frame) added to every piece (lo/hi unchanged)."""
+    out = []
+    tag = solid.tag
+    if tag in ("subtraction", "union", "intersection"):
+        return _pieces_of(solids[solid.find("first").get("ref")], solids, R, t, mat, y_min, clip)
+    if tag == "box":
+        h = 0.5 * np.array([float(solid.get(a)) for a in "xyz"])
+        tri_sets = [np.array([[-h[0], -h[1]], [h[0], -h[1]], [h[0], h[1]], [-h[0], h[1]]])]
+        z0, z1 = -h[2], h[2]
+    elif tag == "xtru":
+        sec = solid.findall("section")
+        if len(sec) != 2 or any(float(s.get("scalingFactor", 1)) != 1 for s in sec):
+            return out
+        v = [[float(p.get("x")), float(p.get("y"))] for p in solid.findall("twoDimVertex")]
+        tri_sets = _convex_pieces_2d(v)
+        z0, z1 = float(sec[0].get("zPosition")), float(sec[1].get("zPosition"))
+    else:
+        return out
+    for poly in tri_sets:
+        planes = []
+        n_edges = len(poly)
+        area = 0.5 * np.sum(poly[:, 0] * np.roll(poly[:, 1], -1) - np.roll(poly[:, 0], -1) * poly[:, 1])
+        pp = poly if area > 0 else poly[::-1]
+        for i in range(n_edges):
+            a, b = pp[i], pp[(i + 1) % n_edges]
+            n = np.array([b[1] - a[1], -(b[0] - a[0]), 0.0])
+            n /= np.linalg.norm(n)
+            planes.append((n, n @ np.array([a[0], a[1], 0.0])))
+        planes += [(np.array([0, 0, 1.0]), z1), (np.array([0, 0, -1.0]), -z0)]
+        P = np.array([[*(R @ n), (R @ n) @ t + d] for n, d in planes])
+        corners = np.array([[x, y, z] for x, y in pp for z in (z0, z1)]) @ R.T + t
+        if y_min is not None and corners[:, 1].max() < y_min:
+            continue
+        if clip is not None:
+            P = np.vstack([P, np.asarray(clip, float).reshape(-1, 4)])
+        out.append((mat, P, corners.min(0), corners.max(0)))
+    return out
+
+
 def load(gdml_path, keep_materials=None, y_min=None):
     """Global-frame convex pieces: list of (material name, planes N x 4 [nx, ny, nz, d]).
 
@@ -88,39 +130,7 @@ def load(gdml_path, keep_materials=None, y_min=None):
         return _strip(m.get("ref")) if m is not None else ""
 
     def emit(solid, R, t, mat):
-        tag = solid.tag
-        if tag in ("subtraction", "union", "intersection"):
-            emit(solids[solid.find("first").get("ref")], R, t, mat)
-            return
-        if tag == "box":
-            h = 0.5 * np.array([float(solid.get(a)) for a in "xyz"])
-            tri_sets = [np.array([[-h[0], -h[1]], [h[0], -h[1]], [h[0], h[1]], [-h[0], h[1]]])]
-            z0, z1 = -h[2], h[2]
-        elif tag == "xtru":
-            sec = solid.findall("section")
-            if len(sec) != 2 or any(float(s.get("scalingFactor", 1)) != 1 for s in sec):
-                return
-            v = [[float(p.get("x")), float(p.get("y"))] for p in solid.findall("twoDimVertex")]
-            tri_sets = _convex_pieces_2d(v)
-            z0, z1 = float(sec[0].get("zPosition")), float(sec[1].get("zPosition"))
-        else:
-            return
-        for poly in tri_sets:
-            planes = []
-            n_edges = len(poly)
-            area = 0.5 * np.sum(poly[:, 0] * np.roll(poly[:, 1], -1) - np.roll(poly[:, 0], -1) * poly[:, 1])
-            pp = poly if area > 0 else poly[::-1]
-            for i in range(n_edges):
-                a, b = pp[i], pp[(i + 1) % n_edges]
-                n = np.array([b[1] - a[1], -(b[0] - a[0]), 0.0])
-                n /= np.linalg.norm(n)
-                planes.append((n, n @ np.array([a[0], a[1], 0.0])))
-            planes += [(np.array([0, 0, 1.0]), z1), (np.array([0, 0, -1.0]), -z0)]
-            P = np.array([[*(R @ n), (R @ n) @ t + d] for n, d in planes])
-            corners = np.array([[x, y, z] for x, y in pp for z in (z0, z1)]) @ R.T + t
-            if y_min is not None and corners[:, 1].max() < y_min:
-                continue
-            pieces.append((mat, P, corners.min(0), corners.max(0)))
+        pieces.extend(_pieces_of(solid, solids, R, t, mat, y_min))
 
     def walk(lv, R, t):
         for pv in vols[lv].findall("physvol"):
@@ -573,3 +583,182 @@ class CoaxialShells:
                     j = j - 1
                     active = active & (j >= 0) & (zmax_run[np.maximum(j, 0)] > zlo)
         return out
+
+
+# ---- signed convex pieces: booleans and mother-minus-daughter, exactly (up to the n-gon of round solids) ----
+NGON = 128          # polygon sides of a full circle for round solids (equal-area; sagitta 0.2 mm at r = 700 mm)
+
+
+def _prism(poly, z0, z1):
+    """Local planes [K, 4] (n . x <= d) and bounding box (lo, hi) of a prism over a convex polygon, z in [z0, z1]."""
+    pp = np.asarray(poly, float)
+    if 0.5 * np.sum(pp[:, 0] * np.roll(pp[:, 1], -1) - np.roll(pp[:, 0], -1) * pp[:, 1]) < 0:
+        pp = pp[::-1]
+    a, b = pp, np.roll(pp, -1, axis=0)
+    n = np.c_[b[:, 1] - a[:, 1], -(b[:, 0] - a[:, 0]), np.zeros(len(pp))]
+    L = np.linalg.norm(n, axis=1)
+    keep = L > 1e-12
+    n = n[keep] / L[keep, None]
+    d = np.einsum("ij,ij->i", n[:, :2], a[keep])
+    P = np.vstack([np.c_[n, d], [[0, 0, 1.0, z1], [0, 0, -1.0, -z0]]])
+    return P, np.r_[pp.min(0), z0], np.r_[pp.max(0), z1]
+
+
+def _annulus_sector(rmin, rmax, phi0, dphi, z0, z1, ngon=NGON):
+    """Signed prisms [(sign, P, lo, hi)] of an annulus sector: per wedge of <= 90 deg, + wedge(rmax) - wedge(rmin)."""
+    out = []
+    nw = max(1, int(np.ceil(dphi / (np.pi / 2) - 1e-9)))
+    for k in range(nw):
+        a0 = phi0 + k * dphi / nw
+        w = dphi / nw
+        m = max(2, int(np.ceil(ngon * w / (2 * np.pi))))
+        ang = a0 + w * np.arange(m + 1) / m
+        f = np.sqrt((w / m) / np.sin(w / m))                       # equal-area polygon radius factor
+        for sign, r in ((1, rmax), (-1, rmin)):
+            if r > 0:
+                poly = np.r_[[[0.0, 0.0]], np.c_[np.cos(ang), np.sin(ang)] * r * f]
+                out.append((sign, *_prism(poly, z0, z1)))
+    return out
+
+
+def _intersect(pa, pb):
+    """Convex intersection of two signed local pieces (sign product); None if their boxes do not overlap."""
+    lo, hi = np.maximum(pa[2], pb[2]), np.minimum(pa[3], pb[3])
+    if np.any(lo >= hi):
+        return None
+    return (pa[0] * pb[0], np.vstack([pa[1], pb[1]]), lo, hi)
+
+
+def _move(pieces, R, t):
+    """Signed local pieces moved by x -> R x + t (planes and boxes)."""
+    out = []
+    for s, P, lo, hi in pieces:
+        n = P[:, :3] @ R.T
+        corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]) @ R.T + t
+        out.append((s, np.c_[n, P[:, 3] + n @ t], corners.min(0), corners.max(0)))
+    return out
+
+
+def signed_local(solid, solids, ngon=NGON):
+    """Signed convex pieces [(sign, P local, lo, hi)] of a GDML solid; None if a part is not supported.
+
+    box, xtru (two unscaled sections), tube/cutTube (cut planes ignored), polycone (each z section as a tube from its
+    smaller rmin to its larger rmax), and subtraction / union / intersection of these (second solid with an inline
+    position and rotation, the placement convention of _rot). Subtraction A - B = A - (A n B), union A + B - (A n B)."""
+    tag = solid.tag
+    ang = np.pi / 180 if solid.get("aunit", "deg") == "deg" else 1.0
+    if tag == "box":
+        h = 0.5 * np.array([float(solid.get(a)) for a in "xyz"])
+        return [(1, *_prism([[-h[0], -h[1]], [h[0], -h[1]], [h[0], h[1]], [-h[0], h[1]]], -h[2], h[2]))]
+    if tag == "xtru":
+        sec = solid.findall("section")
+        if len(sec) != 2 or any(float(s.get("scalingFactor", 1)) != 1 for s in sec):
+            return None
+        v = [[float(p.get("x")), float(p.get("y"))] for p in solid.findall("twoDimVertex")]
+        z0, z1 = float(sec[0].get("zPosition")), float(sec[1].get("zPosition"))
+        return [(1, *_prism(tri, z0, z1)) for tri in _convex_pieces_2d(v)]
+    if tag in ("tube", "cutTube"):
+        hz = 0.5 * float(solid.get("z"))
+        return _annulus_sector(float(solid.get("rmin", 0)), float(solid.get("rmax")), float(solid.get("startphi", 0)) * ang,
+                               float(solid.get("deltaphi", 360)) * ang, -hz, hz, ngon)
+    if tag == "polycone":
+        zp = sorted((float(z.get("z")), float(z.get("rmin", 0)), float(z.get("rmax"))) for z in solid.findall("zplane"))
+        out = []
+        for (z0, a0, b0), (z1, a1, b1) in zip(zp[:-1], zp[1:]):
+            if z1 > z0:
+                out += _annulus_sector(min(a0, a1), max(b0, b1), float(solid.get("startphi", 0)) * ang,
+                                       float(solid.get("deltaphi", 360)) * ang, z0, z1, ngon)
+        return out
+    if tag in ("subtraction", "union", "intersection"):
+        A = signed_local(solids[solid.find("first").get("ref")], solids, ngon)
+        B = signed_local(solids[solid.find("second").get("ref")], solids, ngon)
+        if A is None or B is None or solid.find("rotationref") is not None or solid.find("positionref") is not None:
+            return None
+        p = solid.find("position")
+        if p is not None or solid.find("rotation") is not None:
+            t = np.array([float(p.get(a, 0)) for a in "xyz"]) if p is not None else np.zeros(3)
+            B = _move(B, _rot(solid.find("rotation")), t)
+        AB = [q for q in (_intersect(a, b) for a in A for b in B) if q is not None]
+        if tag == "intersection":
+            return AB
+        neg = [(-s, P, lo, hi) for s, P, lo, hi in AB]
+        return A + neg if tag == "subtraction" else A + B + neg
+    return None
+
+
+def signed_subtree(gdml_path, mother, bbox=None, labels=False, ngon=NGON):
+    """Signed global convex pieces [(sign, material, P, lo, hi)] of every non-vacuum volume below `mother` (logical
+    volume name without its pointer suffix), and the skipped placements {(name, solid tag, material): count}.
+
+    Each volume adds its solid in its material, and its solid with the opposite sign in its mother's material when the
+    mother is not vacuum, so mother minus daughters is exact. bbox: (lo, hi) global corners; keep only pieces whose box
+    overlaps it. labels: material keys 'volume|material' (volume = leaf name without copy indices)."""
+    root = ET.parse(gdml_path).getroot()
+    vols = {v.get("name"): v for v in root.find("structure").findall("volume")}
+    solids = {s.get("name"): s for s in root.find("solids")}
+    vac = re.compile(r"AIR|Vacuum|VACUUM|Galactic")
+    out, skipped = [], {}
+
+    def emit(local, R, t, key, sign):
+        for s, P, lo, hi in _move(local, R, t):
+            if bbox is not None and (np.any(hi < bbox[0]) or np.any(lo > bbox[1])):
+                continue
+            out.append((s * sign, key, P, lo, hi))
+
+    def walk(lv, R, t, inside, mkey):
+        for pv in vols[lv].findall("physvol"):
+            child = pv.find("volumeref").get("ref")
+            n = _strip(child)
+            p = pv.find("position")
+            pos = np.array([float(p.get(a, 0)) for a in "xyz"]) if p is not None else np.zeros(3)
+            R2, t2 = R @ _rot(pv.find("rotation")), R @ pos + t
+            ins = inside or n == mother
+            key = None
+            if ins and n != mother:
+                mat = _strip(vols[child].find("materialref").get("ref"))
+                solid = solids[vols[child].find("solidref").get("ref")]
+                local = signed_local(solid, solids, ngon)
+                key = None if vac.search(mat) else (f"{re.sub(r'(_[0-9]+)+$', '', n)}|{mat}" if labels else mat)
+                if local is None:
+                    if key is not None or mkey is not None:
+                        k = (re.sub(r"(_[0-9]+)+$", "", n), solid.tag, mat)
+                        skipped[k] = skipped.get(k, 0) + 1
+                else:
+                    if key is not None:
+                        emit(local, R2, t2, key, 1)
+                    if mkey is not None:
+                        emit(local, R2, t2, mkey, -1)
+            walk(child, R2, t2, ins, key)
+
+    walk(root.find("setup/world").get("ref"), np.eye(3), np.zeros(3), False, None)
+    return out, skipped
+
+
+class SignedPieceSet:
+    """Column per material of signed convex pieces (signed_subtree): sum of + pieces minus sum of - pieces, clipped
+    at 0. Pieces are packed into PieceSets by sign and plane count (so wide polygons do not pad every box)."""
+
+    BUCKETS = (8, 16, 64, 1 << 30)
+
+    def __init__(self, pieces, cell=500.0):
+        self.sets = []
+        self.mats = sorted({q[1] for q in pieces})
+        for sign in (1, -1):
+            lo_k = 0
+            for hi_k in self.BUCKETS:
+                sel = [(m, P, lo, hi) for s, m, P, lo, hi in pieces if s == sign and lo_k < len(P) <= hi_k]
+                if sel:
+                    self.sets.append((sign, PieceSet(sel).build_grid(cell)))
+                lo_k = hi_k
+        self.n = len(pieces)
+
+    def __len__(self):
+        return self.n
+
+    def column(self, o, d, t_max, nsub=None):
+        out = {}
+        for sign, ps in self.sets:
+            for m, c in ps.column(o, d, t_max).items():
+                v = out.setdefault(m, np.zeros(len(o)))
+                v += sign * c
+        return {m: np.clip(v, 0.0, None) for m, v in out.items()}

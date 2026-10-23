@@ -94,3 +94,28 @@ def test_pieceset_matches_column_loop():
     grid = W.column(W.PieceSet(pieces).build_grid(cell=7.0), o, d, 250.0)
     for m in ref:
         assert np.allclose(got[m], ref[m], atol=1e-9) and np.allclose(grid[m], ref[m], atol=1e-9)
+
+
+def _signed_column(local, o, d, L):
+    ps = W.SignedPieceSet([(s, "X", P, lo, hi) for s, P, lo, hi in local], cell=50.0)
+    return ps.column(o, d, L).get("X", np.zeros(len(o)))
+
+
+def test_signed_annulus_chords_match_tube():
+    local = W._annulus_sector(1.0, 2.0, 0.0, 2 * np.pi, -5.0, 5.0, ngon=256)
+    o = np.array([[0.0, 10, 0], [1.5, 10, 0], [0.3, 10, 2]])
+    d = np.array([[0.0, -1, 0]] * 3)
+    tube = [("X", np.eye(3), np.zeros(3), 1.0, 2.0, 5.0, 0.0, 2 * np.pi)]
+    ref = W.column_tubes(tube, o, d, 100.0)["X"]
+    assert np.allclose(_signed_column(local, o, d, np.full(3, 100.0)), ref, atol=2e-3)
+
+
+def test_signed_subtraction_box_minus_box():
+    import xml.etree.ElementTree as ET
+    xml = """<solids><box name="A" x="10" y="10" z="10"/><box name="B" x="4" y="20" z="4"/>
+             <subtraction name="S"><first ref="A"/><second ref="B"/><position name="p" x="2" y="0" z="0"/></subtraction></solids>"""
+    sol = {s.get("name"): s for s in ET.fromstring(xml)}
+    local = W.signed_local(sol["S"], sol)
+    o = np.array([[2.0, 20, 0], [-3.0, 20, 0], [4.5, 20, 0]])   # through the hole, beside it, at its edge region
+    d = np.array([[0.0, -1, 0]] * 3)
+    assert np.allclose(_signed_column(local, o, d, np.full(3, 100.0)), [0.0, 10.0, 10.0])

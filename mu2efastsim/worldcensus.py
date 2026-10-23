@@ -1,7 +1,8 @@
 """Which GDML volumes the fast world keeps: python3 -m mu2efastsim.worldcensus GDML [--y-min MM] [--top N].
 
 world.load turns box and xtru solids into convex pieces and ignores every other solid type; world.load_tubes adds
-tubes and polycones (used inside the tracker). This walks the same placements and reports, per solid type and per
+tubes and polycones (used inside the tracker). Both take a boolean solid as its first constituent: such volumes are
+reported as their own class (<loader>_<boolean>_first_only); world.signed_local handles them exactly. This walks the same placements and reports, per solid type and per
 material, the number of placed volumes and their mass (solid volume x density, booleans by their first constituent as
 world.load does), split into kept by world.load, kept by load_tubes only, and skipped by both. Only volumes whose
 global bounding box reaches above y_min are counted (the stage C world above the tracker plane).
@@ -76,9 +77,12 @@ def census(gdml_path, y_min=None):
             mref = vols[child].find("materialref")
             mat = _strip(mref.get("ref")) if mref is not None else ""
             if not re.search(r"AIR|Vacuum|VACUUM|Galactic", mat):
-                s = _first(solids[vols[child].find("solidref").get("ref")], solids)
+                s0 = solids[vols[child].find("solidref").get("ref")]
+                s = _first(s0, solids)
                 if y_min is None or t2[1] + _extent(s) >= y_min:
                     kept = "load" if s.tag in BOX_LIKE else ("load_tubes" if s.tag in TUBE_LIKE else "skipped")
+                    if kept != "skipped" and s0.tag in ("subtraction", "union", "intersection"):
+                        kept += f"_{s0.tag}_first_only"   # loaders keep only the first constituent (signed_local does all)
                     v = _volume_mm3(s)
                     r = out[(kept, s.tag, mat)]
                     r["n"] += 1

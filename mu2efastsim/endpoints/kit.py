@@ -197,16 +197,7 @@ m["regression_pass"] = float(m["pytest_failed"] == 0 and all(m[k] == 1.0 for k i
     "v4_photons_pass", "v4_sipm_jax_pass", "v4_sipm_device_pass", "repro_bit_identical", "repro_cpu_gpu_statistical", "chain_ok")))""")),
 })
 
-# Tier C4 of the veto optimisation (crv branch veto-ext, crvfastsim.veto): a veto rule applied to a cached selection of
-# tracks and coincidences (made by crvfastsim.veto.cosmic_ana under @fnal_data@/veto_ve1). CPU only, seconds per point.
-# Gates < 0 mean off. Until veto-ext is merged the task runs the package from a checkout of that branch on FNAL storage.
-TASKS["veto_c4"] = Task(
-    params=("selection", "dt_lo", "dt_hi", "min_pe", "min_layers", "gate_start_lo", "gate_end_hi", "pmin", "pmax"),
-    metrics=("inefficiency", "vetoed_frac", "vetoed_lo", "vetoed_hi", "vetoed", "selected", "passing_gate"),
-    resources=Resources(cores=2, mem_gb=8, gpus=0, gpu_type="", minutes=15),
-    body='@runtime_a@' + 'D=@fnal_data@\ncase @p_selection@ in run1a_dev) SEL=$D/veto_ve1/run1a_dev_sel.parquet;; *) echo "unknown selection @p_selection@"; exit 2;; esac\n[ -r "$SEL" ] || { echo "missing $SEL"; exit 3; }\nVX=$D/veto_ext_code   # crvfastsim.veto until veto-ext is merged into crv main\nif [ -d "$VX/.git" ]; then git -C "$VX" fetch -q origin veto-ext && git -C "$VX" reset -q --hard origin/veto-ext\nelse git clone -q -b veto-ext https://github.com/RobMina/mu2e-crv-fastsim.git "$VX"; fi\ngit -C "$VX" log -1 --format="veto-ext %h"\nG() { awk -v g="$1" \'BEGIN { if (g + 0 < 0) print "null"; else print g }\'; }\nprintf \'{"name": "kit", "dt_lo": %s, "dt_hi": %s, "min_pe": %s, "min_layers": %s, "gate_start_lo": %s, "gate_end_hi": %s}\\n\' \\\n  @p_dt_lo@ @p_dt_hi@ @p_min_pe@ @p_min_layers@ "$(G @p_gate_start_lo@)" "$(G @p_gate_end_hi@)" > "$M2FS_OUT/card.json"\ncat "$M2FS_OUT/card.json"\n( cd "$M2FS_CODE" && PYTHONPATH="$VX:$M2FS_CODE/core" "$M2FS_VENV/bin/python" -m crvfastsim.veto "$SEL" --card "$M2FS_OUT/card.json" \\\n  --pmin @p_pmin@ --pmax @p_pmax@ --outdir "$M2FS_OUT/veto" ) > "$M2FS_OUT/veto.txt" 2>&1 || { cat "$M2FS_OUT/veto.txt"; exit 6; }\ntail -1 "$M2FS_OUT/veto.txt"\n"$M2FS_VENV/bin/python" - "$M2FS_OUT" <<\'PY\'\nimport json, os, sys\no = sys.argv[1]; j = json.load(open(os.path.join(o, "veto", "veto_stats.json"))); v = j["vetoed"]\nm = {"vetoed_frac": v["frac"], "inefficiency": 1.0 - v["frac"], "vetoed_lo": v["lo"], "vetoed_hi": v["hi"],\n     "vetoed": v["k"], "selected": j["selected"], "passing_gate": j["passing_gate"]}\njson.dump({k: float(x) for k, x in m.items()}, open(os.path.join(o, "metrics.json"), "w"))\nPY\n')
-
-FNAL_TASKS = {"chain", "regression", "veto_c4"}
+FNAL_TASKS = {"chain", "regression"}
 
 TABLE_TASKS = {"response_bench", "v4_response", "chain", "regression"}   # stage Mu2e-internal tables: cleanup record required
 
