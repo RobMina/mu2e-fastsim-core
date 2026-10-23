@@ -119,3 +119,20 @@ def test_signed_subtraction_box_minus_box():
     o = np.array([[2.0, 20, 0], [-3.0, 20, 0], [4.5, 20, 0]])   # through the hole, beside it, at its edge region
     d = np.array([[0.0, -1, 0]] * 3)
     assert np.allclose(_signed_column(local, o, d, np.full(3, 100.0)), [0.0, 10.0, 10.0])
+
+
+def test_moments_coaxial_and_pieces():
+    # a full ring r 1-2 about z, |z| < 5; vertical line x = 0 from y = 10 down: material at s in [8, 9] and [11, 12]
+    tube = [("X", np.eye(3), np.zeros(3), 1.0, 2.0, 5.0, 0.0, 2 * np.pi)]
+    o, d, L = np.array([[0.0, 10, 0]]), np.array([[0.0, -1, 0]]), np.array([20.0])
+    m1 = (9 ** 2 - 8 ** 2 + 12 ** 2 - 11 ** 2) / 2
+    m2 = (9 ** 3 - 8 ** 3 + 12 ** 3 - 11 ** 3) / 3
+    for res in (W.column_tubes(tube, o, d, L, moments=True)["X"],
+                W.CoaxialShells(tube, axis_point=(0, 0, 0)).column(o, d, L, moments=True)["X"]):
+        assert np.allclose([res[0][0], res[1][0], res[2][0]], [2.0, m1, m2])
+    # the cube of PIECES (|x|, |y|, |z| <= 1) from y = 5 down: s in [4, 6]
+    r = W.PieceSet(PIECES).column(np.array([[0.0, 5, 0]]), d, np.array([100.0]), moments=True)["X"]
+    assert np.allclose([r[0][0], r[1][0], r[2][0]], [2.0, (36 - 16) / 2, (216 - 64) / 3])
+    sp = W.SignedPieceSet([(1, "X", P, lo, hi) for _, P, lo, hi in PIECES])
+    r = sp.column(np.array([[0.0, 5, 0]]), d, np.array([100.0]), moments=True)["X"]
+    assert np.allclose([r[0][0], r[1][0], r[2][0]], [2.0, 10.0, 152 / 3])

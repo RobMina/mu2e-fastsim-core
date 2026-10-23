@@ -226,11 +226,14 @@ class PieceSet:
         key = np.unique(it2 * len(self.mat) + ip)          # a piece spanning several cells counts once per track
         return key // len(self.mat), key % len(self.mat)
 
-    def column(self, o, d, t_max, chunk=2048):
+    def column(self, o, d, t_max, chunk=2048, moments=False):
+        """Path length per material; moments=True: (length, int s ds, int s^2 ds) per material."""
         o = np.asarray(o, float)
         d = np.asarray(d, float)
         t_max = np.asarray(t_max, float) * np.ones(len(o))
         acc = np.zeros((len(self.mats), len(o)))
+        if moments:
+            acc1, acc2 = np.zeros_like(acc), np.zeros_like(acc)
         if not len(self.mat):
             return {}
         inv = 1.0 / np.where(d == 0, 1e-300, d)
@@ -267,6 +270,12 @@ class PieceSet:
             b = np.minimum(leave, tm[it])
             L = np.where(outside, 0.0, np.clip(b - a, 0.0, None))
             np.add.at(acc, (self.mat[ip], c0 + it), L)
+            if moments:
+                e1 = a + L
+                np.add.at(acc1, (self.mat[ip], c0 + it), 0.5 * (e1 ** 2 - a ** 2))
+                np.add.at(acc2, (self.mat[ip], c0 + it), (e1 ** 3 - a ** 3) / 3.0)
+        if moments:
+            return {m: (acc[i], acc1[i], acc2[i]) for i, m in enumerate(self.mats)}
         return {m: acc[i] for i, m in enumerate(self.mats)}
 
 
@@ -379,8 +388,15 @@ def load_tubes(gdml_path, keep_materials=None, bbox=None, skip_names=(), names=N
     return out
 
 
-def column_tubes(tubes, o, d, t_max, nsub=16):
+def _add(dct, m, n, idx, val):
+    v = dct.setdefault(m, np.zeros(n))
+    np.add.at(v, idx, val)
+
+
+def column_tubes(tubes, o, d, t_max, nsub=16, moments=False):
     """Path length [mm] of each segment o + s d, s in [0, t_max], inside the cylindrical shells: dict material -> [N].
+    moments=True: also the first and second moments of s over the material, int s ds and int s^2 ds (same dicts, as
+    (length, m1, m2); sector shells by the same nsub sampling).
 
     Per shell, in its local frame: the chord inside r <= rmax minus the chord inside r < rmin, clipped to |z| <= hz;
     the phi range of a sector is applied by subdividing each inside interval into `nsub` pieces and keeping those whose
@@ -389,7 +405,7 @@ def column_tubes(tubes, o, d, t_max, nsub=16):
     o = np.asarray(o, float)
     d = np.asarray(d, float)
     t_max = np.asarray(t_max, float) * np.ones(len(o))
-    out = {}
+    out, o1, o2 = {}, {}, {}
     for mat, R, tc, rmin, rmax, hz, phi0, dphi in tubes:
         ol = (o - tc) @ R          # global -> local: R^T (x - t), written as row vectors
         dl = d @ R
@@ -429,20 +445,33 @@ def column_tubes(tubes, o, d, t_max, nsub=16):
             ivals.append((np.maximum(lo[cand], np.minimum(b1c, hi[cand])), hi[cand]))
         else:
             ivals.append((lo[cand], hi[cand]))
-        acc = np.zeros(len(cand))
+        acc, a1, a2 = np.zeros(len(cand)), np.zeros(len(cand)), np.zeros(len(cand))
         for s0, s1 in ivals:
             ln = np.clip(s1 - s0, 0, None)
             if full:
                 acc += ln
+                if moments:
+                    e1 = s0 + ln
+                    a1 += 0.5 * (e1 ** 2 - s0 ** 2)
+                    a2 += (e1 ** 3 - s0 ** 3) / 3.0
                 continue
             k = (np.arange(nsub) + 0.5) / nsub
             sm = s0[:, None] + ln[:, None] * k[None, :]
             x = ol[cand, 0][:, None] + dl[cand, 0][:, None] * sm
             y = ol[cand, 1][:, None] + dl[cand, 1][:, None] * sm
             ph = np.mod(np.arctan2(y, x) - phi0, 2 * np.pi)
-            acc += ln * np.mean(ph <= dphi, axis=1)
+            ins = ph <= dphi
+            acc += ln * np.mean(ins, axis=1)
+            if moments:
+                a1 += ln * np.mean(ins * sm, axis=1)
+                a2 += ln * np.mean(ins * sm * sm, axis=1)
         v = out.setdefault(mat, np.zeros(len(o)))
         v[cand] += acc
+        if moments:
+            _add(o1, mat, len(o), cand, a1)
+            _add(o2, mat, len(o), cand, a2)
+    if moments:
+        return {m: (out[m], o1.get(m, np.zeros(len(o))), o2.get(m, np.zeros(len(o)))) for m in out}
     return out
 
 
@@ -494,8 +523,9 @@ class CoaxialShells:
     def __len__(self):
         return self.n_coaxial + len(self.other)
 
-    def column(self, o, d, t_max, nsub=16):
-        """Path length [mm] per material of segments o + s d, s in [0, t_max] (as column/column_tubes).
+    def column(self, o, d, t_max, nsub=16, moments=False):
+        """Path length [mm] per material of segments o + s d, s in [0, t_max] (as column/column_tubes); moments=True
+        returns (length, int s ds, int s^2 ds) per material (sectors by the nsub sampling).
 
         Per (rmin, rmax) group: the annulus intervals of each track (two quadratics), then for every shell of the group
         that the interval's z range overlaps, the exact z-clipped sub-interval; phi sectors by sampling that sub-interval
@@ -511,7 +541,14 @@ class CoaxialShells:
         A = dx * dx + dy * dy
         B = 2 * (ox * dx + oy * dy)
         r2 = ox * ox + oy * oy
-        out = column_tubes(self.other, o, d, t_max, nsub) if self.other else {}
+        out, o1, o2 = {}, {}, {}
+        if self.other:
+            res = column_tubes(self.other, o, d, t_max, nsub, moments=moments)
+            for m, v in res.items():
+                if moments:
+                    out[m], o1[m], o2[m] = v[0].copy(), v[1].copy(), v[2].copy()
+                else:
+                    out[m] = v
         k = (np.arange(nsub) + 0.5) / nsub
 
         def chord(r):
@@ -568,20 +605,34 @@ class CoaxialShells:
                         ln = np.clip(u1 - u0, 0, None)
                         frac = np.ones(len(sel))
                         sec = ~full[js] & (ln > 0)
+                        if moments:
+                            e1 = u0 + ln
+                            m1 = 0.5 * (e1 ** 2 - u0 ** 2)
+                            m2 = (e1 ** 3 - u0 ** 3) / 3.0
                         if sec.any():
                             sm = u0[sec, None] + ln[sec, None] * k[None, :]
                             cs = c[sec]
                             ph = np.mod(np.arctan2(oy[cs, None] + dy[cs, None] * sm, ox[cs, None] + dx[cs, None] * sm)
                                         - p0s[js[sec], None], 2 * np.pi)
-                            frac[sec] = np.mean(ph <= dps[js[sec], None], axis=1)
+                            ins = ph <= dps[js[sec], None]
+                            frac[sec] = np.mean(ins, axis=1)
+                            if moments:
+                                m1[sec] = ln[sec] * np.mean(ins * sm, axis=1)
+                                m2[sec] = ln[sec] * np.mean(ins * sm * sm, axis=1)
                         val = ln * frac
                         for m in np.unique(mats[js]):
                             mm = (mats[js] == m) & (val > 0)
                             if mm.any():
                                 v = out.setdefault(m, np.zeros(len(o)))
                                 np.add.at(v, c[mm], val[mm])
+                                if moments:
+                                    _add(o1, m, len(o), c[mm], m1[mm])
+                                    _add(o2, m, len(o), c[mm], m2[mm])
                     j = j - 1
                     active = active & (j >= 0) & (zmax_run[np.maximum(j, 0)] > zlo)
+        if moments:
+            z = np.zeros(len(o))
+            return {m: (out[m], o1.get(m, z), o2.get(m, z)) for m in out}
         return out
 
 
@@ -755,10 +806,18 @@ class SignedPieceSet:
     def __len__(self):
         return self.n
 
-    def column(self, o, d, t_max, nsub=None):
+    def column(self, o, d, t_max, nsub=None, moments=False):
+        """Column per material (clipped at 0); moments=True: (length, int s ds, int s^2 ds), each signed sum, the
+        moments zeroed where the length clips to 0."""
         out = {}
         for sign, ps in self.sets:
-            for m, c in ps.column(o, d, t_max).items():
-                v = out.setdefault(m, np.zeros(len(o)))
-                v += sign * c
+            for m, c in ps.column(o, d, t_max, moments=moments).items():
+                v = out.setdefault(m, np.zeros((3, len(o))) if moments else np.zeros(len(o)))
+                v += sign * (np.asarray(c) if moments else c)
+        if moments:
+            res = {}
+            for m, v in out.items():
+                ok = v[0] > 1e-9
+                res[m] = (np.where(ok, v[0], 0.0), np.where(ok, v[1], 0.0), np.where(ok, v[2], 0.0))
+            return res
         return {m: np.clip(v, 0.0, None) for m, v in out.items()}
