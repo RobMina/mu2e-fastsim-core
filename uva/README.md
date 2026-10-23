@@ -15,7 +15,7 @@ VPN, key-based `ssh uva-hpc`). Image: `mu2efastsim.sif` built on an `interactive
 `endpoints/slurm_ssh.py` is the endpoint adapter (submit / status / fetch / cancel over `ssh` + Slurm, local job records,
 per-job SU cap); `endpoints/kit.py` is `fastsimkit`, an MCP server speaking the Mu2eBO evaluator contract on top of it
 (one BO point = one job; tasks in `TASKS`, each writing `out/metrics.json`: `reco_bench`, `response_bench`,
-`v4_response`, and `beam_point` from the umbrella's `beam/` (muon table streamed in, see `beam/beamfastsim/kit_uva.py`); the last two stage the real tables copy-compute-delete and must leave `out/cleanup.txt`).
+`v4_response`, and `beam_point` from the umbrella's `beam/` (muon table streamed in, see `beam/beamfastsim/kit_uva.py`); `response_bench` and `v4_response` stage the real tables copy-compute-delete and must leave `out/cleanup.txt`).
 `chain_point` (`endpoints/chainpoint.py`) is one BO point of the whole fast chain as N one-GPU sub-jobs (`<name>.j<k>`):
 params `shards`, `files_per_job`, `shard_offset`, `max_events`, `seed`, `wall_minutes`; when a sub-job starts it writes
 an `inbox` file and the kit streams the Mu2e-internal inputs from the FNAL host (`FASTSIMKIT_FNAL_HOST`,
