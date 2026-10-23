@@ -260,3 +260,18 @@ def test_watcher_stops_after_linger(tmp_path):
     assert spawned == [1]                                                       # nobody may call again: a watcher
     assert ep.wait_and_stop() and hub.srv is None                               # sleeps out the linger, then stops
     assert clock.t >= ep.state.get("w").resources["ended_at"] + 120
+
+
+def test_kit_beam_point_renders_on_eaf(tmp_path):
+    """beam_point (umbrella beam/, beamfastsim.kit_task) is registered when beam/ is importable: FNAL-only, valid bash."""
+    from mu2efastsim.endpoints import kit as kitmod
+    if "beam_point" not in kitmod.TASKS:
+        pytest.skip("beamfastsim not on PYTHONPATH")
+    hub = FakeHub(run=False)
+    ep, _ = make(tmp_path, hub)
+    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit")
+    body, res = kit.render({"task": "beam_point", "geom": "move_extras12.txt", "muons": 105350.0, "seed": 1.0,
+                            "repeat": 0.0})
+    assert not re.search(r"@[a-z_]+@", body) and ep.fnal_data in body and "--n 105350 " in body
+    assert res.gpus == 1 and "beam_point" in kitmod.FNAL_TASKS
+    subprocess.run(["bash", "-n"], input=body.encode(), check=True)

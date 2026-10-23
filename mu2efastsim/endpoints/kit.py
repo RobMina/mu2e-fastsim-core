@@ -208,6 +208,15 @@ TASKS["veto_c4"] = Task(
 
 FNAL_TASKS = {"chain", "regression", "veto_c4"}
 
+# Beam stage (umbrella beam/, package beamfastsim): task beam_point, stopping-target metrics for one target geometry.
+# Registered when the umbrella's beam/ is on PYTHONPATH; FNAL endpoints only (reads the MuBeamCat-derived table in place).
+try:
+    from beamfastsim import kit_task as _beam_task
+except ImportError:
+    _beam_task = None
+if _beam_task is not None:
+    _beam_task.register(TASKS, Task, Resources, FNAL_TASKS)
+
 TABLE_TASKS = {"response_bench", "v4_response", "chain", "regression"}   # stage Mu2e-internal tables: cleanup record required
 
 
