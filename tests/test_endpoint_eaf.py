@@ -275,3 +275,22 @@ def test_kit_beam_point_renders_on_eaf(tmp_path):
     assert not re.search(r"@[a-z_]+@", body) and ep.fnal_data in body and "--n 105350 " in body
     assert res.gpus == 1 and "beam_point" in kitmod.FNAL_TASKS
     subprocess.run(["bash", "-n"], input=body.encode(), check=True)
+
+
+def test_kit_veto_c4_deadtime_and_gate_mode_default(tmp_path):
+    """veto_c4: valid bash on EAF with and without gate_mode (default 0 = event gate); deadtime metrics declared."""
+    from mu2efastsim.endpoints import kit as kitmod
+    hub = FakeHub(run=False)
+    ep, _ = make(tmp_path, hub)
+    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit")
+    p = {"task": "veto_c4", "selection": "run1a_dev", "dt_lo": 0.0, "dt_hi": 150.0, "min_pe": 0.0, "min_layers": 0,
+         "gate_start_lo": 420.0, "gate_end_hi": 1700.0, "pmin": 85.0, "pmax": 200.0}
+    for extra in ({}, {"gate_mode": 1}):
+        body, res = kit.render({**p, **extra})
+        assert not re.search(r"@[a-z_]+@", body) and ep.fnal_data in body and res.gpus == 0
+        assert "crvfastsim.veto.deadtime" in body and "deadtime_run1a/ce_mix1bb_dev_sel.parquet" in body
+        assert f"awk -v g={extra.get('gate_mode', 0)} " in body
+        subprocess.run(["bash", "-n"], input=body.encode(), check=True)
+    assert {"deadtime", "deadtime_err", "deadtime_full"} <= set(kitmod.TASKS["veto_c4"].metrics)
+    with pytest.raises(ValueError):
+        kit.render({**p, "bogus": 1})

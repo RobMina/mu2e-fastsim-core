@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -32,6 +32,7 @@ class Task:
     metrics: Tuple[str, ...]
     resources: Resources
     body: str           # bash; @sif@ and @p_<param>@ are substituted (shell-quoted); writes $M2FS_OUT/metrics.json
+    defaults: Dict[str, Any] = field(default_factory=dict)   # optional params (absent from a call: this value)
 
 
 _COMMON = """module load apptainer >/dev/null 2>&1
@@ -197,14 +198,55 @@ m["regression_pass"] = float(m["pytest_failed"] == 0 and all(m[k] == 1.0 for k i
     "v4_photons_pass", "v4_sipm_jax_pass", "v4_sipm_device_pass", "repro_bit_identical", "repro_cpu_gpu_statistical", "chain_ok")))""")),
 })
 
-# Tier C4 of the veto optimisation (crv branch veto-ext, crvfastsim.veto): a veto rule applied to a cached selection of
-# tracks and coincidences (made by crvfastsim.veto.cosmic_ana under @fnal_data@/veto_ve1). CPU only, seconds per point.
-# Gates < 0 mean off. Until veto-ext is merged the task runs the package from a checkout of that branch on FNAL storage.
+# Tier C4 of the veto optimisation (crvfastsim.veto): a veto rule applied to a cached selection of cosmic tracks and
+# coincidences (inefficiency; made by crvfastsim.veto.cosmic_ana under @fnal_data@/veto_ve1) and, if the selection has
+# a deadtime sample, to the selected signal tracks of CE + beam frames (deadtime, methods S and F of
+# crvfastsim.veto.deadtime; @fnal_data@/deadtime_run1a). CPU only, seconds per point. Gates < 0 mean off.
+# gate_mode: 0 = an out-of-gate coincidence removes the event (mu2e_cosmic_ana), 1 = it only cannot veto (58017).
+_VETO_C4 = r"""D=@fnal_data@
+case @p_selection@ in
+  run1a_dev) SEL=$D/veto_ve1/run1a_dev_sel.parquet; DT=$D/deadtime_run1a/ce_mix1bb_dev_sel.parquet;;
+  *) echo "unknown selection @p_selection@"; exit 2;;
+esac
+[ -r "$SEL" ] || { echo "missing $SEL"; exit 3; }
+G() { awk -v g="$1" 'BEGIN { if (g + 0 < 0) print "null"; else print g }'; }
+GM=$(awk -v g=@p_gate_mode@ 'BEGIN { print (g + 0 >= 0.5) ? "coinc" : "event" }')
+printf '{"name": "kit", "dt_lo": %s, "dt_hi": %s, "min_pe": %s, "min_layers": %s, "gate_start_lo": %s, "gate_end_hi": %s, "gate_mode": "%s"}\n' \
+  @p_dt_lo@ @p_dt_hi@ @p_min_pe@ @p_min_layers@ "$(G @p_gate_start_lo@)" "$(G @p_gate_end_hi@)" "$GM" > "$M2FS_OUT/card.json"
+cat "$M2FS_OUT/card.json"
+( cd "$M2FS_CODE" && PYTHONPATH="$M2FS_CODE/crv:$M2FS_CODE/core" "$M2FS_VENV/bin/python" -m crvfastsim.veto "$SEL" \
+  --card "$M2FS_OUT/card.json" --pmin @p_pmin@ --pmax @p_pmax@ --outdir "$M2FS_OUT/veto" ) > "$M2FS_OUT/veto.txt" 2>&1 \
+  || { cat "$M2FS_OUT/veto.txt"; exit 6; }
+tail -1 "$M2FS_OUT/veto.txt"
+if [ -r "$DT" ]; then
+  ( cd "$M2FS_CODE" && PYTHONPATH="$M2FS_CODE/crv:$M2FS_CODE/core" "$M2FS_VENV/bin/python" -m crvfastsim.veto.deadtime "$DT" \
+    --card "$M2FS_OUT/card.json" --pmin @p_pmin@ --pmax @p_pmax@ --outdir "$M2FS_OUT/deadtime" ) > "$M2FS_OUT/deadtime.txt" 2>&1 \
+    || { cat "$M2FS_OUT/deadtime.txt"; exit 7; }
+  tail -3 "$M2FS_OUT/deadtime.txt"
+fi
+"$M2FS_VENV/bin/python" - "$M2FS_OUT" <<'PY'
+import json, os, sys
+o = sys.argv[1]; j = json.load(open(os.path.join(o, "veto", "veto_stats.json"))); v = j["vetoed"]
+m = {"vetoed_frac": v["frac"], "inefficiency": 1.0 - v["frac"], "vetoed_lo": v["lo"], "vetoed_hi": v["hi"],
+     "vetoed": v["k"], "selected": j["selected"], "passing_gate": j["passing_gate"]}
+dp = os.path.join(o, "deadtime", "deadtime_stats.json")
+if os.path.exists(dp):
+    d = json.load(open(dp))
+    m.update({"deadtime": d["F"]["frac"], "deadtime_err": d["F"]["err"], "deadtime_full": d["S"]["frac"],
+              "deadtime_full_lo": d["S"]["lo"], "deadtime_full_hi": d["S"]["hi"], "deadtime_selected": d["selected"]})
+else:
+    m.update({k: float("nan") for k in ("deadtime", "deadtime_err", "deadtime_full", "deadtime_full_lo",
+                                        "deadtime_full_hi", "deadtime_selected")})
+json.dump({k: float(x) for k, x in m.items()}, open(os.path.join(o, "metrics.json"), "w"))
+PY
+"""
 TASKS["veto_c4"] = Task(
-    params=("selection", "dt_lo", "dt_hi", "min_pe", "min_layers", "gate_start_lo", "gate_end_hi", "pmin", "pmax"),
-    metrics=("inefficiency", "vetoed_frac", "vetoed_lo", "vetoed_hi", "vetoed", "selected", "passing_gate"),
+    params=("selection", "dt_lo", "dt_hi", "min_pe", "min_layers", "gate_start_lo", "gate_end_hi", "gate_mode", "pmin",
+            "pmax"),
+    metrics=("inefficiency", "vetoed_frac", "vetoed_lo", "vetoed_hi", "vetoed", "selected", "passing_gate",
+             "deadtime", "deadtime_err", "deadtime_full", "deadtime_full_lo", "deadtime_full_hi", "deadtime_selected"),
     resources=Resources(cores=2, mem_gb=8, gpus=0, gpu_type="", minutes=15),
-    body='@runtime_a@' + 'D=@fnal_data@\ncase @p_selection@ in run1a_dev) SEL=$D/veto_ve1/run1a_dev_sel.parquet;; *) echo "unknown selection @p_selection@"; exit 2;; esac\n[ -r "$SEL" ] || { echo "missing $SEL"; exit 3; }\nVX=$D/veto_ext_code   # crvfastsim.veto until veto-ext is merged into crv main\nif [ -d "$VX/.git" ]; then git -C "$VX" fetch -q origin veto-ext && git -C "$VX" reset -q --hard origin/veto-ext\nelse git clone -q -b veto-ext https://github.com/RobMina/mu2e-crv-fastsim.git "$VX"; fi\ngit -C "$VX" log -1 --format="veto-ext %h"\nG() { awk -v g="$1" \'BEGIN { if (g + 0 < 0) print "null"; else print g }\'; }\nprintf \'{"name": "kit", "dt_lo": %s, "dt_hi": %s, "min_pe": %s, "min_layers": %s, "gate_start_lo": %s, "gate_end_hi": %s}\\n\' \\\n  @p_dt_lo@ @p_dt_hi@ @p_min_pe@ @p_min_layers@ "$(G @p_gate_start_lo@)" "$(G @p_gate_end_hi@)" > "$M2FS_OUT/card.json"\ncat "$M2FS_OUT/card.json"\n( cd "$M2FS_CODE" && PYTHONPATH="$VX:$M2FS_CODE/core" "$M2FS_VENV/bin/python" -m crvfastsim.veto "$SEL" --card "$M2FS_OUT/card.json" \\\n  --pmin @p_pmin@ --pmax @p_pmax@ --outdir "$M2FS_OUT/veto" ) > "$M2FS_OUT/veto.txt" 2>&1 || { cat "$M2FS_OUT/veto.txt"; exit 6; }\ntail -1 "$M2FS_OUT/veto.txt"\n"$M2FS_VENV/bin/python" - "$M2FS_OUT" <<\'PY\'\nimport json, os, sys\no = sys.argv[1]; j = json.load(open(os.path.join(o, "veto", "veto_stats.json"))); v = j["vetoed"]\nm = {"vetoed_frac": v["frac"], "inefficiency": 1.0 - v["frac"], "vetoed_lo": v["lo"], "vetoed_hi": v["hi"],\n     "vetoed": v["k"], "selected": j["selected"], "passing_gate": j["passing_gate"]}\njson.dump({k: float(x) for k, x in m.items()}, open(os.path.join(o, "metrics.json"), "w"))\nPY\n')
+    body='@runtime_a@' + _VETO_C4, defaults={"gate_mode": 0})
 
 FNAL_TASKS = {"chain", "regression", "veto_c4"}
 
@@ -275,7 +317,7 @@ class FastsimKit:
             raise ValueError(f"fastsimkit: unknown task {name!r}; choose from {sorted(TASKS)}")
         t = TASKS[name]
         extra = set(params) - set(t.params) - {"task"}
-        missing = set(t.params) - set(params)
+        missing = set(t.params) - set(params) - set(t.defaults)
         if extra or missing:
             raise ValueError(f"fastsimkit: task {name!r} takes {list(t.params)}; extra {sorted(extra)}, "
                              f"missing {sorted(missing)}")
@@ -289,7 +331,8 @@ class FastsimKit:
                              f"endpoint that mounts FNAL storage (eaf); {getattr(self.ep, 'name', '?')!r} does not")
         rt = self.ep.runtime() if hasattr(self.ep, "runtime") else APPTAINER_RUNTIME
         body = t.body.replace("@runtime_a@", rt["a"]).replace("@runtime_t@", rt["t"])
-        subs = {"sif": shlex.quote(self.sif), **{f"p_{k}": shlex.quote(_arg(params[k])) for k in t.params}}
+        subs = {"sif": shlex.quote(self.sif),
+                **{f"p_{k}": shlex.quote(_arg(params.get(k, t.defaults.get(k)))) for k in t.params}}
         if fnal:
             subs["fnal_data"] = shlex.quote(fnal)
         for k, v in subs.items():
