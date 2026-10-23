@@ -113,11 +113,12 @@ def _pieces_of(solid, solids, R, t, mat, y_min=None, clip=None):
     return out
 
 
-def load(gdml_path, keep_materials=None, y_min=None):
+def load(gdml_path, keep_materials=None, y_min=None, names=None):
     """Global-frame convex pieces: list of (material name, planes N x 4 [nx, ny, nz, d]).
 
     keep_materials: names to keep (default: everything that is not air or vacuum). y_min: drop pieces whose global
-    bounding box lies entirely below this height (mm).
+    bounding box lies entirely below this height (mm). names: optional list; the placed volume's name (pointer suffix
+    stripped) of each returned piece is appended (overrides and diagnostics).
     """
     root = ET.parse(gdml_path).getroot()
     vols = {v.get("name"): v for v in root.find("structure").findall("volume")}
@@ -129,8 +130,11 @@ def load(gdml_path, keep_materials=None, y_min=None):
         m = vols[lv].find("materialref")
         return _strip(m.get("ref")) if m is not None else ""
 
-    def emit(solid, R, t, mat):
-        pieces.extend(_pieces_of(solid, solids, R, t, mat, y_min))
+    def emit(solid, R, t, mat, vname=""):
+        new = _pieces_of(solid, solids, R, t, mat, y_min)
+        pieces.extend(new)
+        if names is not None:
+            names.extend([vname] * len(new))
 
     def walk(lv, R, t):
         for pv in vols[lv].findall("physvol"):
@@ -142,7 +146,7 @@ def load(gdml_path, keep_materials=None, y_min=None):
             mat = mat_of(child)
             if (keep_materials is None and not re.search(r"AIR|Vacuum|VACUUM|Galactic", mat)) or \
                (keep_materials is not None and mat in keep_materials):
-                emit(solids[vols[child].find("solidref").get("ref")], R2, t2, mat)
+                emit(solids[vols[child].find("solidref").get("ref")], R2, t2, mat, _strip(child))
             walk(child, R2, t2)
 
     walk(world, np.eye(3), np.zeros(3))
