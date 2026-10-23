@@ -16,6 +16,10 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 | Module | What it holds |
 |---|---|
 | `mu2efastsim/eloss.py` | restricted Bethe mean loss (`G4MuBetheBlochModel`), Urban fluctuation sampler (`G4UniversalFluctuation` + `G4UrbanFluctuation`), Birks saturation, delta-ray rate and sampling, radiation length, Highland angle |
+| `mu2efastsim/eloss_jax.py` | jit-able float64 JAX twin of `eloss.dedx_restricted` and `eloss.sample_loss` (same G4 Urban branches, fixed-shape sampling, explicit keys; validated against the numpy module, `docs/gpu_port.md`); used by the beam stage (`beam/` in the umbrella) |
+| `mu2efastsim/dedxtable.py` | PDG Bethe and radiative-loss tables for cross-checks |
+| `mu2efastsim/cvmfsget.py` | fetch single files from a CVMFS repository over HTTP from a Stratum-1, without a CVMFS mount |
+| `mu2efastsim/worldcensus.py` | census of the GDML world's solids and how `world.py` represents them |
 | `mu2efastsim/materials.py` | `Material` with composition, density, I, Sternheimer parameters, Birks constant, fluctuation-model parameters; the materials of the extracted world and the tracker (support alloys, electronics, Mylar, W and Au of the sense wire) |
 | `mu2efastsim/world.py` | GDML world -> global convex pieces; per-material path column of straight segments |
 | `mu2efastsim/crossings.py` | vectorised ray-box crossings (JAX on CPU/GPU, numpy fallback) |
@@ -24,14 +28,16 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 | `mu2efastsim/stats.py`, `plots.py` | robust statistics (core sigma, binned-ratio band, MPV by Moyal fit `mpv_fit` and by histogram peak `mpv`) and plotting/stats-JSON helpers shared by every comparison |
 | `mu2efastsim/match.py` | joins and lookups on multi-column integer keys, two-sample KS test (fast-vs-stock comparisons) |
 | `iri/` | ALCF Polaris job drivers through the IRI API (inline job shipping, venv setup, GPU smoke test, git sync) |
-| `mu2efastsim/endpoints/` | compute endpoints behind one interface (`submit`/`status`/`fetch`/`cancel`): `slurm_ssh` (any Slurm site over `ssh`; UVA today), `eaf` (Fermilab EAF: jobs in the user's JupyterHub server on an A100 MIG slice, driven with a hub token from the Fermilab network; one slice with a queue, auto-stop, keepalive), and `kit` = `fastsimkit`, the Mu2eBO evaluator-contract MCP server (one point = one job; tasks that read Fermilab-resident inputs in place run only on `eaf`) |
+| `mu2efastsim/endpoints/` | compute endpoints behind one interface (`submit`/`status`/`fetch`/`cancel`): `slurm_ssh` (any Slurm site over `ssh`; UVA today), `eaf` (Fermilab EAF: jobs in the user's JupyterHub server on an A100 MIG slice, driven with a hub token from the Fermilab network; one slice with a queue, auto-stop, keepalive), and `kit` = `fastsimkit`, the Mu2eBO evaluator-contract MCP server (one point = one job; tasks that read Fermilab-resident inputs in place run only on `eaf`). `chainpoint.py` runs a CRV chain point as N one-GPU jobs with streamed inputs. Tasks: `reco_bench`, `response_bench`, `v4_response`, `chain_point`, `chain`, `regression`, `veto_c4`, and `beam_point` when the umbrella's `beam/` is importable |
 | `eaf/` | Fermilab EAF tools: `eafhub.py` (start, run, wait, stop a session from a GPVM), the P2 script on real steps, live tests of the kit and its queue, read-only probes of slice usage and server lifetime |
+| `aurora/` | ALCF Aurora (Intel PVC) job scripts over SSH + PBS |
 | `uva/` | UVA Rivanna/Afton Slurm jobs: step-0 probe, in-image validation with the real tables, KPP V-R2/V-R3 with a streamed reference; see `uva/README.md` |
 
 ## Backends
 
 `crossings` runs on JAX (CPU or GPU) when JAX is installed and on numpy otherwise. `eloss`, `world` and
-`transport` are numpy only today; the JAX port of the energy-loss sampler is planned (`docs/gpu_port.md`).
+`transport` are numpy; `eloss_jax` is the JAX twin of the energy-loss sampler (delta-ray sampling not ported yet;
+`docs/gpu_port.md`).
 
 ## Use
 
