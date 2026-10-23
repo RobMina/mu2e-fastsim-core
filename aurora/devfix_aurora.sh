@@ -11,7 +11,7 @@
 # Aurora: test a crv branch (default oneapi-device-fix) on PVC without touching the umbrella pins: the branch is cloned
 # to $FL/crv_<branch> and put first on PYTHONPATH. Runs the fused device response V4 (v4sipm --device --no-stock) on
 # synthetic muon steps with the real v6_0 tables (CVMFS -> tmpfs, deleted), on a tile and on the CPU, plus pytest.
-# usage: qsub [-v M2FS_FLARE=...,BRANCH=...,NEV=...] devfix_aurora.sh
+# usage: qsub [-v M2FS_FLARE=...,BRANCH=...,NEV=...,TESTS=...] devfix_aurora.sh   (TESTS: pytest files, crv-relative)
 PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
 F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
 FL=$F; V=$FL/venv/bin/python; CODE=$FL/code; BR=${BRANCH:-oneapi-device-fix}; NEV=${NEV:-20000}
@@ -37,7 +37,7 @@ $V -m crvfastsim.response.synthsteps --events $NEV --out $L/steps.root || exit 4
 echo; echo "==== v4sipm --device on tile 0 | same on CPU (fused kernel) | pytest on tile 1"
 ZE_AFFINITY_MASK=0 JAX_LOG_COMPILES=${LOGC:-0} JAX_EXPLAIN_CACHE_MISSES=${LOGC:-0} taskset -c 1-24 $V -X faulthandler -m crvfastsim v4sipm $L/steps.root --device --no-stock --seed 1 ${MAXSTEPS:+--max-steps $MAXSTEPS} --outdir $O/dev_xpu > $O/dev_xpu.txt 2>&1 & a=$!
 [ -n "${XPU_ONLY:-}" ] || JAX_PLATFORMS=cpu taskset -c 53-103 $V -m crvfastsim v4sipm $L/steps.root --device --no-stock --seed 1 --outdir $O/dev_cpu > $O/dev_cpu.txt 2>&1 & b=$!
-(cd $B && ZE_AFFINITY_MASK=1 taskset -c 25-51 $V -m pytest -q -rfEs -p no:cacheprovider tests/test_device_split.py tests/test_photons.py > $O/pytest.txt 2>&1) & c=$!
+(cd $B && ZE_AFFINITY_MASK=1 taskset -c 25-51 $V -m pytest -q -rfEs -p no:cacheprovider ${TESTS:-tests/test_device_split.py tests/test_photons.py} > $O/pytest.txt 2>&1) & c=$!
 wait $c; grep -E "passed|failed|skipped|SKIP|FAILED|Fatal" $O/pytest.txt | tail -6
 wait $a ${b:-}
 for r in dev_xpu dev_cpu; do [ -f $O/$r.txt ] || continue; echo "-- $r"; grep -v "^\s*$" $O/$r.txt | grep -vE "^\s+@|experimental" | grep -vE "^\s*$" | tail -${TAILN:-40} | cut -c1-300; done
