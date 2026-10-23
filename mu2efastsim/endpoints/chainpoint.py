@@ -9,8 +9,13 @@ The job's EXIT trap deletes the tmpfs dir and writes ``out/cleanup.txt``; ``resu
 Streaming runs in background threads of the kit process (or step by step from ``status`` when ``background=False``),
 so the kit host must stay up and on the endpoint's network for the point's lifetime.
 
-Params: shards (sub-jobs, 1..32), files_per_job (gen files each, 1..20), shard_offset (first gen file, 0..19),
-max_events (per file, 0 = all), seed, wall_minutes (per sub-job). Metrics: accepted and generated events, accepted per
+Params: shards (sub-jobs, 1..32), files_per_job (gen files each, 1..25), shard_offset (first gen file in the set),
+max_events (per file, 0 = all), seed, wall_minutes (per sub-job), gen_set (0 g4ref_v1, 1 crygen_v1).
+
+Input wait: a sub-job waits for its inputs until a deadline sized from the bytes the whole point streams (every sub-job
+can queue behind the others on the kit host's link): ``wait_budget_s`` = 600 s + point bytes / FASTSIMKIT_STREAM_MBPS
+(default 4 MB/s; measured 5-6.6 MB/s aggregate in kitshm02/kitcg03), at least 1800 s. ``check`` refuses a point whose
+wait budget plus the estimated chain time (``chain_estimate_s``) does not fit in wall_minutes. Metrics: accepted and generated events, accepted per
 GPU-hour (charged and chain-only), accepted per estimated SU, campaign time, input wait, clusters per generated event
 per sector type.
 """
@@ -37,6 +42,13 @@ CRYGEN_V1_MISSING = (2011, 2028, 2031, 2033, 2034, 2037)    # held at the 3 h gr
 GEN_SETS = {0: ("g4ref_v1_tables/gen.001400_{:08d}.root", tuple(range(1, 21))),     # 20 x 50 k, with a G4 reference
             1: ("crygen_v1_tables/gen.001400_{:08d}.root",                          # 94 x 1 M, CRY only (no G4 reference)
                 tuple(s for s in range(2001, 2101) if s not in CRYGEN_V1_MISSING))}
+# sizes for the input-wait budget (bytes, 2026-10-23 on /exp): per gen file and generated events per file, per set
+GEN_FILE = {0: (2.82e6, 50_000), 1: (5.60e7, 1_000_000)}
+LIBRARY_BYTES, SMALL_BYTES = 1.007e9, 3.9e6                 # tier1b_v7 library; CSVs + GDML
+WAIT_FLOOR_S, WAIT_SLACK_S, STREAM_MBPS = 1800, 600, 4.0
+# chain time per sub-job on one A100 (kitcg03: ~470 s for 4 M generated events, 22 s setup): setup + per M generated,
+# with a 1.5x margin on the per-event part
+CHAIN_SETUP_S, CHAIN_S_PER_MEVENT = 60.0, 180.0
 LIBRARY = "tier1b_v7/lib_prod_as_20files.root"
 CALIB = "geometry/crvcalib_sim_best_v1_5_run1400.csv"
 DEVIATION = "geometry/crvphoton_sim_best_v1_5_run1400.csv"
@@ -58,9 +70,9 @@ trap 'lib_release; rm -rf "$L"; echo "$(date -Is) $(hostname) deleted $L" >> "$M
 lib_hold
 LIBSTATE=$( [ -f "$S/ready" ] && echo have || echo need )
 echo "$(hostname) $L $S $LIBSTATE" > "$(dirname "$M2FS_OUT")/inbox"      # read by the kit, which then streams the inputs in
-tw=$SECONDS; for i in $(seq 360); do [ -f "$L/ready" ] && [ -f "$S/ready" ] && break; sleep 5; done
-[ -f "$L/ready" ] && [ -f "$S/ready" ] || { echo "no input arrived"; exit 3; }
-echo "{\\"input_wait_s\\": $((SECONDS-tw)), \\"library\\": \\"$LIBSTATE\\"}" > "$M2FS_OUT/wait.json"
+tw=$SECONDS; while [ $((SECONDS-tw)) -lt @waits@ ]; do [ -f "$L/ready" ] && [ -f "$S/ready" ] && break; sleep 5; done
+[ -f "$L/ready" ] && [ -f "$S/ready" ] || { echo "no input arrived within @waits@ s"; exit 3; }
+echo "{\\"input_wait_s\\": $((SECONDS-tw)), \\"wait_budget_s\\": @waits@, \\"library\\": \\"$LIBSTATE\\"}" > "$M2FS_OUT/wait.json"
 GEN=($(ls "$L"/gen.*.root))
 C python -m crvfastsim runchain "${GEN[@]}" --library "$S/@lib@" --calib "$L/@calib@" --deviation "$L/@dev@" \\
   --gdml "$L/@gdml@" --jax --seed @seed@ @maxev@ --emit "$M2FS_OUT/shard.json" --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1 || exit 6
@@ -109,6 +121,26 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
     if out["shard_offset"] >= n:
         raise ValueError(f"fastsimkit: chain_point shard_offset must be < {n} for gen_set {out['gen_set']}")
     return out
+
+
+def point_bytes(p: Dict[str, int]) -> float:
+    """Bytes the kit streams for the whole point, worst case (every sub-job streams its own library copy)."""
+    return p["shards"] * (LIBRARY_BYTES + SMALL_BYTES + p["files_per_job"] * GEN_FILE[p.get("gen_set", 0)][0])
+
+
+def wait_budget_s(p: Dict[str, int], mbps: Optional[float] = None) -> int:
+    """Job-side input deadline [s]: slack + point bytes at the assumed kit-host link rate, at least WAIT_FLOOR_S."""
+    import os
+    mbps = mbps or float(os.environ.get("FASTSIMKIT_STREAM_MBPS", STREAM_MBPS))
+    return int(max(WAIT_FLOOR_S, WAIT_SLACK_S + point_bytes(p) / (mbps * 1e6)))
+
+
+def chain_estimate_s(p: Dict[str, int]) -> float:
+    """Estimated chain time of one sub-job [s] (setup + per million generated events, with margin)."""
+    per_file = GEN_FILE[p.get("gen_set", 0)][1]
+    if p["max_events"]:
+        per_file = min(per_file, p["max_events"])
+    return CHAIN_SETUP_S + CHAIN_S_PER_MEVENT * p["files_per_job"] * per_file / 1e6
 
 
 def gen_files(p: Dict[str, int], k: int) -> List[str]:
@@ -171,11 +203,11 @@ class ChainPoint:
         subs = {"sif": sif, "code": shlex.quote(self.code), "lib": Path(LIBRARY).name, "calib": Path(CALIB).name,
                 "dev": Path(DEVIATION).name, "gdml": Path(GDML).name, "seed": str(p["seed"] + 1000 * k),
                 "maxev": f"--max-events {p['max_events']}" if p["max_events"] else "",
-                "libmd5": self.lib_md5()[:12]}
+                "libmd5": self.lib_md5()[:12], "waits": str(wait_budget_s(p))}
         for a, b in subs.items():
             body = body.replace(f"@{a}@", b)
         import re
-        if re.search(r"@(sif|code|lib|calib|dev|gdml|seed|maxev|libmd5|common|tables|runtime_a|runtime_t)@", body):
+        if re.search(r"@(sif|code|lib|calib|dev|gdml|seed|maxev|libmd5|waits|common|tables|runtime_a|runtime_t)@", body):
             raise ValueError("fastsimkit: chain_point: unfilled placeholder")
         res = Resources(cores=16, mem_gb=110, gpus=1, gpu_type="a100", minutes=p["wall_minutes"])
         return body, res
@@ -194,6 +226,12 @@ class ChainPoint:
             cap = getattr(self.ep, "max_su_per_job", float("inf")) * p["shards"]
             if su > cap:
                 raise ValueError(f"fastsimkit: chain_point worst case {su:.0f} SU exceeds {cap:.0f}")
+            need = wait_budget_s(p) + chain_estimate_s(p)
+            if need > 60 * p["wall_minutes"]:
+                raise ValueError(f"fastsimkit: chain_point needs ~{need / 60:.0f} min per sub-job (input wait budget "
+                                 f"{wait_budget_s(p) / 60:.0f} min for {point_bytes(p) / 1e9:.1f} GB streamed + chain "
+                                 f"~{chain_estimate_s(p) / 60:.0f} min) > wall_minutes {p['wall_minutes']}: use fewer "
+                                 f"files_per_job or shards, or more wall_minutes")
         except ValueError as e:
             return {"ok": False, "message": str(e)}
         return {"ok": True, "message": ""}

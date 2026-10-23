@@ -230,3 +230,29 @@ def test_gen_sets():
         CP.validate({**P, "gen_set": 0, "shard_offset": 20})
     with pytest.raises(ValueError):
         CP.validate({**P, "gen_set": 2})
+
+
+def test_wait_budget_scales_with_bytes(tmp_path):
+    small = CP.validate(P)                                                   # 3 x 2 g4ref files: the floor
+    assert CP.wait_budget_s(small, mbps=4.0) == CP.WAIT_FLOOR_S
+    cg03 = CP.validate({**P, "gen_set": 1, "shards": 4, "files_per_job": 4, "shard_offset": 0})
+    cg02 = CP.validate({**cg03, "files_per_job": 20})
+    assert CP.wait_budget_s(cg03, mbps=4.0) == pytest.approx(600 + 4 * (1.007e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
+    assert CP.wait_budget_s(cg02, mbps=4.0) > 2700 > CP.wait_budget_s(cg03, mbps=4.0) > CP.WAIT_FLOOR_S
+    _, _, kit, _ = make(tmp_path)
+    body, _ = kit.chain_point.render(cg02, 0)
+    w = CP.wait_budget_s(cg02)
+    assert f"-lt {w} ]" in body and f"no input arrived within {w} s" in body and "seq 360" not in body
+    assert f'\\"wait_budget_s\\": {w}' in body
+
+
+def test_check_refuses_wall_too_short_for_wait_and_chain(tmp_path):
+    _, _, kit, _ = make(tmp_path)
+    cg = {**P, "gen_set": 1, "shards": 4, "shard_offset": 0}
+    assert kit.check("a", {**cg, "files_per_job": 4, "wall_minutes": 45}, [], [])["ok"]      # kitcg03
+    r = kit.check("b", {**cg, "files_per_job": 20, "wall_minutes": 45}, [], [])             # kitcg02 at 45 min
+    assert not r["ok"] and "wall_minutes" in r["message"] and "GB streamed" in r["message"]
+    assert kit.check("c", {**cg, "files_per_job": 20, "wall_minutes": 120}, [], [])["ok"]
+    assert kit.check("d", {**P, "shards": 4, "files_per_job": 20, "shard_offset": 0}, [], [])["ok"]   # fcp01
+    small = {**cg, "files_per_job": 20, "wall_minutes": 45, "max_events": 10_000}
+    assert CP.chain_estimate_s(CP.validate(small)) < CP.chain_estimate_s(CP.validate({**small, "max_events": 0}))
