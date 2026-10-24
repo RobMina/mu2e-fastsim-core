@@ -10,7 +10,11 @@ Streaming runs in background threads of the kit process (or step by step from ``
 so the kit host must stay up and on the endpoint's network for the point's lifetime.
 
 Params: shards (sub-jobs, 1..32), files_per_job (gen files each, 1..25), shard_offset (first gen file in the set),
-max_events (per file, 0 = all), seed, wall_minutes (per sub-job), gen_set (0 g4ref_v1, 1 crygen_v1).
+max_events (per file, 0 = all), seed, wall_minutes (per sub-job), gen_set (0 g4ref_v1, 1 crygen_v1, 2 crygen_run1a_v1,
+3 crygen_run2_v1), run_config (optional, 0 extracted_v04 = default, 1 run1a_v01, 2 run1b_v01, 3 run2_v10: crvfastsim
+runconfig; it picks the GDML world, the lookup tables and the response/cuts; other configurations than extracted run
+with nominal CRVCalib constants, no CSVs streamed). A gen set belongs to one CRY configuration: extracted gen sets
+(0, 1) only with run_config 0, the default-CRY sets (2, 3) only with the others.
 
 Input wait: a sub-job waits for its inputs until a deadline sized from the bytes the whole point streams (every sub-job
 can queue behind the others on the kit host's link): ``wait_budget_s`` = 600 s + point bytes / FASTSIMKIT_STREAM_MBPS
@@ -31,7 +35,8 @@ from typing import Any, Dict, List, Optional
 from . import EndpointError, Resources
 from .slurm_ssh import su_estimate
 
-PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall_minutes", "gen_set")
+PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall_minutes", "gen_set", "run_config")
+OPTIONAL = {"gen_set": 0, "run_config": 0}
 METRICS = ("accepted_events", "generated_events", "jobs_ok", "gpu_hours", "est_su", "accepted_per_gpu_hour",
            "accepted_per_est_su", "accepted_per_gpu_hour_chain", "input_wait_s_mean", "campaign_s",
            "clusters_per_generated_EX", "clusters_per_generated_T1", "clusters_per_generated_T2",
@@ -41,9 +46,11 @@ SECTOR = {1: "EX", 2: "T1", 3: "T2", 4: "M"}
 CRYGEN_V1_MISSING = (2011, 2028, 2031, 2033, 2034, 2037)    # held at the 3 h grid lifetime and removed, not rerun
 GEN_SETS = {0: ("g4ref_v1_tables/gen.001400_{:08d}.root", tuple(range(1, 21))),     # 20 x 50 k, with a G4 reference
             1: ("crygen_v1_tables/gen.001400_{:08d}.root",                          # 94 x 1 M, CRY only (no G4 reference)
-                tuple(s for s in range(2001, 2101) if s not in CRYGEN_V1_MISSING))}
+                tuple(s for s in range(2001, 2101) if s not in CRYGEN_V1_MISSING)),
+            2: ("crygen_run1a_v1_tables/gen.001400_{:08d}.root", tuple(range(3001, 3021))),   # default CRY, Run 1A world
+            3: ("crygen_run2_v1_tables/gen.001400_{:08d}.root", tuple(range(4001, 4021)))}    # default CRY, Run 2 world
 # sizes for the input-wait budget (bytes, 2026-10-23 on /exp): per gen file and generated events per file, per set
-GEN_FILE = {0: (2.82e6, 50_000), 1: (5.60e7, 1_000_000)}
+GEN_FILE = {0: (2.82e6, 50_000), 1: (5.60e7, 1_000_000), 2: (5.67e7, 1_000_000), 3: (5.66e7, 1_000_000)}
 LIBRARY_BYTES, SMALL_BYTES = 1.007e9, 3.9e6                 # tier1b_v7 library; CSVs + GDML
 WAIT_FLOOR_S, WAIT_SLACK_S, STREAM_MBPS = 1800, 600, 4.0
 # chain time per sub-job on one A100 (kitcg03: ~470 s for 4 M generated events, 22 s setup): setup + per M generated,
@@ -53,11 +60,20 @@ LIBRARY = "tier1b_v7/lib_prod_as_20files.root"
 CALIB = "geometry/crvcalib_sim_best_v1_5_run1400.csv"
 DEVIATION = "geometry/crvphoton_sim_best_v1_5_run1400.csv"
 GDML = "geometry/mu2e_extracted_v04.gdml"
+# run configurations (crvfastsim.runconfig): name, GDML under the FNAL data root, lookup tables, extracted CRY?
+RUN_CONFIGS = {0: ("extracted_v04", GDML, ("6000_0", "2370_1", "3200_0"), True),
+               1: ("run1a_v01", "geometry/mu2e_run1a_v01.gdml", ("6000_0",), False),
+               2: ("run1b_v01", "geometry/mu2e_run1a_v01.gdml", ("6000_0",), False),
+               3: ("run2_v10", "geometry/mu2e_run2_v10.gdml",
+                   ("4550_0", "1045_1", "3040_0", "3200_0", "6000_1", "6000_0", "5000_1", "6900_1", "5700_0", "2370_1",
+                    "2100_1", "1550_1"), False)}
+EXTRACTED_GEN_SETS = (0, 1)
 LIMITS = {"shards": (1, 32), "files_per_job": (1, 25), "shard_offset": (0, 99), "max_events": (0, 10 ** 7),
-          "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180), "gen_set": (0, max(GEN_SETS))}
+          "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180), "gen_set": (0, max(GEN_SETS)),
+          "run_config": (0, max(RUN_CONFIGS))}
 
 BODY = """@common@@tables@CODE=@code@
-C() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,PYTHONPATH=$CODE/crv:$CODE/core:$CODE/tracker" -B "$L" -B /dev/shm -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
+C() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,CRVFS_OFFLINE_CACHE=$L/offline,PYTHONPATH=$CODE/crv:$CODE/core:$CODE/tracker" -B "$L" -B /dev/shm -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
 C python -c "import crvfastsim.analyses.runchain as r; assert hasattr(r, 'merge')" || { echo "runchain --emit missing in $CODE"; exit 5; }
 # library once per node: /dev/shm/crvfs_lib_<user>_<md5>, one holder file per job, deleted by the last holder (flock);
 # holders of jobs that left the queue are dropped first, so a killed job cannot keep the copy alive
@@ -74,8 +90,8 @@ tw=$SECONDS; while [ $((SECONDS-tw)) -lt @waits@ ]; do [ -f "$L/ready" ] && [ -f
 [ -f "$L/ready" ] && [ -f "$S/ready" ] || { echo "no input arrived within @waits@ s"; exit 3; }
 echo "{\\"input_wait_s\\": $((SECONDS-tw)), \\"wait_budget_s\\": @waits@, \\"library\\": \\"$LIBSTATE\\"}" > "$M2FS_OUT/wait.json"
 GEN=($(ls "$L"/gen.*.root))
-C python -m crvfastsim runchain "${GEN[@]}" --library "$S/@lib@" --calib "$L/@calib@" --deviation "$L/@dev@" \\
-  --gdml "$L/@gdml@" --jax --seed @seed@ @maxev@ --emit "$M2FS_OUT/shard.json" --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1 || exit 6
+C python -m crvfastsim runchain "${GEN[@]}" --library "$S/@lib@" @conds@ \\
+  --gdml "$L/@gdml@" --jax --seed @seed@ @maxev@ @runcfg@ --emit "$M2FS_OUT/shard.json" --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1 || exit 6
 echo '{}' > "$M2FS_OUT/metrics.json"
 """
 
@@ -103,7 +119,7 @@ class FnalSource:
 
 
 def validate(params: Dict[str, Any]) -> Dict[str, int]:
-    params = {"gen_set": 0, **params}                     # optional: older studies name no gen set
+    params = {**OPTIONAL, **params}                       # optional: older studies name no gen set or run config
     missing = [k for k in PARAMS if k not in params]
     extra = sorted(set(params) - set(PARAMS) - {"task"})
     if missing or extra:
@@ -117,6 +133,9 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
         if not lo <= int(v) <= hi:
             raise ValueError(f"fastsimkit: chain_point {k} must be in [{lo}, {hi}], got {v!r}")
         out[k] = int(v)
+    if (out["gen_set"] in EXTRACTED_GEN_SETS) != RUN_CONFIGS[out["run_config"]][3]:
+        raise ValueError(f"fastsimkit: chain_point gen_set {out['gen_set']} is not a CRY sample of run_config "
+                         f"{out['run_config']} ({RUN_CONFIGS[out['run_config']][0]})")
     n = len(GEN_SETS[out["gen_set"]][1])
     if out["shard_offset"] >= n:
         raise ValueError(f"fastsimkit: chain_point shard_offset must be < {n} for gen_set {out['gen_set']}")
@@ -125,7 +144,15 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
 
 def point_bytes(p: Dict[str, int]) -> float:
     """Bytes the kit streams for the whole point, worst case (every sub-job streams its own library copy)."""
-    return p["shards"] * (LIBRARY_BYTES + SMALL_BYTES + p["files_per_job"] * GEN_FILE[p.get("gen_set", 0)][0])
+    return p["shards"] * (LIBRARY_BYTES + SMALL_BYTES * (1.6 if p.get("run_config", 0) == 3 else 1.0)
+                          + p["files_per_job"] * GEN_FILE[p.get("gen_set", 0)][0])
+
+
+def small_inputs(p: Dict[str, int]) -> List[str]:
+    """Per sub-job inputs besides the library and the gen tables: the CRVCalib/CRVPhoton CSVs (extracted only; other
+    configurations run with nominal constants) and the configuration's GDML world."""
+    rc = RUN_CONFIGS[p.get("run_config", 0)]
+    return ([CALIB, DEVIATION] if rc[3] else []) + [rc[1]]
 
 
 def wait_budget_s(p: Dict[str, int], mbps: Optional[float] = None) -> int:
@@ -197,17 +224,21 @@ class ChainPoint:
             raise ValueError(f"fastsimkit: chain_point streams its inputs into the job and needs an endpoint that can "
                              f"(slurm_ssh); {getattr(self.ep, 'name', '?')!r} cannot")
         sif = shlex.quote(self.kit.sif)
-        tables = _TABLES.replace("@tables@", "LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root")
+        rc = RUN_CONFIGS[p.get("run_config", 0)]
+        tables = _TABLES.replace("@tables@", " ".join(f"LookupTable_{t}" for t in rc[2]) + " photonMap.root")
         body = BODY.replace("@common@", _COMMON).replace("@tables@", tables)
         body = body.replace("@runtime_a@", APPTAINER_RUNTIME["a"]).replace("@runtime_t@", APPTAINER_RUNTIME["t"])
-        subs = {"sif": sif, "code": shlex.quote(self.code), "lib": Path(LIBRARY).name, "calib": Path(CALIB).name,
-                "dev": Path(DEVIATION).name, "gdml": Path(GDML).name, "seed": str(p["seed"] + 1000 * k),
+        conds = (f'--calib "$L/{Path(CALIB).name}" --deviation "$L/{Path(DEVIATION).name}"' if rc[3]
+                 else "--calib nominal")
+        subs = {"sif": sif, "code": shlex.quote(self.code), "lib": Path(LIBRARY).name, "conds": conds,
+                "gdml": Path(rc[1]).name, "seed": str(p["seed"] + 1000 * k),
+                "runcfg": "" if p.get("run_config", 0) == 0 else f"--run-config {rc[0]}",
                 "maxev": f"--max-events {p['max_events']}" if p["max_events"] else "",
                 "libmd5": self.lib_md5()[:12], "waits": str(wait_budget_s(p))}
         for a, b in subs.items():
             body = body.replace(f"@{a}@", b)
         import re
-        if re.search(r"@(sif|code|lib|calib|dev|gdml|seed|maxev|libmd5|waits|common|tables|runtime_a|runtime_t)@", body):
+        if re.search(r"@(sif|code|lib|conds|gdml|seed|maxev|runcfg|libmd5|waits|common|tables|runtime_a|runtime_t)@", body):
             raise ValueError("fastsimkit: chain_point: unfilled placeholder")
         res = Resources(cores=16, mem_gb=110, gpus=1, gpu_type="a100", minutes=p["wall_minutes"])
         return body, res
@@ -321,7 +352,7 @@ class ChainPoint:
 
         try:
             with ThreadPoolExecutor(max_workers=self.streams) as ex:
-                futs = [ex.submit(library)] + [ex.submit(one, rel) for rel in [CALIB, DEVIATION, GDML] + gen_files(p, k)]
+                futs = [ex.submit(library)] + [ex.submit(one, rel) for rel in small_inputs(p) + gen_files(p, k)]
                 for f in futs:
                     f.result()
             self.ep.run_on_node(sub, host, f"touch {shlex.quote(tmp)}/ready")
@@ -391,8 +422,14 @@ class ChainPoint:
              "accepted_per_gpu_hour_chain": 3600.0 * acc / chain_s if chain_s else 0.0,
              "input_wait_s_mean": wait / n, "campaign_s": max(ends) - rec["submitted_at"] if ends else 0.0,
              "library_reused_jobs": reused}
-        for k, lab in SECTOR.items():
-            m[f"clusters_per_generated_{lab}"] = cl.get(k, 0) / gen if gen else 0.0
+        if rec["params"].get("run_config", 0) == 0:
+            for k, lab in SECTOR.items():
+                m[f"clusters_per_generated_{lab}"] = cl.get(k, 0) / gen if gen else 0.0
+        else:   # sector types of the configuration (counters file), by number; the extracted names do not apply
+            for lab in SECTOR.values():
+                m[f"clusters_per_generated_{lab}"] = float("nan")
+            for k, v in sorted(cl.items()):
+                m[f"clusters_per_generated_type{k}"] = v / gen if gen else 0.0
         return {"metrics": {k: float(v) for k, v in m.items()},
                 "files": [{"name": str(p.relative_to(self.kit.out_root)), "uri": p.resolve().as_uri(), "kind": "text"}
                           for p in files],

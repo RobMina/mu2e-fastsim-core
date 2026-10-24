@@ -256,3 +256,25 @@ def test_check_refuses_wall_too_short_for_wait_and_chain(tmp_path):
     assert kit.check("d", {**P, "shards": 4, "files_per_job": 20, "shard_offset": 0}, [], [])["ok"]   # fcp01
     small = {**cg, "files_per_job": 20, "wall_minutes": 45, "max_events": 10_000}
     assert CP.chain_estimate_s(CP.validate(small)) < CP.chain_estimate_s(CP.validate({**small, "max_events": 0}))
+
+
+def test_run_configs(tmp_path):
+    """run_config picks the GDML, lookup tables and conditions; a gen set belongs to one CRY configuration."""
+    _, ep, kit, _ = make(tmp_path)
+    assert CP.validate(P)["run_config"] == 0
+    with pytest.raises(ValueError):
+        CP.validate({**P, "run_config": 3})                         # extracted g4ref primaries with the Run 2 CRV
+    with pytest.raises(ValueError):
+        CP.validate({**P, "gen_set": 3, "shard_offset": 0})        # default-CRY primaries with the extracted CRV
+    p = CP.validate({**P, "gen_set": 3, "run_config": 3, "shard_offset": 0})
+    assert CP.gen_files(p, 0)[0] == "crygen_run2_v1_tables/gen.001400_00004001.root"
+    assert CP.small_inputs(p) == ["geometry/mu2e_run2_v10.gdml"]
+    body, _ = kit.chain_point.render(p, 0)
+    assert "--run-config run2_v10" in body and "--calib nominal" in body and "mu2e_run2_v10.gdml" in body
+    assert "LookupTable_4550_0" in body and "LookupTable_1550_1" in body and "crvcalib" not in body
+    r = subprocess.run(["bash", "-n"], input=(ep.header("t", _) + body).encode(), capture_output=True)
+    assert r.returncode == 0, r.stderr.decode()
+    b0, _ = kit.chain_point.render(CP.validate(P), 0)
+    assert "--run-config" not in b0 and "crvcalib_sim_best_v1_5_run1400.csv" in b0 and "LookupTable_4550_0" not in b0
+    p1 = CP.validate({**P, "gen_set": 2, "run_config": 2, "shard_offset": 0})
+    assert CP.small_inputs(p1) == ["geometry/mu2e_run1a_v01.gdml"]
