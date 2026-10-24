@@ -42,6 +42,17 @@ def primary_muons(gen):
     return mu.drop_duplicates(KEY).reset_index(drop=True)
 
 
+def all_primary_muons(gen):
+    """Every generated muon, one row per muon, ordered by event and gen index, with `mukey` = its SimParticle key:
+    1 for the first muon of an event (the one primary_muons gives), 2, 3, ... for further muons of the same event.
+    CRY makes about 0.3 % multi-muon events, which G4 transports in full."""
+    mu = gen[gen.pdg.abs() == PRIMARY_MUON_PDG]
+    order = [c for c in KEY + ["idx"] if c in mu.columns]
+    mu = mu.sort_values(order, kind="stable").reset_index(drop=True)
+    mu["mukey"] = mu.groupby(KEY, sort=False).cumcount().to_numpy() + 1
+    return mu
+
+
 def write(path, trees, as_ttree=False):
     """Write {tree name: DataFrame} into directory dump/ of a new ROOT file (empty or None frames are skipped).
 

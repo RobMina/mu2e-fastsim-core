@@ -229,3 +229,14 @@ def test_band_len_spreads_displacement_and_lowers_correlation():
     rho = np.corrcoef(y, t)[0, 1]
     assert abs(rho - np.sqrt(3) / 2) < 0.01                        # one band spanning the whole path = uniform slab
     assert abs(y.std() / (t.std() * 10000.0) - 1 / np.sqrt(3)) < 0.01
+
+
+def test_all_primary_muons_keys():
+    import pandas as pd
+    from mu2efastsim import tables as T
+    g = pd.DataFrame({"run": 1, "subrun": 1, "event": [1, 1, 1, 2, 3], "idx": [1, 0, 2, 0, 0],
+                      "pdg": [13, -13, 22, 13, 2112], "e": 1.0})
+    m = T.all_primary_muons(g)
+    assert m[["event", "idx", "mukey"]].values.tolist() == [[1, 0, 1], [1, 1, 2], [2, 0, 1]]
+    first = T.primary_muons(g.sort_values(["event", "idx"]))
+    assert first.idx.tolist() == m[m.mukey == 1].idx.tolist()
