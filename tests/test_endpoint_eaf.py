@@ -294,3 +294,42 @@ def test_kit_veto_c4_deadtime_and_gate_mode_default(tmp_path):
     assert {"deadtime", "deadtime_err", "deadtime_full"} <= set(kitmod.TASKS["veto_c4"].metrics)
     with pytest.raises(ValueError):
         kit.render({**p, "bogus": 1})
+
+
+def test_kit_crv_response_renders_on_eaf(tmp_path):
+    """crv_response (crv package, crvfastsim.kit_task): registered when crvfastsim is importable; FNAL-only, valid bash,
+    every chain.KNOBS knob a param (absent = nominal), knob values reach reco-r3 --knob, unknown params refused."""
+    from mu2efastsim.endpoints import kit as kitmod
+    if "crv_response" not in kitmod.TASKS:
+        pytest.skip("crvfastsim not on PYTHONPATH")
+    from crvfastsim import chain
+    hub = FakeHub(run=False)
+    ep, _ = make(tmp_path, hub)
+    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit")
+    assert set(chain.KNOBS) <= set(kitmod.TASKS["crv_response"].params) and "crv_response" in kitmod.FNAL_TASKS
+    nominal, res = kit.render({"task": "crv_response", "seed": 1.0})
+    assert not re.search(r"@[a-z_0-9]+@", nominal) and ep.fnal_data in nominal and res.gpus == 1
+    assert "corr_P4_v2mod.json" in nominal and "crvsteps.001400_$q.root" in nominal and "CRVFS_LOOKUP_DIR" in nominal
+    subprocess.run(["bash", "-n"], input=nominal.encode(), check=True)
+    body, _ = kit.render({"task": "crv_response", "seed": 2.0, "speed_EX": 1.08, "atten_T10": 0.55, "period": "P3"})
+    assert "KN+=(\"speed_EX=1.08\")" in body and "KN+=(\"atten_T10=0.55\")" in body
+    subprocess.run(["bash", "-n"], input=body.encode(), check=True)
+    with pytest.raises(ValueError):
+        kit.render({"task": "crv_response", "seed": 1.0, "speed_EX9": 1.0})
+    uva = FastsimKit(endpoint=type("U", (), {"name": "u"})(), state_dir=tmp_path / "kit2", sif="/x.sif")
+    with pytest.raises(ValueError):
+        uva.render({"task": "crv_response", "seed": 1.0})
+
+
+def test_kit_crv_response_knob_lines_run(tmp_path):
+    """The rendered knob block builds the --knob words: set knobs only, in KNOBS order, values passed through."""
+    from mu2efastsim.endpoints import kit as kitmod
+    if "crv_response" not in kitmod.TASKS:
+        pytest.skip("crvfastsim not on PYTHONPATH")
+    hub = FakeHub(run=False)
+    ep, _ = make(tmp_path, hub)
+    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit")
+    body, _ = kit.render({"task": "crv_response", "seed": 1.0, "speed_EX": 1.08, "atten_T1": 0.58})
+    block = body[body.index("KN=()"):body.index("KA=()")]
+    out = subprocess.run(["bash", "-c", block + 'printf "%s\\n" "${KN[@]}"'], capture_output=True, text=True, check=True)
+    assert out.stdout.split() == ["atten_T1=0.58", "speed_EX=1.08"]

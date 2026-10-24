@@ -268,6 +268,17 @@ if _beam_task is not None:
 
 TABLE_TASKS = {"response_bench", "v4_response", "chain", "regression"}   # stage Mu2e-internal tables: cleanup record required
 
+# CRV response tuning (crv package, crvfastsim.kit_task): task crv_response, one point of every chain.KNOBS knob scored
+# against the KPP data reference. Registered when crvfastsim is importable: inputs read in place on FNAL endpoints (EAF),
+# streamed into the job on Slurm-over-SSH endpoints (UVA; delegate crvfastsim.kit_uva).
+try:
+    from crvfastsim import kit_task as _crv_task
+except ImportError:
+    _crv_task = None
+if _crv_task is not None:
+    _crv_task.register(TASKS, Task, Resources, FNAL_TASKS, TABLE_TASKS, common=_COMMON, tables=_TABLES,
+                       delegates=DELEGATES)
+
 
 def _arg(v) -> str:
     """A param as a command-line word; Mu2eBO sends every "number" as a float, so 200000.0 becomes 200000."""
