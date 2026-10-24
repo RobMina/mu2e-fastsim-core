@@ -10,21 +10,39 @@ data/<h[:2]>/<h[2:]> (zlib-compressed); large files are chunked (table `chunks`)
 """
 import hashlib
 import os
+import time
 import sqlite3
 import struct
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 import zlib
 
 SERVERS = ("http://cvmfs-s1fnal.opensciencegrid.org:8000", "http://cvmfs-s1bnl.opensciencegrid.org:8000",
            "http://oasis-replica.opensciencegrid.org:8000")
+ATTEMPTS, BACKOFF_S, TIMEOUT_S = 4, 5.0, 60   # per server; backoff doubles after each failure
 
 
-def _get(url):
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "mu2efastsim-cvmfsget"}),
-                                timeout=60) as r:
-        return r.read()
+def _get(url, attempts=ATTEMPTS, backoff=BACKOFF_S, timeout=TIMEOUT_S, opener=None, sleep=time.sleep):
+    """GET with retries on timeouts and network/HTTP 5xx errors (a 404 is final). UVA job 21890829 lost its table
+    fetch to one Stratum-1 timeout (2026-10-23)."""
+    opener = opener or (lambda u: urllib.request.urlopen(
+        urllib.request.Request(u, headers={"User-Agent": "mu2efastsim-cvmfsget"}), timeout=timeout))
+    err = None
+    for k in range(attempts):
+        try:
+            with opener(url) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                raise
+            err = e
+        except (OSError, TimeoutError) as e:   # URLError, socket timeout, connection reset
+            err = e
+        if k + 1 < attempts:
+            sleep(backoff * 2 ** k)
+    raise err
 
 
 class Repo:
@@ -43,7 +61,18 @@ class Repo:
         self.root = next(l[1:] for l in pub.splitlines() if l.startswith("C"))
 
     def _object(self, h, suffix=""):
-        return zlib.decompress(_get(f"{self.server}/cvmfs/{self.repo}/data/{h[:2]}/{h[2:]}{suffix}"))
+        """A content-addressed object: the chosen server first, then the other Stratum-1s (same hash, same bytes)."""
+        err = None
+        for s in [self.server] + [x for x in self.servers if x != self.server]:
+            try:
+                return zlib.decompress(_get(f"{s}/cvmfs/{self.repo}/data/{h[:2]}/{h[2:]}{suffix}"))
+            except urllib.error.HTTPError as e:
+                if e.code < 500 and e.code != 404:
+                    raise
+                err = e
+            except (OSError, TimeoutError, zlib.error) as e:
+                err = e
+        raise err
 
     def _catalog(self, h):
         if h not in self._cat:
