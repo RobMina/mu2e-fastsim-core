@@ -10,7 +10,8 @@ Streaming runs in background threads of the kit process (or step by step from ``
 so the kit host must stay up and on the endpoint's network for the point's lifetime.
 
 Params: shards (sub-jobs, 1..32), files_per_job (gen files each, 1..25), shard_offset (first gen file in the set),
-max_events (per file, 0 = all), seed, wall_minutes (per sub-job), gen_set (0 g4ref_v1, 1 crygen_v1, 2 crygen_run1a_v1,
+max_events (per file, 0 = all), seed, wall_minutes (per sub-job), chain_flags (optional bitmask: 1 --prefetch, 2
+--fused-response), gen_set (0 g4ref_v1, 1 crygen_v1, 2 crygen_run1a_v1,
 3 crygen_run2_v1), run_config (optional, 0 extracted_v04 = default, 1 run1a_v01, 2 run1b_v01, 3 run2_v10: crvfastsim
 runconfig; it picks the GDML world, the lookup tables and the response/cuts; other configurations than extracted run
 with nominal CRVCalib constants, no CSVs streamed). A gen set belongs to one CRY configuration: extracted gen sets
@@ -35,8 +36,11 @@ from typing import Any, Dict, List, Optional
 from . import EndpointError, Resources
 from .slurm_ssh import su_estimate
 
-PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall_minutes", "gen_set", "run_config")
-OPTIONAL = {"gen_set": 0, "run_config": 0}
+PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall_minutes", "gen_set", "run_config",
+          "chain_flags")
+OPTIONAL = {"gen_set": 0, "run_config": 0, "chain_flags": 0}
+# chain_flags bits -> runchain options (speed only; 1 is bit-identical, 2 statistically equal, V4)
+CHAIN_FLAGS = {1: "--prefetch", 2: "--fused-response"}
 METRICS = ("accepted_events", "generated_events", "jobs_ok", "gpu_hours", "est_su", "accepted_per_gpu_hour",
            "accepted_per_est_su", "accepted_per_gpu_hour_chain", "input_wait_s_mean", "campaign_s",
            "clusters_per_generated_EX", "clusters_per_generated_T1", "clusters_per_generated_T2",
@@ -70,7 +74,7 @@ RUN_CONFIGS = {0: ("extracted_v04", GDML, ("6000_0", "2370_1", "3200_0"), True),
 EXTRACTED_GEN_SETS = (0, 1)
 LIMITS = {"shards": (1, 32), "files_per_job": (1, 25), "shard_offset": (0, 99), "max_events": (0, 10 ** 7),
           "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180), "gen_set": (0, max(GEN_SETS)),
-          "run_config": (0, max(RUN_CONFIGS))}
+          "run_config": (0, max(RUN_CONFIGS)), "chain_flags": (0, sum(CHAIN_FLAGS))}
 
 BODY = """@common@@tables@CODE=@code@
 C() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,CRVFS_OFFLINE_CACHE=$L/offline,PYTHONPATH=$CODE/crv:$CODE/core:$CODE/tracker" -B "$L" -B /dev/shm -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
@@ -232,7 +236,8 @@ class ChainPoint:
                  else "--calib nominal")
         subs = {"sif": sif, "code": shlex.quote(self.code), "lib": Path(LIBRARY).name, "conds": conds,
                 "gdml": Path(rc[1]).name, "seed": str(p["seed"] + 1000 * k),
-                "runcfg": "" if p.get("run_config", 0) == 0 else f"--run-config {rc[0]}",
+                "runcfg": " ".join(([] if p.get("run_config", 0) == 0 else [f"--run-config {rc[0]}"])
+                                   + [o for b, o in CHAIN_FLAGS.items() if p.get("chain_flags", 0) & b]),
                 "maxev": f"--max-events {p['max_events']}" if p["max_events"] else "",
                 "libmd5": self.lib_md5()[:12], "waits": str(wait_budget_s(p))}
         for a, b in subs.items():
