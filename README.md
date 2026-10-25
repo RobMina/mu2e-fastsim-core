@@ -33,6 +33,14 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 | `aurora/` | ALCF Aurora (Intel PVC) job scripts over SSH + PBS |
 | `uva/` | UVA Rivanna/Afton Slurm jobs: step-0 probe, in-image validation with the real tables, KPP V-R2/V-R3 with a streamed reference; see `uva/README.md` |
 
+## Evaluator admission
+
+The endpoint boundary uses shared typed parameter admission for plain
+and streamed tasks, matching `check`/`submit` refusal paths and additive parameter
+descriptors. See [endpoint admission](docs/endpoint-admission.md) for compatibility,
+local tests and the remaining manifest/idempotency/geometry work. These descriptors
+are input domains, not physics-validation certificates.
+
 ## Backends
 
 `crossings` runs on JAX (CPU or GPU) when JAX is installed and on numpy otherwise. `eloss`, `world` and

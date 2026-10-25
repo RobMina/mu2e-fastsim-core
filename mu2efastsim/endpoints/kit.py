@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from . import EndpointError, Resources, get
+from .parameters import schema, validate as validate_parameters
 
 VERSION = "1"
 POLL_MS = 60_000
@@ -287,6 +288,15 @@ def _arg(v) -> str:
     return str(v)
 
 
+def admit_resources(endpoint, resources):
+    """Run an endpoint's pure resource policy before preparing code or recording work."""
+    if hasattr(endpoint, "admit_resources"):
+        try:
+            endpoint.admit_resources(resources)
+        except EndpointError as exc:
+            raise ValueError(str(exc)) from exc
+
+
 class FastsimKit:
     def __init__(self, endpoint=None, state_dir: str | Path | None = None, sif: str | None = None):
         root = Path(state_dir or os.environ.get("FASTSIMKIT_STATE_DIR", "~/.mu2efastsim/kit")).expanduser()
@@ -323,8 +333,10 @@ class FastsimKit:
 
     @staticmethod
     def _task(params: Dict[str, Any]) -> Task:
+        if not isinstance(params, dict) or any(not isinstance(k, str) for k in params):
+            raise ValueError("fastsimkit: params must be an object with string keys")
         name = params.get("task")
-        if name not in TASKS:
+        if not isinstance(name, str) or name not in TASKS:
             raise ValueError(f"fastsimkit: unknown task {name!r}; choose from {sorted(TASKS)}")
         t = TASKS[name]
         extra = set(params) - set(t.params) - {"task"}
@@ -334,7 +346,12 @@ class FastsimKit:
                              f"missing {sorted(missing)}")
         return t
 
+    def _parameters(self, params):
+        t = self._task(params)
+        return {"task": params["task"], **validate_parameters(params["task"], params, t.params, t.defaults)}
+
     def render(self, params: Dict[str, Any]) -> Tuple[str, Resources]:
+        params = self._parameters(params)
         t = self._task(params)
         fnal = getattr(self.ep, "fnal_data", None)
         if params["task"] in FNAL_TASKS and not fnal:
@@ -350,17 +367,34 @@ class FastsimKit:
             body = body.replace(f"@{k}@", v)
         if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@", "@runtime_", "@fnal_data@")):
             raise ValueError(f"fastsimkit: unfilled placeholder in task {params['task']!r}")
+        admit_resources(self.ep, t.resources)
         return body, t.resources
 
     # -- contract ------------------------------------------------------------------------------------------------
-    def check(self, name, params, files, inputs) -> Dict[str, Any]:
+    def _admit(self, name, params, files, inputs):
+        import re
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name):
+            raise ValueError(f"fastsimkit: bad handle {name!r}")
+        if not isinstance(files, list) or not isinstance(inputs, list) or files or inputs:
+            raise ValueError("fastsimkit: files and inputs are not supported yet (tasks take params only)")
+        if not isinstance(params, dict) or any(not isinstance(k, str) for k in params):
+            raise ValueError("fastsimkit: params must be an object with string keys")
         if self._is_cp(params):
-            return self.chain_point.check(name, params)
-        d = self._delegate(params=params)
-        if d is not None:
-            return d.check(name, params)
+            handler = self.chain_point
+        else:
+            params = self._parameters(params)
+            handler = self._delegate(params=params)
+        if handler is not None:
+            result = handler.check(name, params)
+            if not result["ok"]:
+                raise ValueError(result["message"])
+            return params, handler, None
+        rendered = self.render(params)
+        return params, None, rendered
+
+    def check(self, name, params, files, inputs) -> Dict[str, Any]:
         try:
-            self.render(params)
+            self._admit(name, params, files, inputs)
         except ValueError as e:
             return {"ok": False, "message": str(e)}
         return {"ok": True, "message": ""}
@@ -370,16 +404,11 @@ class FastsimKit:
         return p.read_text().strip() if p.exists() else ""
 
     def submit(self, name, params, files, inputs) -> Dict[str, Any]:
-        if files or inputs:
-            raise ValueError("fastsimkit: files and inputs are not supported yet (tasks take params only)")
-        if self._is_cp(params):
-            self._record_task(name, "chain_point")
-            return self.chain_point.submit(name, params)
-        d = self._delegate(params=params)
-        if d is not None:
+        params, handler, rendered = self._admit(name, params, files, inputs)
+        if handler is not None:
             self._record_task(name, params["task"])
-            return d.submit(name, params)
-        script, res = self.render(params)
+            return handler.submit(name, params)
+        script, res = rendered
         try:
             self.ep.submit(name, script, res)
         except EndpointError as e:
@@ -438,7 +467,28 @@ class FastsimKit:
         from . import chainpoint
         params = sorted({"task", *[p for t in TASKS.values() for p in t.params], *chainpoint.PARAMS})
         metrics = sorted({m for t in TASKS.values() for m in t.metrics} | set(chainpoint.METRICS))
-        return {"params": params, "metrics": metrics, "accepts_lists": False}
+        tasks = {}
+        for name, task in TASKS.items():
+            routes = ["eaf"] if name in FNAL_TASKS else ["eaf", "uva"]
+            if name in DELEGATES:
+                routes = ["eaf", "uva"]
+            tasks[name] = {"params": {k: v.describe() for k, v in schema(name, task.params).items()},
+                           "defaults": dict(task.defaults), "required": sorted(set(task.params) - set(task.defaults)),
+                           "endpoints": routes, "file_kinds": [], "inputs_supported": False,
+                           "validation_scope": "admission only; not physics certification"}
+        chain_roles = {"shards": "execution", "files_per_job": "fidelity", "shard_offset": "fidelity",
+                       "max_events": "fidelity", "seed": "stochastic_stream", "wall_minutes": "execution",
+                       "gen_set": "scenario", "run_config": "scenario", "chain_flags": "numerical"}
+        tasks["chain_point"] = {
+            "params": {k: {"type": "integer", "minimum": lo, "maximum": hi,
+                           "unit": "min" if k == "wall_minutes" else "1", "role": chain_roles[k]}
+                       for k, (lo, hi) in chainpoint.LIMITS.items()},
+            "defaults": dict(chainpoint.OPTIONAL),
+            "required": sorted(set(chainpoint.PARAMS) - set(chainpoint.OPTIONAL)),
+            "endpoints": ["uva"], "file_kinds": [], "inputs_supported": False,
+            "validation_scope": "admission only; not physics certification"}
+        return {"params": params, "metrics": metrics, "accepts_lists": False,
+                "parameter_schema_version": 1, "tasks": tasks}
 
 
 def make_server(kit: FastsimKit):

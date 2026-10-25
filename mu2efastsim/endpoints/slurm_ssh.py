@@ -90,6 +90,12 @@ class SlurmSSHEndpoint:
             lines.insert(4, f"#SBATCH --gres={gres}")
         return "\n".join(lines) + f"\nexport M2FS_JOB_DIR={self._dir(handle)} M2FS_OUT={self._dir(handle)}/out\n"
 
+    def admit_resources(self, resources: Resources) -> None:
+        """Apply the configured per-job budget without contacting Slurm."""
+        su = su_estimate(resources, *self.su_rates)
+        if su > self.max_su_per_job:
+            raise EndpointError(f"estimated {su:.0f} SU exceeds max_su_per_job {self.max_su_per_job:.0f}")
+
     # -- interface -----------------------------------------------------------------------------------------------
     def submit(self, handle: str, script: str, resources: Resources) -> JobRecord:
         sha = spec_sha(script, resources)
@@ -98,9 +104,7 @@ class SlurmSSHEndpoint:
             if old.spec_sha != sha:
                 raise EndpointError(f"{handle!r} was already submitted with a different script or resources")
             return old
-        su = su_estimate(resources, *self.su_rates)
-        if su > self.max_su_per_job:
-            raise EndpointError(f"{handle!r}: estimated {su:.0f} SU exceeds max_su_per_job {self.max_su_per_job:.0f}")
+        self.admit_resources(resources)
         d = self._dir(handle)
         body = self.header(handle, resources) + "umask 077\nmkdir -p \"$M2FS_OUT\"\n" + script
         out = self._sh(f"set -e; mkdir -p {shlex.quote(d)}/out; cat > {shlex.quote(d)}/job.sh; "

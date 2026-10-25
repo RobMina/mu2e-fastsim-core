@@ -3,6 +3,8 @@ import io
 import json
 import subprocess
 import tarfile
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -288,3 +290,98 @@ def test_chain_flags(tmp_path):
     assert "--prefetch" not in b0 and "--fused-response" not in b0
     with pytest.raises(ValueError):
         CP.validate({**P, "chain_flags": 4})
+
+
+@pytest.mark.parametrize("key", CP.PARAMS)
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), 10 ** 400, -(10 ** 400)],
+                         ids=["nan", "inf", "negative-inf", "huge-int", "negative-huge-int"])
+def test_validate_rejects_nonfinite_and_huge_numbers(key, value):
+    with pytest.raises(ValueError, match=key):
+        CP.validate({**P, key: value})
+
+
+@pytest.mark.parametrize("rate", [0, -1, float("nan"), float("inf"), -float("inf"), "invalid", "", True,
+                                  10 ** 400, 5e-324],
+                         ids=["zero", "negative", "nan", "inf", "negative-inf", "text", "empty", "bool",
+                              "huge-int", "underflow-rate"])
+def test_wait_budget_rejects_invalid_stream_rate(monkeypatch, rate):
+    monkeypatch.setenv("FASTSIMKIT_STREAM_MBPS", "4")
+    with pytest.raises(ValueError, match="FASTSIMKIT_STREAM_MBPS"):
+        CP.wait_budget_s(CP.validate(P), mbps=rate)
+    monkeypatch.setenv("FASTSIMKIT_STREAM_MBPS", str(rate))
+    with pytest.raises(ValueError, match="FASTSIMKIT_STREAM_MBPS"):
+        CP.wait_budget_s(CP.validate(P))
+
+
+def test_wait_budget_default_environment_and_override(monkeypatch):
+    p = CP.validate({**P, "shards": 12})
+    monkeypatch.delenv("FASTSIMKIT_STREAM_MBPS", raising=False)
+    assert CP.wait_budget_s(p) == CP.wait_budget_s(p, mbps=CP.STREAM_MBPS)
+    monkeypatch.setenv("FASTSIMKIT_STREAM_MBPS", "2")
+    assert CP.wait_budget_s(p) == CP.wait_budget_s(p, mbps=2)
+    assert CP.wait_budget_s(p) > CP.wait_budget_s(p, mbps=4)
+    monkeypatch.setenv("FASTSIMKIT_STREAM_MBPS", "invalid")
+    assert CP.wait_budget_s(p, mbps=4) > CP.WAIT_FLOOR_S
+
+
+@pytest.mark.parametrize("changes,cap,rate,streaming,message", [
+    ({"wall_minutes": 10}, 500, "4", True, "wall_minutes"),
+    ({"gen_set": 1, "shards": 4, "files_per_job": 20, "shard_offset": 0}, 500, "4", True, "GB streamed"),
+    ({}, 10, "4", True, "SU"),
+    ({"seed": float("nan")}, 500, "4", True, "seed"),
+    ({"seed": float("inf")}, 500, "4", True, "seed"),
+    ({"seed": -float("inf")}, 500, "4", True, "seed"),
+    ({"seed": 10 ** 400}, 500, "4", True, "seed"),
+    ({}, 500, "0", True, "FASTSIMKIT_STREAM_MBPS"),
+    ({}, 500, "-1", True, "FASTSIMKIT_STREAM_MBPS"),
+    ({}, 500, "nan", True, "FASTSIMKIT_STREAM_MBPS"),
+    ({}, 500, "inf", True, "FASTSIMKIT_STREAM_MBPS"),
+    ({}, 500, "-inf", True, "FASTSIMKIT_STREAM_MBPS"),
+    ({}, 500, "1e400", True, "FASTSIMKIT_STREAM_MBPS"),
+    ({}, 500, "5e-324", True, "FASTSIMKIT_STREAM_MBPS"),
+    ({}, 500, "invalid", True, "FASTSIMKIT_STREAM_MBPS"),
+    ({}, 500, "", True, "FASTSIMKIT_STREAM_MBPS"),
+    ({}, 500, "4", False, "needs an endpoint"),
+], ids=["short-wall", "large-point", "su-cap", "nan", "inf", "negative-inf", "huge-int", "zero-rate",
+        "negative-rate", "nan-rate", "inf-rate", "negative-inf-rate", "overflow-rate", "underflow-rate",
+        "text-rate", "empty-rate", "unsupported-endpoint"])
+def test_check_and_submit_share_admission_without_side_effects(tmp_path, monkeypatch, changes, cap, rate,
+                                                               streaming, message):
+    monkeypatch.setenv("FASTSIMKIT_STREAM_MBPS", rate)
+    ep = Mock(spec=["name", "max_su_per_job", "submit", "_sh"] + (["stream_in"] if streaming else []))
+    ep.name, ep.max_su_per_job = "fake", cap
+    source = Mock(spec=CP.FnalSource)
+    cp = CP.ChainPoint(SimpleNamespace(ep=ep, out_root=tmp_path / "out", sif="/fake.sif"), source=source)
+    render, ensure_code, ensure_streaming = Mock(), Mock(), Mock()
+    monkeypatch.setattr(cp, "render", render)
+    monkeypatch.setattr(cp, "ensure_code", ensure_code)
+    monkeypatch.setattr(cp, "ensure_streaming", ensure_streaming)
+    before = sorted(tmp_path.rglob("*"))
+    params = {**P, **changes}
+    checked = cp.check("rejected", params)
+    assert not checked["ok"] and message in checked["message"]
+    with pytest.raises(ValueError) as exc:
+        cp.submit("rejected", params)
+    assert str(exc.value) == checked["message"]
+    assert sorted(tmp_path.rglob("*")) == before
+    assert cp.record("rejected") is None and cp._threads == {}
+    assert ep.mock_calls == source.mock_calls == []
+    render.assert_not_called()
+    ensure_code.assert_not_called()
+    ensure_streaming.assert_not_called()
+
+
+@pytest.mark.parametrize("rates,accepted", [((10, 0.5), True), ((100, 0.5), False)])
+def test_admission_uses_endpoint_su_rates(tmp_path, rates, accepted):
+    site, ep, kit, streamed = make(tmp_path, cap=40)
+    ep.su_rates = rates
+    params = {**P, "shards": 1, "wall_minutes": 60}
+    result = kit.check("rates", params, [], [])
+    assert result["ok"] is accepted
+    if accepted:
+        assert kit.submit("rates", params, [], []) == {"handle": "rates"}
+        assert len(site.state) == 1
+    else:
+        with pytest.raises(ValueError, match="SU"):
+            kit.submit("rates", params, [], [])
+        assert site.cmds == [] and streamed == []

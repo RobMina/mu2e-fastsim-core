@@ -19,7 +19,7 @@ with nominal CRVCalib constants, no CSVs streamed). A gen set belongs to one CRY
 
 Input wait: a sub-job waits for its inputs until a deadline sized from the bytes the whole point streams (every sub-job
 can queue behind the others on the kit host's link): ``wait_budget_s`` = 600 s + point bytes / FASTSIMKIT_STREAM_MBPS
-(default 4 MB/s; measured 5-6.6 MB/s aggregate in kitshm02/kitcg03), at least 1800 s. ``check`` refuses a point whose
+(default 4 MB/s; measured 5-6.6 MB/s aggregate in kitshm02/kitcg03), at least 1800 s. ``check`` and ``submit`` refuse a point whose
 wait budget plus the estimated chain time (``chain_estimate_s``) does not fit in wall_minutes. Metrics: accepted and generated events, accepted per
 GPU-hour (charged and chain-only), accepted per estimated SU, campaign time, input wait, clusters per generated event
 per sector type.
@@ -27,6 +27,7 @@ per sector type.
 from __future__ import annotations
 
 import json
+import math
 import shlex
 import threading
 import time
@@ -131,10 +132,10 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
     out = {}
     for k in PARAMS:
         v = params[k]
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or float(v) != int(v):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or (isinstance(v, float) and not v.is_integer()):
             raise ValueError(f"fastsimkit: chain_point {k} must be a whole number, got {v!r}")
         lo, hi = LIMITS[k]
-        if not lo <= int(v) <= hi:
+        if not lo <= v <= hi:
             raise ValueError(f"fastsimkit: chain_point {k} must be in [{lo}, {hi}], got {v!r}")
         out[k] = int(v)
     if (out["gen_set"] in EXTRACTED_GEN_SETS) != RUN_CONFIGS[out["run_config"]][3]:
@@ -162,8 +163,20 @@ def small_inputs(p: Dict[str, int]) -> List[str]:
 def wait_budget_s(p: Dict[str, int], mbps: Optional[float] = None) -> int:
     """Job-side input deadline [s]: slack + point bytes at the assumed kit-host link rate, at least WAIT_FLOOR_S."""
     import os
-    mbps = mbps or float(os.environ.get("FASTSIMKIT_STREAM_MBPS", STREAM_MBPS))
-    return int(max(WAIT_FLOOR_S, WAIT_SLACK_S + point_bytes(p) / (mbps * 1e6)))
+    if mbps is None:
+        mbps = os.environ.get("FASTSIMKIT_STREAM_MBPS", STREAM_MBPS)
+    try:
+        if isinstance(mbps, bool):
+            raise ValueError
+        mbps = float(mbps)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("fastsimkit: FASTSIMKIT_STREAM_MBPS must be a finite positive number") from None
+    if not math.isfinite(mbps) or mbps <= 0:
+        raise ValueError("fastsimkit: FASTSIMKIT_STREAM_MBPS must be a finite positive number")
+    wait = WAIT_SLACK_S + point_bytes(p) / (mbps * 1e6)
+    if not math.isfinite(wait):
+        raise ValueError("fastsimkit: FASTSIMKIT_STREAM_MBPS is too small for a finite input wait budget")
+    return int(max(WAIT_FLOOR_S, wait))
 
 
 def chain_estimate_s(p: Dict[str, int]) -> float:
@@ -222,11 +235,14 @@ class ChainPoint:
         return (self.dir / f"{sub}.{what}").exists()
 
     # -- rendering -----------------------------------------------------------------------------------------------
-    def render(self, p: Dict[str, int], k: int):
-        from .kit import _COMMON, _TABLES, APPTAINER_RUNTIME
+    def _require_streaming(self):
         if not hasattr(self.ep, "stream_in"):
             raise ValueError(f"fastsimkit: chain_point streams its inputs into the job and needs an endpoint that can "
                              f"(slurm_ssh); {getattr(self.ep, 'name', '?')!r} cannot")
+
+    def render(self, p: Dict[str, int], k: int):
+        from .kit import _COMMON, _TABLES, APPTAINER_RUNTIME
+        self._require_streaming()
         sif = shlex.quote(self.kit.sif)
         rc = RUN_CONFIGS[p.get("run_config", 0)]
         tables = _TABLES.replace("@tables@", " ".join(f"LookupTable_{t}" for t in rc[2]) + " photonMap.root")
@@ -254,20 +270,28 @@ class ChainPoint:
         return self._libmd5
 
     # -- contract ------------------------------------------------------------------------------------------------
+    def _admit(self, params) -> Dict[str, int]:
+        """Validate the point and its resource budgets without local or remote side effects."""
+        p = validate(params)
+        self._require_streaming()
+        su = p["shards"] * su_estimate(Resources(cores=16, gpus=1, minutes=p["wall_minutes"]),
+                                      *getattr(self.ep, "su_rates", (53.0, 0.5)))
+        cap = getattr(self.ep, "max_su_per_job", float("inf")) * p["shards"]
+        if su > cap:
+            raise ValueError(f"fastsimkit: chain_point worst case {su:.0f} SU exceeds {cap:.0f}")
+        wait, chain = wait_budget_s(p), chain_estimate_s(p)
+        need = wait + chain
+        if need > 60 * p["wall_minutes"]:
+            raise ValueError(f"fastsimkit: chain_point needs ~{need / 60:.0f} min per sub-job (input wait budget "
+                             f"{wait / 60:.0f} min for {point_bytes(p) / 1e9:.1f} GB streamed + chain "
+                             f"~{chain / 60:.0f} min) > wall_minutes {p['wall_minutes']}: use fewer "
+                             f"files_per_job or shards, or more wall_minutes")
+        return p
+
     def check(self, name, params) -> Dict[str, Any]:
         try:
-            p = validate(params)
+            p = self._admit(params)
             self.render(p, 0)
-            su = p["shards"] * su_estimate(Resources(cores=16, gpus=1, minutes=p["wall_minutes"]))
-            cap = getattr(self.ep, "max_su_per_job", float("inf")) * p["shards"]
-            if su > cap:
-                raise ValueError(f"fastsimkit: chain_point worst case {su:.0f} SU exceeds {cap:.0f}")
-            need = wait_budget_s(p) + chain_estimate_s(p)
-            if need > 60 * p["wall_minutes"]:
-                raise ValueError(f"fastsimkit: chain_point needs ~{need / 60:.0f} min per sub-job (input wait budget "
-                                 f"{wait_budget_s(p) / 60:.0f} min for {point_bytes(p) / 1e9:.1f} GB streamed + chain "
-                                 f"~{chain_estimate_s(p) / 60:.0f} min) > wall_minutes {p['wall_minutes']}: use fewer "
-                                 f"files_per_job or shards, or more wall_minutes")
         except ValueError as e:
             return {"ok": False, "message": str(e)}
         return {"ok": True, "message": ""}
@@ -280,7 +304,7 @@ class ChainPoint:
                     f"&& git -C $C checkout -q $R; fi; git -C $C submodule update -q --init --recursive", timeout=900)
 
     def submit(self, name, params) -> Dict[str, Any]:
-        p = validate(params)
+        p = self._admit(params)
         old = self.record(name)
         if old is not None and old["params"] != p:
             raise ValueError(f"fastsimkit: {name!r} was already submitted with different params")

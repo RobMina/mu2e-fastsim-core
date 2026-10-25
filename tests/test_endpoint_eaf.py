@@ -312,7 +312,7 @@ def test_kit_crv_response_renders_on_eaf(tmp_path):
     assert "corr_P4_v2mod.json" in nominal and "crvsteps.001400_$q.root" in nominal and "CRVFS_LOOKUP_DIR" in nominal
     subprocess.run(["bash", "-n"], input=nominal.encode(), check=True)
     body, _ = kit.render({"task": "crv_response", "seed": 2.0, "speed_EX": 1.08, "atten_T10": 0.55, "period": "P3"})
-    assert "KN+=(\"speed_EX=1.08\")" in body and "KN+=(\"atten_T10=0.55\")" in body
+    assert 'KN+=("speed_EX="1.08)' in body and 'KN+=("atten_T10="0.55)' in body
     subprocess.run(["bash", "-n"], input=body.encode(), check=True)
     with pytest.raises(ValueError):
         kit.render({"task": "crv_response", "seed": 1.0, "speed_EX9": 1.0})
