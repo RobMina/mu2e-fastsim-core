@@ -27,6 +27,7 @@ per sector type.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 import math
 import shlex
 import threading
@@ -36,6 +37,9 @@ from typing import Any, Dict, List, Optional
 
 from . import EndpointError, Resources
 from .slurm_ssh import su_estimate
+from . import artifacts
+from .snapshots import prepare_code
+from .submission import submission_lock
 
 PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall_minutes", "gen_set", "run_config",
           "chain_flags")
@@ -121,6 +125,15 @@ class FnalSource:
         if p.returncode:
             raise EndpointError(f"chain_point: md5sum of {rel} on {self.host} failed: {p.stderr[-200:]!r}")
         return p.stdout.decode().split()[0]
+
+    def fingerprint(self, rel: str) -> dict:
+        import subprocess
+        cmd = artifacts.fingerprint_command(self.path(rel))
+        p = (self.runner or subprocess.run)(["ssh", "-o", "BatchMode=yes", self.host, cmd],
+                                            capture_output=True, timeout=900)
+        if p.returncode:
+            raise EndpointError(f"artifact fingerprint failed for {rel}: {p.stderr[-200:]!r}")
+        return artifacts.parse_fingerprint(p.stdout.decode())
 
 
 def validate(params: Dict[str, Any]) -> Dict[str, int]:
@@ -212,7 +225,6 @@ class ChainPoint:
         self.dir = Path(kit.out_root).parent / "chain_point"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._threads: Dict[str, threading.Thread] = {}
-        self._libmd5: Optional[str] = None
         self._node_lib: Dict[str, threading.Lock] = {}     # one library stream per node at a time
         self._lock = threading.Lock()
 
@@ -222,7 +234,7 @@ class ChainPoint:
 
     def record(self, name) -> Optional[dict]:
         p = self._rec_path(name)
-        return json.loads(p.read_text()) if p.exists() else None
+        return artifacts.checked_record(p, allow_legacy=True)
 
     def subs(self, name) -> List[str]:
         r = self.record(name)
@@ -240,34 +252,37 @@ class ChainPoint:
             raise ValueError(f"fastsimkit: chain_point streams its inputs into the job and needs an endpoint that can "
                              f"(slurm_ssh); {getattr(self.ep, 'name', '?')!r} cannot")
 
-    def render(self, p: Dict[str, int], k: int):
+    def render(self, p: Dict[str, int], k: int, manifest=None):
         from .kit import _COMMON, _TABLES, APPTAINER_RUNTIME
         self._require_streaming()
-        sif = shlex.quote(self.kit.sif)
+        sif = shlex.quote(manifest["image"]["path"] if manifest else self.kit.sif)
         rc = RUN_CONFIGS[p.get("run_config", 0)]
         tables = _TABLES.replace("@tables@", " ".join(f"LookupTable_{t}" for t in rc[2]) + " photonMap.root")
         body = BODY.replace("@common@", _COMMON).replace("@tables@", tables)
         body = body.replace("@runtime_a@", APPTAINER_RUNTIME["a"]).replace("@runtime_t@", APPTAINER_RUNTIME["t"])
         conds = (f'--calib "$L/{Path(CALIB).name}" --deviation "$L/{Path(DEVIATION).name}"' if rc[3]
                  else "--calib nominal")
-        subs = {"sif": sif, "code": shlex.quote(self.code), "lib": Path(LIBRARY).name, "conds": conds,
+        subs = {"sif": sif, "code": shlex.quote(manifest["code"]["path"] if manifest else self.code), "lib": Path(LIBRARY).name, "conds": conds,
                 "gdml": Path(rc[1]).name, "seed": str(p["seed"] + 1000 * k),
                 "runcfg": " ".join(([] if p.get("run_config", 0) == 0 else [f"--run-config {rc[0]}"])
                                    + [o for b, o in CHAIN_FLAGS.items() if p.get("chain_flags", 0) & b]),
                 "maxev": f"--max-events {p['max_events']}" if p["max_events"] else "",
-                "libmd5": self.lib_md5()[:12], "waits": str(wait_budget_s(p))}
+                "libmd5": next(f["sha256"] for f in manifest["inputs"]["files"] if f["src"] == LIBRARY) if manifest else "preview", "waits": str(wait_budget_s(p))}
         for a, b in subs.items():
             body = body.replace(f"@{a}@", b)
         import re
         if re.search(r"@(sif|code|lib|conds|gdml|seed|maxev|runcfg|libmd5|waits|common|tables|runtime_a|runtime_t)@", body):
             raise ValueError("fastsimkit: chain_point: unfilled placeholder")
+        if manifest is not None:
+            files = {f["src"]: f for f in manifest["inputs"]["files"]}
+            guard = artifacts.consumption_guard('"$S"', [files[LIBRARY]])
+            guard += artifacts.consumption_guard('"$L"', [files[src] for src in small_inputs(p) + gen_files(p, k)])
+            body = body.replace('GEN=($(ls', guard + 'GEN=($(ls', 1)
         res = Resources(cores=16, mem_gb=110, gpus=1, gpu_type="a100", minutes=p["wall_minutes"])
-        return body, res
+        return (artifacts.runtime_prefix(manifest) if manifest else "") + body, res
 
     def lib_md5(self) -> str:
-        if self._libmd5 is None:
-            self._libmd5 = self.source.md5(LIBRARY)
-        return self._libmd5
+        return self.source.md5(LIBRARY)
 
     # -- contract ------------------------------------------------------------------------------------------------
     def _admit(self, params) -> Dict[str, int]:
@@ -297,31 +312,36 @@ class ChainPoint:
         return {"ok": True, "message": ""}
 
     def ensure_code(self):
-        q = shlex.quote
-        self.ep._sh(f"set -e; C={q(self.code)}; R={q(self.code_ref)}; "
-                    f"if [ -d $C/.git ]; then git -C $C fetch -q origin && git -C $C checkout -q $R && "
-                    f"git -C $C reset -q --hard origin/$R; else git clone -q https://github.com/RobMina/mu2e-fastsim.git $C "
-                    f"&& git -C $C checkout -q $R; fi; git -C $C submodule update -q --init --recursive", timeout=900)
+        return prepare_code(self.ep, self.code, self.code_ref)
 
     def submit(self, name, params) -> Dict[str, Any]:
         p = self._admit(params)
-        old = self.record(name)
-        if old is not None and old["params"] != p:
-            raise ValueError(f"fastsimkit: {name!r} was already submitted with different params")
-        if old is None:
-            self.ensure_code()
-            self._rec_path(name).write_text(json.dumps({"params": p, "submitted_at": time.time(),
-                                                        "code": self.code, "code_ref": self.code_ref}))
+
+        def prepare():
+            paths = set(small_inputs(p) + [LIBRARY])
+            for k in range(p["shards"]):
+                paths.update(gen_files(p, k))
+            inputs = artifacts.resolve_inputs(self.source, {src: Path(src).name for src in paths})
+            code = self.ensure_code()
+            image = artifacts.resolve_image(self.ep, self.kit.sif)
+            manifest = artifacts.make_manifest("chain_point", code, image, inputs, p)
+            rendered = [self.render(p, k, manifest) for k in range(p["shards"])]
+            return {"submitted_at": time.time(), "code": code["path"], "code_ref": self.code_ref,
+                    "manifest": manifest, "body": [b for b, r in rendered],
+                    "resources": [asdict(r) for b, r in rendered]}
+
+        rec = artifacts.binding(self.dir, name, p, artifacts.target_identity(self.ep, self.source), prepare)
         for k, sub in enumerate(self.subs(name)):
-            body, res = self.render(p, k)
             try:
-                self.ep.submit(sub, body, res)
+                self.ep.submit(sub, rec["body"][k], Resources(**rec["resources"][k]))
             except EndpointError as e:
                 raise ValueError(str(e))
         self.ensure_streaming(name)
         return {"handle": name}
 
     def ensure_streaming(self, name):
+        if "manifest" not in (self.record(name) or {}):
+            return
         for k, sub in enumerate(self.subs(name)):
             if self._has(sub, "streamed") or self._has(sub, "streamerr"):
                 continue
@@ -353,38 +373,57 @@ class ChainPoint:
             return "waiting"
         host, tmp = inbox[0], inbox[1]
         shared, libstate = (inbox[2], inbox[3]) if len(inbox) >= 4 else (None, "need")
-        p = self.record(name)["params"]
+        rec = self.record(name)
+        p = rec["params"]
+        entries = {f["src"]: f for f in rec["manifest"]["inputs"]["files"]}
         from concurrent.futures import ThreadPoolExecutor
 
         def one(rel):   # the library is the long pole; the small files and gen tables go alongside it
-            want = self.source.md5(rel)
+            entry = entries[rel]
+            want = entry["md5"]
             with self._chan:
-                got = self.ep.stream_in(sub, host, f"{tmp}/{Path(rel).name}", self.source.argv(rel))
+                got = self.ep.stream_in(sub, host, f"{tmp}/{Path(rel).name}", entry["argv"])
             if got != want:
                 raise EndpointError(f"md5 mismatch for {rel}: {got} != {want}")
         def library():   # once per node: the first sub-job there streams it, later ones find it (or wait for it)
             if shared is None:
                 one(LIBRARY)
                 return
-            with self._node_lib.setdefault(host, threading.Lock()):
+            cache_key = artifacts.digest([getattr(self.ep, "host", ""), host, shared])
+            with self._node_lib.setdefault(host, threading.Lock()), submission_lock(self.dir / ".cache-writers", cache_key):
                 have = self.ep.run_on_node(sub, host, f"test -f {shlex.quote(shared)}/ready && echo have || true").strip()
                 if have == "have":
+                    if not artifacts.verify_cache(self.ep, sub, host, shared, [entries[LIBRARY]]):
+                        raise EndpointError("cached library differs from pinned manifest")
                     self._mark(sub, "libreused", host)
                     return
-                want = self.lib_md5()
+                want = entries[LIBRARY]["md5"]
                 with self._chan:
-                    got = self.ep.stream_in(sub, host, f"{shared}/{Path(LIBRARY).name}", self.source.argv(LIBRARY))
+                    got = self.ep.stream_in(sub, host, f"{shared}/{Path(LIBRARY).name}", entries[LIBRARY]["argv"])
                 if got != want:
                     raise EndpointError(f"md5 mismatch for {LIBRARY}: {got} != {want}")
+                if not artifacts.verify_cache(self.ep, sub, host, shared, [entries[LIBRARY]]):
+                    raise EndpointError("streamed library differs from pinned manifest")
                 self.ep.run_on_node(sub, host, f"touch {shlex.quote(shared)}/ready")
                 self._mark(sub, "libstreamed", host)
 
         try:
-            with ThreadPoolExecutor(max_workers=self.streams) as ex:
-                futs = [ex.submit(library)] + [ex.submit(one, rel) for rel in small_inputs(p) + gen_files(p, k)]
-                for f in futs:
-                    f.result()
-            self.ep.run_on_node(sub, host, f"touch {shlex.quote(tmp)}/ready")
+            with submission_lock(self.dir / ".stage-writers", sub):
+                used = small_inputs(p) + gen_files(p, k) + ([LIBRARY] if shared is None else [])
+                have = self.ep.run_on_node(sub, host, f"test -f {shlex.quote(tmp)}/ready && echo have || true").strip()
+                if have == "have":
+                    if not artifacts.verify_cache(self.ep, sub, host, tmp, [entries[src] for src in used]):
+                        raise EndpointError("ready shard inputs differ from pinned manifest; refusing overwrite")
+                    if shared is not None and not artifacts.verify_cache(self.ep, sub, host, shared, [entries[LIBRARY]]):
+                        raise EndpointError("ready shared library differs from pinned manifest")
+                else:
+                    with ThreadPoolExecutor(max_workers=self.streams) as ex:
+                        futs = [ex.submit(library)] + [ex.submit(one, rel) for rel in small_inputs(p) + gen_files(p, k)]
+                        for f in futs:
+                            f.result()
+                    if not artifacts.verify_cache(self.ep, sub, host, tmp, [entries[src] for src in used]):
+                        raise EndpointError("streamed inputs differ from pinned manifest")
+                    self.ep.run_on_node(sub, host, f"touch {shlex.quote(tmp)}/ready")
         except EndpointError as e:
             self._mark(sub, "streamerr", str(e))
             self.ep.cancel(sub)
@@ -427,6 +466,8 @@ class ChainPoint:
             out = Path(self.kit.out_root) / sub / "out"
             if not (out / "cleanup.txt").exists():
                 raise ValueError(f"fastsimkit: {sub!r} staged Mu2e-internal inputs but wrote no cleanup record")
+            if "manifest" in rec:
+                artifacts.verify_result(out, rec["manifest"])
             s = json.loads((out / "shard.json").read_text())
             T = s["timers"]
             acc += int(T.get("events_with_steps", 0))
@@ -463,6 +504,8 @@ class ChainPoint:
                 "files": [{"name": str(p.relative_to(self.kit.out_root)), "uri": p.resolve().as_uri(), "kind": "text"}
                           for p in files],
                 "metadata": {"endpoint": self.ep.name, "job_ids": ",".join(ids), "code_ref": rec["code_ref"],
+                             "artifact_manifest": rec.get("manifest"), "manifest_sha": rec.get("manifest", {}).get("manifest_sha"),
+                             "artifact_binding": "verified" if "manifest" in rec else "legacy-unverified",
                              "su_note": "est_su from Slurm elapsed time and the measured UVA rates; MAM posts the charge later"}}
 
     def cancel(self, name) -> Dict[str, Any]:

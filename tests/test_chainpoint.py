@@ -1,5 +1,6 @@
 """chain_point fan-out against a fake Slurm site: sub-jobs, inbox, streaming with md5 checks, merge, refusals."""
 import io
+import hashlib
 import json
 import subprocess
 import tarfile
@@ -19,6 +20,7 @@ class Site:
     def __init__(self):
         self.next_id, self.state, self.files, self.node_files, self.cmds = 5000, {}, {}, {}, []
         self.dirs = {}
+        self.kit = None
 
     def __call__(self, cmd, stdin, timeout):
         s = cmd[-1]
@@ -41,6 +43,10 @@ class Site:
         elif s.startswith("cat "):
             path = s.split()[1].strip("'")
             out = self.files.get(path, "").encode()
+        elif s.startswith("python3 -c"):
+            out = json.dumps({"md5": "a" * 32, "sha256": "b" * 64, "size": 1}).encode()
+        elif s.startswith("srun") and "VERIFIED" in s:
+            out = b"VERIFIED\n"
         elif s.startswith("srun") and "touch" in s:
             self.node_files[s.split("touch ")[1].split()[0].strip("'\"")] = "ready"
         elif s.startswith("srun") and "test -f" in s:
@@ -65,7 +71,8 @@ class Site:
         k = int(d.rsplit(".j", 1)[1])
         shard = {"generated_events": 50000 * 2, "wall_s": 120.0, "timers": {"events_with_steps": 4400 + k, "setup_s": 22.0},
                  "cl_type_counts": {"1": 3900, "2": 680, "3": 940, "4": 360}}
-        return {"out/shard.json": json.dumps(shard).encode(), "out/wait.json": b'{"input_wait_s": 100}',
+        return {"out/artifact-manifest.json": json.dumps(self.kit.chain_point.record(d.rsplit("/", 1)[1].rsplit(".j", 1)[0])["manifest"]).encode(),
+                "out/shard.json": json.dumps(shard).encode(), "out/wait.json": b'{"input_wait_s": 100}',
                 "out/cleanup.txt": b"deleted\n", "out/metrics.json": b"{}", "slurm.out": b"ok\n"}
 
     def start(self, jid, ep_dir, node="udc-x"):
@@ -81,7 +88,18 @@ class Source(CP.FnalSource):
         self.data = {}
 
     def md5(self, rel):
-        return "md5:" + rel
+        return hashlib.md5(rel.encode()).hexdigest()
+
+
+    def fingerprint(self, rel):
+        return {"md5": self.md5(rel), "sha256": hashlib.sha256(rel.encode()).hexdigest(), "size": len(rel)}
+
+
+@pytest.fixture(autouse=True)
+def fake_code(monkeypatch):
+    from mu2efastsim.endpoints import snapshots
+    monkeypatch.setattr(CP, "prepare_code", lambda ep, base, ref: {"path": base + ".snapshot", "umbrella_commit": "a" * 40})
+    monkeypatch.setattr(snapshots, "code_guard", lambda _: "true\n")
 
 
 def make(tmp_path, cap=500.0):
@@ -92,13 +110,14 @@ def make(tmp_path, cap=500.0):
         rel = src[-1].split("/exp/data/", 1)[1].strip("'")
         dest = remote.split("cat > ")[1].split()[0].strip("'\"")
         streamed.append((rel, dest))
-        return "md5:" + rel + " " + dest
+        return hashlib.md5(rel.encode()).hexdigest() + " " + dest
 
     ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/scratch/u/kit", max_su_per_job=cap,
                           stream_runner=stream_runner)
     kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
     from mu2efastsim.endpoints.chainpoint import ChainPoint
     kit._cp = ChainPoint(kit, source=Source(), code="/scratch/u/code", background=False)
+    site.kit = kit
     return site, ep, kit, streamed
 
 
@@ -385,3 +404,70 @@ def test_admission_uses_endpoint_su_rates(tmp_path, rates, accepted):
         with pytest.raises(ValueError, match="SU"):
             kit.submit("rates", params, [], [])
         assert site.cmds == [] and streamed == []
+
+
+def test_retry_preserves_resolved_manifest_and_body(tmp_path, monkeypatch):
+    site, ep, kit, streamed = make(tmp_path)
+    kit.submit("pinned", {**P, "shards": 1}, [], [])
+    original = kit.chain_point.record("pinned")
+    kit.chain_point.code_ref = "new-branch"
+    kit.sif = "/changed.sif"
+    monkeypatch.setattr(kit.chain_point.source, "fingerprint", Mock(side_effect=AssertionError("must not resolve")))
+    monkeypatch.setattr(kit.chain_point, "ensure_code", Mock(side_effect=AssertionError("must not update")))
+    kit.submit("pinned", {**P, "shards": 1}, [], [])
+    assert kit.chain_point.record("pinned") == original
+    assert len(site.state) == 1
+
+
+def test_pinned_input_change_before_stream_is_refused(tmp_path, monkeypatch):
+    site, ep, kit, streamed = make(tmp_path)
+    kit.submit("changed", {**P, "shards": 1}, [], [])
+    monkeypatch.setattr(kit.chain_point.source, "md5", lambda _: "0" * 32)
+    ep.stream_runner = lambda *args: "0" * 32
+    j = ep.state.get("changed.j0").job_id
+    site.start(j, ep.state.get("changed.j0").remote_dir)
+    kit.status("changed")
+    assert site.state[j] == "CANCELLED"
+    assert not kit.chain_point._has("changed.j0", "streamed")
+
+
+def test_ready_cache_must_verify_content(tmp_path, monkeypatch):
+    site, ep, kit, streamed = make(tmp_path)
+    kit.submit("corrupt", {**P, "shards": 1}, [], [])
+    j = ep.state.get("corrupt.j0").job_id
+    site.start(j, ep.state.get("corrupt.j0").remote_dir)
+    site.node_files["/dev/shm/crvfs_lib_u_udc-x/ready"] = "ready"
+    monkeypatch.setattr(CP.artifacts, "verify_cache", lambda *args: False)
+    kit.status("corrupt")
+    assert site.state[j] == "CANCELLED"
+    assert not kit.chain_point._has("corrupt.j0", "libreused")
+
+
+def test_same_handle_controllers_never_rewrite_ready_inputs(tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    site, ep, kit, streamed = make(tmp_path)
+    cp = kit.chain_point
+    kit.submit("race", {**P, "shards": 1}, [], [])
+    j = ep.state.get("race.j0").job_id
+    site.start(j, ep.state.get("race.j0").remote_dir)
+    other = CP.ChainPoint(kit, source=Source(), code="/different/code", background=False)
+    entered, release = threading.Event(), threading.Event()
+    original = ep.stream_runner
+
+    def slow(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+
+    ep.stream_runner = slow
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(cp.stream_step, "race", 0)
+        assert entered.wait(5)
+        second = pool.submit(other.stream_step, "race", 0)
+        release.set()
+        assert first.result() == second.result() == "streamed"
+    assert len(streamed) == 6
+    cp._rec_path("race").with_suffix(".j0.streamed").unlink(missing_ok=True)
+    assert other.stream_step("race", 0) == "streamed"
+    assert len(streamed) == 6
