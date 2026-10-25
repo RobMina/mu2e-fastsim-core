@@ -5,10 +5,14 @@ Every remote action is one ssh command through ``runner`` (injectable for tests)
 in a local state dir, so a restarted caller finds its jobs. ``status`` asks ``squeue`` first and ``sacct`` once the job
 has left the queue; a final state is cached locally. Budget guard: a submit whose estimated charge exceeds
 ``max_su_per_job`` is refused (UVA measured ~60 SU per A100-hour, ~0.5 SU per core-hour: wiki uva-hpc-endpoint).
+Durable intents and per-handle locks fence each dispatch attempt; an unrecorded intent is reconciled by exact
+scheduler comment, never blindly resubmitted. See docs/slurm-recovery.md for storage and single-cluster limits.
 """
 from __future__ import annotations
 
+import datetime as dt
 import io
+import re
 import shlex
 import subprocess
 import tarfile
@@ -17,6 +21,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
 from . import EndpointError, JobRecord, JobStatus, Resources, StateDir, spec_sha
+from .submission import IntentStore, durable_json, handle_key, read_json, request_digest, submission_lock
 
 WORKING = {"PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "REQUEUED", "RESIZING", "SUSPENDED", "STAGE_OUT",
            "SIGNALING", "REQUEUE_HOLD", "REQUEUE_FED", "PREEMPTED"}
@@ -96,33 +101,126 @@ class SlurmSSHEndpoint:
         if su > self.max_su_per_job:
             raise EndpointError(f"estimated {su:.0f} SU exceeds max_su_per_job {self.max_su_per_job:.0f}")
 
+    def _target(self, resources):
+        return {"host": self.host, "account": self.account, "workdir": self.workdir,
+                "partition": self.partition if resources.gpus else "standard"}
+
+    def _load_record(self, handle):
+        handle_key(handle)
+        path = self.state._path(handle)
+        data = read_json(path)
+        if data is None and not path.exists():
+            return None
+        try:
+            rec = JobRecord(**data)
+            if (rec.handle != handle or not re.fullmatch(r"[1-9][0-9]*", rec.job_id)
+                    or not re.fullmatch(r"[0-9a-f]{16}", rec.spec_sha) or not isinstance(rec.remote_dir, str)
+                    or not isinstance(rec.resources, dict)):
+                raise ValueError("invalid job record identity")
+            intent = IntentStore(self.state.root).get(handle)
+            if intent is not None:
+                resources = Resources(**rec.resources)
+                if (intent["target"] != self._target(resources) or intent["spec_sha"] != rec.spec_sha
+                        or intent["resources"] != rec.resources or intent["remote_dir"] != rec.remote_dir
+                        or intent["created_at"] != rec.submitted_at or intent.get("unsupported_ack")):
+                    raise ValueError("record/intent identity or endpoint target mismatch")
+            return rec
+        except (ValueError, TypeError, KeyError) as exc:
+            raise EndpointError(f"{handle!r}: invalid job record or target: {exc}") from exc
+
+    def _save_record(self, rec):
+        durable_json(self.state._path(rec.handle), rec.__dict__)
+
+    def _adopt(self, intent, job_id):
+        rec = JobRecord(intent["handle"], intent["spec_sha"], job_id, intent["remote_dir"],
+                        intent["created_at"], intent["resources"])
+        self._save_record(rec)
+        return rec
+
+    @staticmethod
+    def _recovery_ids(text, token):
+        ids = set()
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            fields = line.strip().split("|", 1)
+            if len(fields) != 2:
+                raise EndpointError("uninterpretable scheduler recovery row")
+            job_id, comment = (field.strip() for field in fields)
+            if comment == token:
+                if not re.fullmatch(r"[1-9][0-9]*", job_id):
+                    raise EndpointError(f"unsupported matching allocation ID {job_id!r}")
+                ids.add(job_id)
+        return ids
+
+    def _reconcile(self, intent):
+        if intent.get("unsupported_ack"):
+            raise EndpointError(f"{intent['handle']!r}: nonlocal or compound sbatch acknowledgement; "
+                                "operator investigation required; intent retained, no resubmission")
+        token = intent["token"]
+        start = dt.datetime.fromtimestamp(max(0, intent["created_at"] - 86400), dt.timezone.utc)
+        since = start.strftime("%Y-%m-%dT%H:%M:%S")
+        q = self._sh("unset SLURM_CLUSTERS; squeue --local -h --me -o '%i|%.128k'")
+        a = self._sh(f"unset SLURM_CLUSTERS; TZ=UTC sacct --local -n -X -P --duplicates --user=\"$(id -un)\" "
+                     f"--starttime={since} -o JobIDRaw,Comment%128")
+        ids = self._recovery_ids(q, token) | self._recovery_ids(a, token)
+        if len(ids) != 1:
+            detail = "no visible matching allocation" if not ids else f"multiple matching allocations {sorted(ids)}"
+            raise EndpointError(f"{intent['handle']!r}: unresolved submission ({detail}); retry the same request "
+                                "to reconcile only; do not delete the intent or submit a new handle without investigation")
+        return self._adopt(intent, ids.pop())
+
     # -- interface -----------------------------------------------------------------------------------------------
     def submit(self, handle: str, script: str, resources: Resources) -> JobRecord:
+        with submission_lock(self.state.root, handle):
+            return self._submit_locked(handle, script, resources)
+
+    def _submit_locked(self, handle, script, resources):
         sha = spec_sha(script, resources)
-        old = self.state.get(handle)
+        old = self._load_record(handle)
         if old is not None:
             if old.spec_sha != sha:
                 raise EndpointError(f"{handle!r} was already submitted with a different script or resources")
             return old
-        self.admit_resources(resources)
+        target = self._target(resources)
         d = self._dir(handle)
         body = self.header(handle, resources) + "umask 077\nmkdir -p \"$M2FS_OUT\"\n" + script
-        out = self._sh(f"set -e; mkdir -p {shlex.quote(d)}/out; cat > {shlex.quote(d)}/job.sh; "
-                       f"cd {shlex.quote(d)} && sbatch --parsable job.sh", stdin=body.encode())
-        job_id = out.strip().splitlines()[-1].split(";")[0]
-        if not job_id.isdigit():
-            raise EndpointError(f"{handle!r}: sbatch gave no job id: {out!r}")
-        rec = JobRecord(handle, sha, job_id, d, time.time(), resources.__dict__.copy())
-        self.state.put(rec)
-        return rec
+        request = request_digest(body, resources.__dict__, target)
+        intents = IntentStore(self.state.root)
+        intent = intents.get(handle)
+        if intent is not None:
+            if (intent["request_sha"] != request or intent["spec_sha"] != sha or intent["target"] != target
+                    or intent["remote_dir"] != d or intent["resources"] != resources.__dict__):
+                raise EndpointError(f"{handle!r}: pending submission has a different request or target")
+            return self._reconcile(intent)
+        self.admit_resources(resources)
+        intent = intents.create(handle, sha, request, target, resources.__dict__.copy(), d, time.time())
+        try:
+            out = self._sh(f"set -e; unset SLURM_CLUSTERS SBATCH_CLUSTERS; mkdir -p {shlex.quote(d)}/out; "
+                           f"cat > {shlex.quote(d)}/job.sh; cd {shlex.quote(d)} && "
+                           f"sbatch --parsable --comment={shlex.quote(intent['token'])} job.sh", stdin=body.encode())
+            job_id = out.strip()
+            if re.fullmatch(r"[1-9][0-9]*(?:;[^\n]+|[+_][^\n]+)", job_id):
+                intent["unsupported_ack"] = job_id
+                durable_json(intents._path(handle), intent)
+            if not re.fullmatch(r"[1-9][0-9]*", job_id):
+                raise EndpointError(f"unsupported or missing local sbatch job ID: {out!r}")
+            return self._adopt(intent, job_id)
+        except (EndpointError, OSError) as exc:
+            raise EndpointError(f"{handle!r}: submission outcome uncertain; intent retained; retry the same request "
+                                f"to reconcile only (no automatic resubmission): {exc}") from exc
 
     def _record(self, handle: str) -> JobRecord:
-        rec = self.state.get(handle)
+        rec = self._load_record(handle)
         if rec is None:
             raise EndpointError(f"{self.name}: no job {handle!r}")
         return rec
 
     def status(self, handle: str) -> JobStatus:
+        with submission_lock(self.state.root, handle):
+            return self._status_locked(handle)
+
+    def _status_locked(self, handle):
         rec = self._record(handle)
         if rec.final:
             return JobStatus(**rec.final)
@@ -136,7 +234,7 @@ class SlurmSSHEndpoint:
         st, code = (a.splitlines()[0].split("|") + ["0:0"])[:2]
         js = JobStatus(map_state(st, code), f"slurm {st} exit {code}", st, rec.job_id)
         rec.final = js.__dict__.copy()
-        self.state.put(rec)
+        self._save_record(rec)
         return js
 
     def fetch(self, handle: str, dest: Path) -> List[Path]:

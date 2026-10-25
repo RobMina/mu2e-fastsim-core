@@ -80,8 +80,10 @@ These are mocked/local process tests, not live EAF or Slurm jobs.
 
 Next slices, before general unattended BO commissioning:
 
-1. Durable submission intent, same-handle serialization and Slurm acknowledgement-
-   loss reconciliation; do not blindly retry an ambiguous accepted submission.
+1. [Slurm recovery](slurm-recovery.md) implements durable intent, same-handle locking
+   and acknowledgement-loss reconciliation with mocked tests. Live CLI/comment
+   retention verification and coordinated rollout remain required; an ambiguous
+   intent never authorizes another dispatch.
 2. Immutable runtime/code/image/input/conditions manifests, lifetime-safe job
    snapshots, resume verification and content-verified cache reuse.
 3. Geometry FileRef handoff and task/configuration-aware metric capabilities in the
