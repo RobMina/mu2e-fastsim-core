@@ -72,8 +72,9 @@ without overwriting it while another job may be reading it. The job itself also
 checks the pinned staged bytes after waiting and before physics, including the
 ready-on-entry path that can run before the controller next polls.
 
-Controller cache writers serialize across threads/processes sharing the same
-state root. Independent state roots, old clients and external writers are not
+Controller cache writers and chain per-subjob staging serialize across
+threads/processes sharing the same state root; a delayed recovery caller verifies
+ready inputs without rewriting them. Independent state roots, old clients and external writers are not
 coordinated. Job holder/cleanup logic remains the existing site mechanism; a
 cleanup receipt is not evidence of secure deletion, and scheduler-query failure
 handling in that holder policy is not redesigned here.
@@ -121,3 +122,11 @@ PYTHONPATH=core:crv:beam PYTHONDONTWRITEBYTECODE=1 \
 
 On a free GPVM use the same file list with the documented `pyenv ana` setup.
 The EAF `setsid` and node-holder `flock` tests skip where those commands are absent.
+
+Verification on 2026-10-25: the local combined suite passed 360 tests with four
+platform skips, followed by the added chain recovery-race regression passing in
+the 92-test chain suite. The final isolated GPVM stack on fresh published heads
+passed **377 tests, no skips**, including 12 additional current-main CRV
+configuration tests (`core/tests/test_crv_response_config.py`; add `core/tests`
+to `PYTHONPATH` for that module's sibling-test import). Seven multiprocessing
+fork warnings remain. No live endpoint jobs, physics runs or builds were started.
