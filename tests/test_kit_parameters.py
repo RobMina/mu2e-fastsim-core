@@ -127,7 +127,7 @@ def test_schema_matches_registered_parameters_and_preserves_legacy_describe():
     for name, task in TASKS.items():
         spec = description["tasks"][name]
         assert set(spec["params"]) == set(task.params)
-        assert spec["file_kinds"] == []
+        assert spec["file_kinds"] == (["geom"] if name == "beam_point" else [])
         assert all("unit" in p and "role" in p for p in spec["params"].values())
         assert set(spec["required"]) == set(task.params) - set(task.defaults)
     assert description["tasks"]["veto_c4"]["params"]["dt_lo"]["unit"] == "ns"

@@ -76,7 +76,7 @@ def resolve_image(ep, sif):
             "policy": "verify-before-run-not-snapshot"}
 
 
-def make_manifest(task, code, image, inputs, params):
+def make_manifest(task, code, image, inputs, params, geometry=None):
     manifest = {"schema_version": 1, "identity_role": "execution-evidence-not-board-measurement-id",
                 "task": task, "code": code, "image": image, "inputs": inputs,
                 "input_sha": input_digest(inputs), "resolved_params": params,
@@ -84,6 +84,8 @@ def make_manifest(task, code, image, inputs, params):
                              "streamed_inputs": "pinned-and-verified-before-ready; no-source-snapshot",
                              "image": "verified-before-run; no-lifetime-snapshot",
                              "downloaded_dependencies": "unresolved", "full_immutability": False}}
+    if geometry is not None:
+        manifest["geometry"] = geometry
     return {**manifest, "manifest_sha": digest(manifest)}
 
 
@@ -193,7 +195,7 @@ def checked_record(path, allow_legacy=False):
     return record
 
 
-def binding(directory, name, params, target, prepare):
+def binding(directory, name, params, target, prepare, geometry=None):
     """Persist one original rendering before endpoint dispatch, under a cooperating-process lock."""
     directory = Path(directory)
     with submission_lock(directory, name):
@@ -204,6 +206,9 @@ def binding(directory, name, params, target, prepare):
                 raise ValueError(f"fastsimkit: {name!r} was already submitted with different params")
             if old["target"] != target:
                 raise ValueError(f"fastsimkit: {name!r} artifact binding belongs to a different target/source")
+            from .geometry import identity
+            if identity(old["manifest"].get("geometry")) != identity(geometry):
+                raise ValueError(f"fastsimkit: {name!r} geometry differs from the bound request")
             return old
         record = {**prepare(), "params": params, "target": target}
         validate_manifest(record["manifest"])

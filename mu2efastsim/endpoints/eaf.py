@@ -251,6 +251,14 @@ class EAFEndpoint:
                     fcntl.flock(fh, fcntl.LOCK_UN)
         return held()
 
+    def admit_resources(self, resources: Resources) -> None:
+        """Check deterministic lifetime/device restrictions without starting a server."""
+        if resources.gpus > 1:
+            raise EndpointError("eaf: one MIG slice per user; gpus must be 0 or 1")
+        if self.max_age_s and 60 * resources.minutes > self.max_age_s:
+            raise EndpointError(f"eaf: wall time {resources.minutes} min exceeds the server lifetime "
+                                f"{self.max_age_s / 60:.0f} min")
+
     def submit(self, handle: str, script: str, resources: Resources) -> JobRecord:
         with self._lock():
             return self._submit(handle, script, resources)
@@ -262,11 +270,7 @@ class EAFEndpoint:
             if old.spec_sha != sha:
                 raise EndpointError(f"{handle!r} was already submitted with a different script or resources")
             return old
-        if resources.gpus > 1:
-            raise EndpointError("eaf: one MIG slice per user; gpus must be 0 or 1")
-        if self.max_age_s and 60 * resources.minutes > self.max_age_s:
-            raise EndpointError(f"eaf: wall time {resources.minutes} min exceeds the server lifetime "
-                                f"{self.max_age_s / 60:.0f} min")
+        self.admit_resources(resources)
         d = self._dir(handle)
         (d / "out").mkdir(parents=True, exist_ok=True)
         os.chmod(d, 0o700)

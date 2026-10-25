@@ -22,6 +22,9 @@ from typing import Any, Dict, List, Tuple
 
 from . import EndpointError, Resources, get
 from .parameters import schema, validate as validate_parameters
+from . import capabilities, geometry as geometry_artifacts
+from .artifacts import digest
+from .submission import read_json, durable_json, submission_lock
 
 VERSION = "1"
 POLL_MS = 60_000
@@ -350,7 +353,7 @@ class FastsimKit:
         t = self._task(params)
         return {"task": params["task"], **validate_parameters(params["task"], params, t.params, t.defaults)}
 
-    def render(self, params: Dict[str, Any]) -> Tuple[str, Resources]:
+    def render(self, params: Dict[str, Any], geometry=None) -> Tuple[str, Resources]:
         params = self._parameters(params)
         t = self._task(params)
         fnal = getattr(self.ep, "fnal_data", None)
@@ -359,6 +362,12 @@ class FastsimKit:
                              f"endpoint that mounts FNAL storage (eaf); {getattr(self.ep, 'name', '?')!r} does not")
         rt = self.ep.runtime() if hasattr(self.ep, "runtime") else APPTAINER_RUNTIME
         body = t.body.replace("@runtime_a@", rt["a"]).replace("@runtime_t@", rt["t"])
+        if geometry is not None:
+            if params["task"] != "beam_point" or "@geometry_setup@" not in body:
+                raise ValueError("fastsimkit: task does not support geometry handoff")
+            setup = geometry_artifacts.stage_shell(geometry) + 'GEOM="$M2FS_GEOMETRY"\n'
+        else:
+            setup = ""
         subs = {"sif": shlex.quote(self.sif),
                 **{f"p_{k}": shlex.quote(_arg(params.get(k, t.defaults.get(k)))) for k in t.params}}
         if fnal:
@@ -367,53 +376,126 @@ class FastsimKit:
             body = body.replace(f"@{k}@", v)
         if any(s in body for s in ("@p_", "@sif@", "@tables@", "@metrics_py@", "@runtime_", "@fnal_data@")):
             raise ValueError(f"fastsimkit: unfilled placeholder in task {params['task']!r}")
+        body = body.replace("@geometry_setup@", setup)
         admit_resources(self.ep, t.resources)
         return body, t.resources
 
     # -- contract ------------------------------------------------------------------------------------------------
-    def _admit(self, name, params, files, inputs):
+    def _admit(self, name, params, files, inputs, requested_metrics=None):
         import re
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name):
             raise ValueError(f"fastsimkit: bad handle {name!r}")
-        if not isinstance(files, list) or not isinstance(inputs, list) or files or inputs:
-            raise ValueError("fastsimkit: files and inputs are not supported yet (tasks take params only)")
         if not isinstance(params, dict) or any(not isinstance(k, str) for k in params):
             raise ValueError("fastsimkit: params must be an object with string keys")
+        ref = geometry_artifacts.reference(files, inputs, params)
+        if ref is not None:
+            params = {**params, "geom": "nominal"}
         if self._is_cp(params):
             handler = self.chain_point
+            from .chainpoint import validate
+            params = {"task": "chain_point", **validate(params)}
         else:
             params = self._parameters(params)
             handler = self._delegate(params=params)
-        if handler is not None:
-            result = handler.check(name, params)
-            if not result["ok"]:
-                raise ValueError(result["message"])
-            return params, handler, None
-        rendered = self.render(params)
-        return params, None, rendered
+        known = self._task_of(name)
+        if known and known != params["task"]:
+            raise ValueError(f"fastsimkit: {name!r} already belongs to task {known!r}")
+        rendered = None
+        old = self._request(name)
+        if old is None:
+            if handler is not None:
+                result = handler.check(name, params)
+                if not result["ok"]:
+                    raise ValueError(result["message"])
+            else:
+                rendered = self.render(params)
+        from . import chainpoint
+        if old is None and known and (ref is not None or requested_metrics is not None):
+            raise ValueError("fastsimkit: cannot attach a new contract to an already submitted legacy handle")
+        cap = old["capabilities"] if old else capabilities.resolve(params["task"], params, self.ep, TASKS, chainpoint)
+        names = capabilities.require_metrics(requested_metrics, cap)
+        if old is not None:
+            self._resolve_request(name, params, ref, names, old)
+            if handler is not None and hasattr(handler, "check_binding"):
+                handler.check_binding(name, params, old["geometry"])
+        return params, handler, rendered, ref, cap, names
 
-    def check(self, name, params, files, inputs) -> Dict[str, Any]:
+    def _request_path(self, name):
+        return self.out_root.parent / "requests" / f"{name}.json"
+
+    def _request(self, name):
+        path = self._request_path(name)
+        record = read_json(path)
+        if record is None:
+            if path.exists():
+                raise ValueError("fastsimkit: corrupt request record")
+            return None
+        if (not isinstance(record, dict) or record.get("schema_version") != 1
+                or record.get("request_sha") != digest({k: v for k, v in record.items() if k != "request_sha"})):
+            raise ValueError("fastsimkit: corrupt request record")
+        return record
+
+    def _target(self):
+        return {"endpoint": self.ep.name, **{k: str(getattr(self.ep, k, "")) for k in
+                ("host", "account", "partition", "workdir", "fnal_data")}}
+
+    def _resolve_request(self, name, params, ref, names, old):
+        if old is not None:
+            if old["params"] != params or old["requested_metrics"] != names or old["target"] != self._target():
+                raise ValueError("fastsimkit: request differs from the bound parameters, metrics or endpoint")
+            if geometry_artifacts.identity(ref) != geometry_artifacts.identity(old["geometry"]):
+                raise ValueError("fastsimkit: geometry differs from the bound request")
+            return geometry_artifacts.resolve(ref, saved=old["geometry"])
+        return geometry_artifacts.resolve(ref)
+
+    def check(self, name, params, files, inputs, requested_metrics=None) -> Dict[str, Any]:
         try:
-            self._admit(name, params, files, inputs)
-        except ValueError as e:
+            p, handler, rendered, ref, cap, names = self._admit(name, params, files, inputs, requested_metrics)
+            old = self._request(name)
+            artifact = self._resolve_request(name, p, ref, names, old)
+            if artifact is not None and handler is None and old is None:
+                self.render(p, geometry=artifact)
+        except (ValueError, EndpointError) as e:
             return {"ok": False, "message": str(e)}
-        return {"ok": True, "message": ""}
+        result = {"ok": True, "message": ""}
+        if requested_metrics is not None or ref is not None:
+            result.update(capabilities=old["capabilities"] if old else cap,
+                          geometry=geometry_artifacts.identity(artifact))
+        return result
 
     def _task_of(self, handle) -> str:
         p = self.out_root.parent / "tasks" / f"{handle}.txt"
         return p.read_text().strip() if p.exists() else ""
 
-    def submit(self, name, params, files, inputs) -> Dict[str, Any]:
-        params, handler, rendered = self._admit(name, params, files, inputs)
-        if handler is not None:
-            self._record_task(name, params["task"])
-            return handler.submit(name, params)
-        script, res = rendered
-        try:
-            self.ep.submit(name, script, res)
-        except EndpointError as e:
-            raise ValueError(str(e))
-        self._record_task(name, params["task"])
+    def submit(self, name, params, files, inputs, requested_metrics=None) -> Dict[str, Any]:
+        from dataclasses import asdict
+        p, handler, rendered, ref, cap, names = self._admit(name, params, files, inputs, requested_metrics)
+        with submission_lock(self.out_root.parent / "requests", name):
+            old = self._request(name)
+            artifact = self._resolve_request(name, p, ref, names, old)
+            record = old
+            if record is None and (requested_metrics is not None or artifact is not None):
+                if self._task_of(name):
+                    raise ValueError("fastsimkit: cannot attach a new contract to an already submitted legacy handle")
+                if handler is None:
+                    rendered = self.render(p, geometry=artifact)
+                record = {"schema_version": 1, "params": p, "requested_metrics": names,
+                          "geometry": artifact, "capabilities": cap, "target": self._target(),
+                          "body": rendered[0] if handler is None else None,
+                          "resources": asdict(rendered[1]) if handler is None else None}
+                record["request_sha"] = digest(record)
+                durable_json(self._request_path(name), record)
+            if handler is not None:
+                self._record_task(name, p["task"])
+                if artifact is not None:
+                    return handler.submit(name, p, geometry=artifact)
+                return handler.submit(name, p)
+            script, res = rendered if record is None else (record["body"], Resources(**record["resources"]))
+            try:
+                self.ep.submit(name, script, res)
+            except EndpointError as e:
+                raise ValueError(str(e)) from e
+            self._record_task(name, p["task"])
         return {"handle": name}
 
     def _record_task(self, name, task):
@@ -432,6 +514,22 @@ class FastsimKit:
                 "poll_ms": POLL_MS if s.state == "working" else 0, "progress": None}
 
     def results(self, handle) -> Dict[str, Any]:
+        result = self._results(handle)
+        record = self._request(handle)
+        if record is not None:
+            result["metrics"], unavailable = capabilities.contract_results(
+                result["metrics"], record["requested_metrics"], record["capabilities"])
+            result["metadata"]["unavailable_metrics"] = unavailable
+            result["metadata"].update(requested_metrics=record["requested_metrics"],
+                                       capabilities=record["capabilities"])
+            if record["geometry"] is not None:
+                ref = geometry_artifacts.verify_result(self.out_root / handle / "out", record["geometry"])
+                result["metadata"]["diagnostic_files"] = result["files"]
+                result["files"] = [ref]
+                result["metadata"]["geometry"] = geometry_artifacts.identity(record["geometry"])
+        return result
+
+    def _results(self, handle) -> Dict[str, Any]:
         if self._is_cp(handle=handle):
             return self.chain_point.results(handle)
         d = self._delegate(handle=handle)
@@ -487,8 +585,17 @@ class FastsimKit:
             "required": sorted(set(chainpoint.PARAMS) - set(chainpoint.OPTIONAL)),
             "endpoints": ["uva"], "file_kinds": [], "inputs_supported": False,
             "validation_scope": "admission only; not physics certification"}
+        for name, extra in capabilities.describe_tasks(TASKS, chainpoint).items():
+            tasks[name].update(extra)
+            if name == "beam_point":
+                tasks[name].update(inputs_supported=True, geometry_contract={
+                    "format": geometry_artifacts.FORMAT, "schema_version": 1,
+                    "base_include": geometry_artifacts.BASE, "max_bytes": geometry_artifacts.MAX_BYTES,
+                    "geom_parameter": "required without FileRef; mutually exclusive with FileRef"})
+        metrics = sorted(set(metrics) | {m for spec in tasks.values() for m in spec["metrics"]})
         return {"params": params, "metrics": metrics, "accepts_lists": False,
-                "parameter_schema_version": 1, "tasks": tasks}
+                "parameter_schema_version": 1, "capabilities_schema_version": 1,
+                "requested_metrics_supported": True, "tasks": tasks}
 
 
 def make_server(kit: FastsimKit):
@@ -498,8 +605,8 @@ def make_server(kit: FastsimKit):
 
     @server.tool(structured_output=True)
     def submit(name: str, params: dict[str, Any], files: list[dict[str, Any]],
-               inputs: list[dict[str, Any]]) -> dict[str, Any]:
-        return kit.submit(name, params, files, inputs)
+               inputs: list[dict[str, Any]], requested_metrics: list[str] | None = None) -> dict[str, Any]:
+        return kit.submit(name, params, files, inputs, requested_metrics)
 
     @server.tool(structured_output=True)
     def status(handle: str) -> dict[str, Any]:
@@ -511,8 +618,8 @@ def make_server(kit: FastsimKit):
 
     @server.tool(structured_output=True)
     def check(name: str, params: dict[str, Any], files: list[dict[str, Any]],
-              inputs: list[dict[str, Any]]) -> dict[str, Any]:
-        return kit.check(name, params, files, inputs)
+              inputs: list[dict[str, Any]], requested_metrics: list[str] | None = None) -> dict[str, Any]:
+        return kit.check(name, params, files, inputs, requested_metrics)
 
     @server.tool(structured_output=True)
     def describe() -> dict[str, Any]:

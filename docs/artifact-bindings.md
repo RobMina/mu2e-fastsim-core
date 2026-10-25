@@ -92,8 +92,8 @@ concurrent external mutation. Existing metrics are unchanged.
   invocations. Replacing the SIF after verification remains unsafe.
 - CVMFS-fetched lookup tables, Offline geometry include closure, field maps and
   other downloaded dependencies are not yet fully resolved/pinned here.
-- Geometry FileRefs remain unsupported at the kit boundary; beam's existing
-  absolute-path overlay route is not a replacement for that handshake.
+- [Geometry FileRefs](geometry-capabilities.md) now have a bounded beam target-overlay
+  handoff; arbitrary geometry/include trees remain unsupported.
 - Validation envelopes, configuration-aware metrics, replicas/uncertainties and
   approved data-out/retention policy remain separate commissioning requirements.
 - Deploy all cooperating submitters together; validate real node tools, snapshot
