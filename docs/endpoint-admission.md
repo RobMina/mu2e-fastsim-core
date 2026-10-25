@@ -30,6 +30,21 @@ Configuration-dependent metric availability and validation envelopes are not yet
 encoded. The logical kit version remains unchanged: this patch rejects invalid
 requests and repairs shell construction, rather than redefining scored observables.
 
+## Fixed CRV response configuration
+
+`crv_response` accepts optional `response_config`: a schema-v1 JSON object or inline JSON string, with empty string
+meaning the shipped nominal preset. Validation is delegated to the CRV package's standard-library-only
+`response_config` module, then the full object is canonicalized as one shell-quoted argument. Kit-host paths and
+changes to staged asset paths are refused. Effective config plus existing scalar knobs are validated together,
+so overrides cannot bypass cross-field constraints. Plain EAF and streamed UVA requests use identical admission.
+
+The parameter descriptor role is `fixed_configuration`; new SiPM/reco fields are not registered as scalar BO knobs.
+The resolved R3 configuration/asset hashes are output provenance, not an automatic board measurement-hash update.
+A study that changes its fixed configuration must establish a new measurement definition as appropriate. See
+`crv/docs/response-configuration.md` in the matching umbrella. Older CRV task definitions without this optional
+parameter remain compatible with the core schema; the new CRV task requires a core containing this extension.
+Tests: `tests/test_crv_response_config.py` (fake endpoints only).
+
 ## Admission and command construction
 
 `check` and `submit` share handle, parameter, artifact and delegate admission before

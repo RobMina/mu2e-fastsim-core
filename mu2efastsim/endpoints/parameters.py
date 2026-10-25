@@ -47,6 +47,13 @@ class Parameter:
                     value = float(value)
                 except OverflowError:
                     raise ValueError(f"{prefix} must be representable as a finite number") from None
+        elif self.type == "crv_response_config":
+            from crvfastsim import response_config
+            if not isinstance(value, (str, dict)):
+                raise ValueError(f"{prefix} must be a JSON object or inline JSON string")
+            if isinstance(value, str) and value and not value.lstrip().startswith('{'):
+                raise ValueError(f"{prefix} must be inline JSON, not a kit-host file path")
+            return response_config.canonical(response_config.parse(value, kit=True))
         elif not isinstance(value, str):
             raise ValueError(f"{prefix} must be a string, got {value!r}")
         if self.choices and value not in self.choices:
@@ -102,6 +109,8 @@ def schema(task: str, names) -> dict[str, Parameter]:
         specs = {"period": enum("P4", "P3", "raw"), "tables": enum("vr5", "all", role="fidelity"),
                  "events": integer(), "background": Parameter("integer", role="scenario", choices=(0, 1)),
                  "seed": seed}
+        if "response_config" in names:
+            specs["response_config"] = Parameter("crv_response_config", role="fixed_configuration")
         for key in names:
             if key in specs:
                 continue
@@ -139,6 +148,12 @@ def validate(task: str, params: dict, names, defaults=None) -> dict:
                 raise ValueError(f"fastsimkit: {task} requires {lo} < {hi}")
         if out["gate_start_lo"] >= 0 and out["gate_end_hi"] >= 0 and out["gate_start_lo"] >= out["gate_end_hi"]:
             raise ValueError("fastsimkit: veto_c4 requires enabled gate_start_lo < gate_end_hi")
-    if task == "crv_response" and out["tables"] == "all" and out["events"] == 0:
-        raise ValueError("fastsimkit: crv_response events must be > 0 with tables=all")
+    if task == "crv_response":
+        if out["tables"] == "all" and out["events"] == 0:
+            raise ValueError("fastsimkit: crv_response events must be > 0 with tables=all")
+        if "response_config" in out:
+            from crvfastsim import response_config
+            from crvfastsim.kit_task import KNOB_PARAMS
+            response_config.apply_knobs(response_config.parse(out["response_config"], kit=True),
+                                        {k: out[k] for k in KNOB_PARAMS})
     return out
