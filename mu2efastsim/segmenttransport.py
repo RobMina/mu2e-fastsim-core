@@ -1,6 +1,6 @@
 """EXPERIMENTAL segment-history transport policy; not a production transport replacement.
 
-Uses the existing restricted mean and Urban sampler, without new loss/material physics.
+Uses the existing restricted mean and optional Urban sampler, without new loss/material physics.
 There is no time transport, geometry, scattering, or claim of Geant4 stopping-range agreement.
 """
 import numpy as np
@@ -66,19 +66,23 @@ def _loss_array(value, shape, name):
 
 def transport_segment(rng, mat, kinetic_MeV, length_mm, *, tcut_MeV,
                       stopping="mean-replace", max_step_mm=1.0, fractional_loss=0.05,
-                      stop_ke_MeV=1.0, max_steps=10000):
+                      stop_ke_MeV=1.0, max_steps=10000, loss_model="sampled"):
     """Integrate one uniform segment per lane using an EXPERIMENTAL transport policy.
 
     Inputs: kinetic_MeV is a finite nonnegative 1-D array; length_mm is either a
     finite nonnegative scalar (broadcast) or a matching 1-D array. mat is a valid
     materials.Material; tcut_MeV, max_step_mm and stop_ke_MeV are finite positive
     scalars, fractional_loss is in (0, 1], and max_steps is a positive integer.
-    All input/material/settings validation precedes sampling, including empty inputs.
+    loss_model is "sampled" (default, existing Urban sampler) or "mean" (existing
+    restricted dedx*step, with no sampler call or RNG access; rng may be None).
+    stopping remains validated in both modes but only affects sampled overshoots.
+    All input/material/settings validation precedes loss evaluation, including empty inputs.
 
     Returns {"slices": {...}, "final": {...}} containing independent 1-D arrays:
       slices: lane_index (integer original input index), s0_mm, s1_mm (local
         segment coordinates), ke_in_MeV, ke_out_MeV, sampled_loss_MeV (unaltered
-        full proposed-step sampler result), applied_loss_MeV (actual KE removed),
+        full-step sampler result, or deterministic dedx*step proposal in mean mode),
+        applied_loss_MeV (actual KE removed),
         terminal ("none", "model_stop", or "exhausted"). Rows are iteration-major,
         ascending lane index within each iteration, after initial terminal rows.
       final: final_ke_MeV, traveled_mm, status ("transmitted", "model_stop", or
@@ -93,9 +97,11 @@ def transport_segment(rng, mat, kinetic_MeV, length_mm, *, tcut_MeV,
 
     Each iteration operates on all active lanes with step=min(remaining, max_step,
     fractional_loss*K/dedx); dedx==0 uses max_step without division by zero. Only
-    overshoots (raw >= K) distinguish policies: "mean-replace" proposes dedx*step,
-    "sampled" proposes raw. Other samples are unchanged. Proposal >= K exhausts
-    KE at s_used=step*(K/proposal), retaining the original raw sample in the row.
+    sampled-mode overshoots (raw >= K) distinguish stopping policies: "mean-replace"
+    proposes dedx*step, "sampled" proposes raw. Other samples are unchanged. Mean
+    mode always proposes dedx*step, using the same stepping and terminal rules.
+    Proposal >= K exhausts KE at s_used=step*(K/proposal), retaining the original
+    full-step sample or deterministic proposal in sampled_loss_MeV.
     This linear within-step stopping location is a modeling assumption, NOT a
     demonstrated Geant4 range law. Applied loss is KE removed, not a statement
     that all restricted-loss energy is locally deposited.
@@ -103,7 +109,7 @@ def transport_segment(rng, mat, kinetic_MeV, length_mm, *, tcut_MeV,
     Nonfinite/negative model outputs raise ValueError. Unrepresentable advancement
     or the adaptive iteration cap raises RuntimeError, never a silent remainder
     or transmission. Numerical kinematics/model-domain failures raise ValueError.
-    Errors after earlier steps may consume RNG state; there is no rollback.
+    Errors after earlier sampled-mode steps may consume RNG state; there is no rollback.
     Repeating the same batch and seed is reproducible; scalar/batch RNG streams
     need not agree because active lanes share vectorized sampler calls. No time
     coordinate is computed. This API does not change production slab_loss.
@@ -125,6 +131,8 @@ def transport_segment(rng, mat, kinetic_MeV, length_mm, *, tcut_MeV,
         raise ValueError("fractional_loss must be in (0, 1]")
     if not isinstance(stopping, str) or stopping not in ("mean-replace", "sampled"):
         raise ValueError("stopping must be 'mean-replace' or 'sampled'")
+    if not isinstance(loss_model, str) or loss_model not in ("sampled", "mean"):
+        raise ValueError("loss_model must be 'sampled' or 'mean'")
     if isinstance(max_steps, (bool, np.bool_)) or not isinstance(max_steps, (int, np.integer)) or max_steps <= 0:
         raise ValueError("max_steps must be a positive integer")
     _validate_material(mat)
@@ -160,13 +168,20 @@ def transport_segment(rng, mat, kinetic_MeV, length_mm, *, tcut_MeV,
         step = np.minimum(np.minimum(length[lanes] - s0, max_step_mm), adaptive)
         if np.any(step <= 0) or np.any(s0 + step <= s0):
             raise RuntimeError("adaptive step cannot advance segment coordinate")
-        try:
-            with np.errstate(over="raise", invalid="raise", divide="raise"):
-                raw = _loss_array(eloss.sample_loss(rng, mat, p, step, tcut_MeV), before.shape, "sampled loss")
-        except FloatingPointError as exc:
-            raise ValueError("sampler outside numerical model domain") from exc
+        if loss_model == "mean":
+            try:
+                with np.errstate(over="raise", invalid="raise", divide="raise"):
+                    raw = _loss_array(dedx * step, before.shape, "mean loss")
+            except FloatingPointError as exc:
+                raise ValueError("restricted mean outside numerical model domain") from exc
+        else:
+            try:
+                with np.errstate(over="raise", invalid="raise", divide="raise"):
+                    raw = _loss_array(eloss.sample_loss(rng, mat, p, step, tcut_MeV), before.shape, "sampled loss")
+            except FloatingPointError as exc:
+                raise ValueError("sampler outside numerical model domain") from exc
         proposal = raw.copy()
-        if stopping == "mean-replace":
+        if loss_model == "sampled" and stopping == "mean-replace":
             overshoot = raw >= before
             proposal[overshoot] = dedx[overshoot] * step[overshoot]
         proposal = _loss_array(proposal, before.shape, "applied proposal")
