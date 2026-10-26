@@ -212,7 +212,7 @@ TK_STOP = 1.0       # MeV: kinetic energy below which a muon is stopped (the rem
 MAX_SLICES_PER_SLAB = 4   # slices for a muon with > 3x the energy the remaining slab takes (flat dE/dx regime)
 
 
-def slab_loss(rng, mat, p, length):
+def slab_loss(rng, mat, p, length, *, trace=None):
     """Energy loss [MeV] through `length` [mm] of `mat`, integrated in slices so dE/dx follows the slowing muon.
 
     Each slice loses at most ~SLICE_FRAC of the current kinetic energy (mean); fluctuations are sampled per slice.
@@ -221,11 +221,75 @@ def slab_loss(rng, mat, p, length):
     energy that leaves the muon, not a reason to stop it); the muon stops only when its kinetic energy falls below
     TK_STOP. At SLICE_FRAC = 5 % a muon needs about 60-90 slices to range out, inside N_SLICES_MAX; beyond the cap the
     remainder is one mean step, limited to the remaining kinetic energy.
+
+    Optional trace(record) observes this calculation without extra sampling. Records are independent dictionaries
+    of copied, one-dimensional arrays aligned with lane_index (original input indices), plus event (str) and
+    slice_index (zero-based int for slices, -1 otherwise). Events are init, slice, mean_remainder (only at the
+    iteration cap with active lanes), and final. Init/final include every lane, even stopped, zero-length or empty
+    inputs; other events include only participating lanes. Callback exceptions propagate. A callback may retain or
+    mutate records, but must not itself alter the RNG, inputs, or model globals if reproducibility is required.
+
+    Common array schema (energies in MeV, material-column lengths in mm):
+      requested_material_length_mm: original column length for this lane.
+      step_material_length_mm: length accounted for by this event (zero for init/final).
+      processed_material_length_before_mm, processed_material_length_after_mm: cumulative accounted column.
+      untraversed_material_length_mm: column not accounted for after this event.
+      kinetic_energy_initial_MeV, kinetic_energy_before_MeV, kinetic_energy_after_MeV: initial kinetic energy
+        and initial minus the before/after loss accumulator, without the final cutoff/clamp adjustment.
+      loss_accumulator_before_MeV, loss_accumulator_after_MeV: the actual integration accumulator.
+      raw_sample_loss_MeV: sampler output before overshoot replacement; NaN outside slice events.
+      effective_loss_MeV: actual accumulator increment, including mean substitution/remainder; zero at init/final.
+      mean_replaced: sampled loss >= available kinetic energy, replaced by dedx * step (slice events only).
+      model_stop: after-event accumulator leaves kinetic energy <= TK_STOP, including stopped inputs.
+      iteration_cap: this lane has entered the mean remainder after exhausting N_SLICES_MAX.
+      returned_loss_MeV, return_adjustment_MeV: final returned loss and returned minus accumulator; NaN otherwise.
+      return_adjusted: final returned loss differs from the accumulator; false outside final.
+
+    These lengths describe material-column accounting, NOT geometrical locations or a resolved stopping range.
+    The mean remainder accounts for its whole remaining column even if its accumulator overshoots the energy;
+    final cutoff closure/clamping adds no column length. Stopped lanes may therefore have untraversed column.
     """
     p = np.asarray(p, float).copy()
     tk0 = np.sqrt(p ** 2 + eloss.MMU ** 2) - eloss.MMU
     left = np.asarray(length, float).copy()
     lost = np.zeros_like(p)
+    if trace is not None:
+        trace_requested = left.copy()
+        trace_left = left.copy()
+        trace_capped = np.zeros_like(p, dtype=bool)
+        trace_lanes = np.arange(p.size)
+
+        def emit(event, lanes, before, left_before, step=0.0, raw=np.nan, effective=0.0,
+                 replaced=False, returned=None, slice_index=-1):
+            shape = lanes.shape
+            after = lost[lanes]
+            record = {
+                "event": event,
+                "slice_index": slice_index,
+                "lane_index": lanes,
+                "requested_material_length_mm": trace_requested[lanes],
+                "step_material_length_mm": np.broadcast_to(step, shape),
+                "processed_material_length_before_mm": trace_requested[lanes] - left_before,
+                "processed_material_length_after_mm": trace_requested[lanes] - trace_left[lanes],
+                "untraversed_material_length_mm": trace_left[lanes],
+                "kinetic_energy_initial_MeV": tk0[lanes],
+                "kinetic_energy_before_MeV": tk0[lanes] - before,
+                "kinetic_energy_after_MeV": tk0[lanes] - after,
+                "loss_accumulator_before_MeV": before,
+                "loss_accumulator_after_MeV": after,
+                "raw_sample_loss_MeV": np.broadcast_to(raw, shape),
+                "effective_loss_MeV": np.broadcast_to(effective, shape),
+                "mean_replaced": np.broadcast_to(replaced, shape),
+                "model_stop": tk0[lanes] - after <= TK_STOP,
+                "iteration_cap": trace_capped[lanes],
+                "returned_loss_MeV": np.full(shape, np.nan) if returned is None else returned,
+                "return_adjustment_MeV": np.full(shape, np.nan) if returned is None else returned - after,
+                "return_adjusted": np.zeros(shape, bool) if returned is None else returned != after,
+            }
+            trace({key: value.copy() if isinstance(value, np.ndarray) else value
+                   for key, value in record.items()})
+
+        emit("init", trace_lanes, lost.copy(), trace_left.copy())
     for _ in range(N_SLICES_MAX):
         go = (left > 0) & (tk0 - lost > TK_STOP)
         if not go.any():
@@ -243,16 +307,36 @@ def slab_loss(rng, mat, p, length):
         last = np.flatnonzero(go)
         step = np.where(left[go] <= step * 1.0001, left[go], step)
         dl = eloss.sample_loss(rng, mat, pg, step, 1e9)
+        if trace is not None:
+            trace_raw = dl.copy()
+            trace_before = lost[last].copy()
+            trace_left_before = trace_left[last].copy()
         dl = np.where(dl >= tk, dedx * step, dl)          # tail sample beyond the remaining energy: mean instead
         lost[last] += dl
         left[last] -= step
+        if trace is not None:
+            trace_left[last] = left[last]
+            emit("slice", last, trace_before, trace_left_before, step, trace_raw, dl,
+                 trace_raw >= tk, slice_index=_)
     rest = (left > 0) & (tk0 - lost > TK_STOP)   # still inside after N_SLICES_MAX: finish with one mean step
     if rest.any():
         tk = tk0[rest] - lost[rest]
         pg = np.sqrt(np.clip((tk + eloss.MMU) ** 2 - eloss.MMU ** 2, 1e-6, None))
-        lost[rest] += eloss.dedx_restricted(mat, pg, 1e9) * left[rest]
+        if trace is not None:
+            trace_before = lost[rest].copy()
+            trace_left_before = trace_left[rest].copy()
+        dl_mean = eloss.dedx_restricted(mat, pg, 1e9) * left[rest]
+        lost[rest] += dl_mean
+        if trace is not None:
+            trace_left[rest] = 0.0
+            trace_capped[rest] = True
+            emit("mean_remainder", np.flatnonzero(rest), trace_before, trace_left_before,
+                 step=left[rest], effective=dl_mean)
     stopped = tk0 - lost <= TK_STOP
-    return np.where(stopped, tk0, np.minimum(lost, tk0))
+    result = np.where(stopped, tk0, np.minimum(lost, tk0))
+    if trace is not None:
+        emit("final", trace_lanes, lost.copy(), trace_left.copy(), returned=result)
+    return result
 
 
 def world_loss(rng, o, d, p, world, band_edges_y, return_band_p=False, return_tail=False, return_band_len=False):
