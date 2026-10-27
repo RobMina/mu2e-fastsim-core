@@ -101,6 +101,7 @@ def test_dedx_jits_with_array_constants():
     assert np.allclose(d, ref, rtol=1e-12)
 
 
+@pytest.mark.slow   # N = 4e6 samples per side and point: about 5 GB, 70 s
 @pytest.mark.parametrize("pt", POINTS, ids=[x[0] for x in POINTS])
 def test_sample_loss_matches_numpy(pt):
     _, mat, p, L, tc = pt
