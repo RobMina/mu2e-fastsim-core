@@ -35,7 +35,8 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _COUNTS = {
     "events", "generated_events", "accepted_events", "events_with_steps", "jobs_ok", "library_reused_jobs",
     "stops", "muons", "foils", "n_terms", "pytest_failed", "vetoed", "selected", "passing_gate",
-    "deadtime_selected",
+    "deadtime_selected", "primary_muons", "straw_steps", "digis", "hits", "seeds",
+    "fit_attempts", "fit_successes", "events_with_fit", "written_events", "active_hits",
 }
 _UNITS = {
     "events_per_s": "events/s", "events_with_steps_per_s": "events/s",
@@ -90,7 +91,7 @@ def _rule(when, *, unavailable=(), conditional=(), reason):
 def _routes(task):
     if task == "chain_point":
         return [{"name": "streaming", "requires": ["stream_in"]}]
-    if task in ("beam_point", "crv_response"):
+    if task in ("beam_point", "crv_response", "tracker_point"):
         rows = [{"name": "mounted", "requires": ["fnal_data"]},
                 {"name": "streaming", "requires": ["stream_in", "no_fnal_data"]}]
         if task == "crv_response":
@@ -136,6 +137,20 @@ def describe_tasks(tasks, chainpoint_module):
                                reason="repeat=0 performs no warm timing pass; producer writes -1."))
             configs = {"geometry": {"parameter": "geom", "file_kinds": ["geom"]},
                        "repeat": {"warm_timing_requires": "repeat > 0"}}
+        elif task == "tracker_point":
+            configs = {"scenario": "extracted_v04_primary_v1", "transport": "stage C sliced MSC",
+                       "population": "all primary muons", "secondary_library": False,
+                       "fit": "hybrid F2", "momentum_MeV_c": 2000, "fit_material": False,
+                       "stock_event_conditioning": False, "F1_supported": False,
+                       "denominator": "all generated events", "retention": "JSON metadata only"}
+            for spec in metrics.values():
+                spec["runtime_check"] = {"minimum": 0}
+            metrics["fit_event_fraction"]["runtime_check"]["maximum"] = 1
+            metrics["fit_event_fraction_se"]["uncertainty"] = {
+                "of": "fit_event_fraction", "kind": "binomial_standard_error",
+                "formula": "sqrt(p*(1-p)/generated_events)",
+                "scope": "Generated-event counting only; not model/systematic or independent-replica uncertainty.",
+                "gp_observation_noise": False}
         elif task == "chain_point":
             run_configs = getattr(chainpoint_module, "RUN_CONFIGS", {})
             nonextracted = [k for k in run_configs if k != 0]

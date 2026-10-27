@@ -96,6 +96,9 @@ def schema(task: str, names) -> dict[str, Parameter]:
         specs = {"shards": integer(1, 10), "max_events": integer(), "seed": seed}
     elif task == "regression":
         specs = {"events": integer(1), "seed": seed}
+    elif task == "tracker_point":
+        specs = {"sample": enum("extracted_v04_primary_v1"),
+                 "shard": integer(1, 20, role="input_replica"), "seed": seed}
     elif task == "beam_point":
         specs = {"geom": Parameter("geometry", role="physics_design"), "muons": integer(1, 10 ** 7),
                  "seed": seed, "repeat": integer(0, 5, role="timing_repeat")}

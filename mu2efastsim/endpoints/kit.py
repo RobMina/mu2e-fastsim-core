@@ -284,6 +284,17 @@ if _crv_task is not None:
                        delegates=DELEGATES)
 
 
+# Optional fixed primary-only tracker pipeline; registration does not deploy the endpoint.
+try:
+    from trkfastsim import kit_task as _tracker_task
+except ImportError:
+    _tracker_task = None
+if _tracker_task is not None:
+    _tracker_task.register(TASKS, Task, Resources, FNAL_TASKS)
+    _tracker_task.register_delegate(DELEGATES)
+    TABLE_TASKS.add("tracker_point")  # scratch EventNtuple cleanup is mandatory
+
+
 def _arg(v) -> str:
     """A param as a command-line word; Mu2eBO sends every "number" as a float, so 200000.0 becomes 200000."""
     if isinstance(v, float) and v.is_integer():
@@ -544,7 +555,12 @@ class FastsimKit:
             raise ValueError(f"fastsimkit: {handle!r} wrote no out/metrics.json")
         if self._task_of(handle) in TABLE_TASKS and not (self.out_root / handle / "out" / "cleanup.txt").exists():
             raise ValueError(f"fastsimkit: {handle!r} staged Mu2e-internal tables but wrote no cleanup record")
-        metrics = {k: float(v) for k, v in json.loads(mpath.read_text()).items()}
+        raw_metrics = json.loads(mpath.read_text())
+        if self._task_of(handle) == "tracker_point":
+            _tracker_task.validate_metrics(raw_metrics)
+            if not (mpath.parent / "provenance.json").is_file():
+                raise ValueError("fastsimkit: tracker_point wrote no provenance.json")
+        metrics = {k: float(v) for k, v in raw_metrics.items()}
         if hasattr(self.ep, "after_results"):      # EAF: launch the next queued point, or stop an idle server
             self.ep.after_results(handle)
         return {"metrics": metrics,
