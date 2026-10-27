@@ -4,7 +4,7 @@ Every remote action is one ssh command through ``runner`` (injectable for tests)
 ``<workdir>/<handle>/{job.sh, out/, slurm.out}``; the job script writes its results under ``out/``. The job id is kept
 in a local state dir, so a restarted caller finds its jobs. ``status`` asks ``squeue`` first and ``sacct`` once the job
 has left the queue; a final state is cached locally. Budget guard: a submit whose estimated charge exceeds
-``max_su_per_job`` is refused (UVA measured ~60 SU per A100-hour, ~0.5 SU per core-hour: wiki uva-hpc-endpoint).
+``max_su_per_job`` is refused (UVA measured ~60 SU per A100-hour, ~0.5 SU per core-hour).
 Durable intents and per-handle locks fence each dispatch attempt; an unrecorded intent is reconciled by exact
 scheduler comment, never blindly resubmitted. See docs/slurm-recovery.md for storage and single-cluster limits.
 """
