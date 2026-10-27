@@ -152,7 +152,7 @@ def _ion_split(a3, w1):
 
 
 @partial(jax.jit, static_argnames=("K", "gamma_rounds"))
-def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUNDS):
+def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUNDS, mean=None):
     p = jnp.asarray(p, jnp.float64)
     p, length, tcut = jnp.broadcast_arrays(p, jnp.asarray(length, jnp.float64), jnp.asarray(tcut, jnp.float64))
     c = MatConsts(*(jnp.broadcast_to(jnp.asarray(v, jnp.float64), p.shape) for v in c))
@@ -160,7 +160,8 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
     ks = jax.random.split(key, 9)
     tkin, beta2, bg2, gam, tmax = kinematics(p, mass)
     cut = jnp.minimum(tcut, tmax)
-    mean = _dedx(c, p, tcut, mass) * length
+    # mean: caller-supplied mean loss (e.g. range-integrated, as G4VEnergyLossProcess for long steps)
+    mean = _dedx(c, p, tcut, mass) * length if mean is None else jnp.broadcast_to(jnp.asarray(mean, jnp.float64), sh)
     # Gaussian/Gamma regime: many collisions, cut close to tmax
     bohr = (mean >= _BOHR_MIN * cut) & (tmax <= 2 * cut)
     siga = jnp.sqrt(jnp.clip((tmax / beta2 - 0.5 * cut) * TWOPI_MC2_RCL2 * length * c.ne, 0, None))
@@ -232,12 +233,13 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
     return jnp.where(u, loss * scaling, out)
 
 
-def sample_loss(key, mat, p, length, tcut, mass=MMU, K=K_POISSON):
+def sample_loss(key, mat, p, length, tcut, mass=MMU, K=K_POISSON, mean=None):
     """Sampled restricted energy loss [MeV] over `length` [mm] (arrays broadcast to p's shape), G4 Urban model.
 
     key: jax.random key; mat: Material or MatConsts. jit-able (close over a Material, or pass MatConsts as arrays).
+    mean: optional mean loss [MeV] replacing dE/dx(p) * length (the fluctuation width still uses p, length, tcut).
     """
-    return _sample(key, consts(mat), p, length, tcut, jnp.asarray(mass, jnp.float64), K=K)
+    return _sample(key, consts(mat), p, length, tcut, jnp.asarray(mass, jnp.float64), K=K, mean=mean)
 
 
 def _bench(n, reps=3):

@@ -177,3 +177,18 @@ if __name__ == "__main__":
         br = "/".join(f"{x:.2f}" for x in r["branches"])
         print(f"| {lab} | {r['mean_ref']:.4g} | {br} | {100 * r['mean_rel']:+.3f} % | "
               f"{100 * np.abs(r['q_rel']).max():.3f} % | {100 * r['band']:.2f} % | {100 * r['band_m2s']:.2f} % |")
+
+
+def test_supplied_mean():
+    """mean=None is the default dE/dx * length; a supplied mean reproduces the default when equal, scales the sample
+    mean otherwise, and keeps the stream bit-identical for the same key."""
+    p = jnp.asarray(np.geomspace(15.0, 80.0, 200_000))
+    L = jnp.full(p.shape, 0.02)
+    k = jax.random.key(11)
+    m0 = EJ.dedx_restricted(M.ALUMINIUM, p, 1.0) * L
+    a = np.asarray(EJ.sample_loss(k, M.ALUMINIUM, p, L, 1.0))
+    b = np.asarray(EJ.sample_loss(k, M.ALUMINIUM, p, L, 1.0, mean=m0))
+    assert np.allclose(a, b, rtol=1e-12, atol=0)
+    c = np.asarray(EJ.sample_loss(k, M.ALUMINIUM, p, L, 1.0, mean=1.1 * m0))
+    assert abs(c.mean() / a.mean() - 1.1) < 0.005
+    assert np.isfinite(c).all() and (c >= 0).all()
