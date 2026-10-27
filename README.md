@@ -73,3 +73,22 @@ KS test) came from the CRV fast reco the same day; `tables.write(as_ttree=True)`
 ## License
 
 Apache-2.0 (`LICENSE`, `NOTICE`).
+
+## Opt-in restricted-soft / explicit-hard loss requests
+
+`mu2efastsim.eloss_split_jax.sample_loss_split(soft_key, hard_key, material, p,
+length, tcut, restricted_mean=...)` returns requested soft energy, summed hard
+energy and integer hard count, with no kinetic clipping or secondary transport.
+The supplied mean is a **restricted step energy** at the same cut, never an
+inclusive mean. Hard rate and first/second cumulant helpers expose the analytic
+spin-1/2 compound-Poisson law for tests; keys are explicit and no hard-count cap is
+used. Momentum and rates freeze over the supplied step; callers own subdivision,
+input validation, table/cut/material binding, clipping and endpoint classification.
+
+The legacy Urban sampler remains unchanged. Its overlapping-hard Bohr regime is
+not admitted by the split API: it returns NaN soft energy for positive length,
+cut < Tmax, mean >= 10*cut and Tmax <= 2*cut. Callers must retain that as an
+unresolved numerical result and apply neither channel. Other admitted branches
+still need independent distribution validation; matching analytic hard moments
+alone is not joint soft/hard physics closure. Existing numpy and JAX loss APIs
+and production defaults are unaffected.
