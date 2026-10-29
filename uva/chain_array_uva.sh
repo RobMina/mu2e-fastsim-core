@@ -6,21 +6,29 @@
 # when it starts (srun --overlap), never stored on UVA; outputs (stats only) go back to the GPVM and are removed.
 # Then throughput_uva.py: accepted events per GPU-hour, per SU, and per hour of campaign wall time.
 # usage: [N=8] [FPP=4] [GRES=gpu:a100:1] [CONSTRAINT=a100] [CPUS=16] [MEM=110G] [WALL=00:45:00] [REF=main] \
-#        chain_array_uva.sh [gpvm]
+#        [T1B=strict_v2|legacy] chain_array_uva.sh [gpvm]      (T1B: tier-1b asset set, crvfastsim.tier1b_assets)
 set -uo pipefail
 G=${1:-mu2egpvm03}
 N=${N:-8}; FPP=${FPP:-4}; GRES=${GRES:-gpu:a100:1}; CONSTRAINT=${CONSTRAINT:-a100}; CPUS=${CPUS:-16}
 MEM=${MEM:-110G}; WALL=${WALL:-00:45:00}; REF=${REF:-main}; MAXEV=${MAXEV:-}; CRV_REF=${CRV_REF:-}   # CRV_REF: a crv branch to test
 U=${UVA_HOST:-uva-hpc}; F=/scratch/ram2aq/mu2efastsim; JD=mu2e/fastsim_uva
 D=/exp/mu2e/data/users/ram2aq/crv_fastsim
-COMMON=("$D/tier1b_v7/lib_prod_as_20files.root" "$D/geometry/crvcalib_sim_best_v1_5_run1400.csv"
+T1B=${T1B:-strict_v2}
+case $T1B in
+  strict_v2) LIBSET=("$D/tier1b_strict_v2/library.root" "$D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz"
+                     "$D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz.json" "$D/tier1b_strict_v2/templates_v2.npz"
+                     "$D/tier1b_strict_v2/templates_v2.npz.json") ;;
+  legacy) LIBSET=("$D/tier1b_v7/lib_prod_as_20files.root") ;;
+  *) echo "T1B must be strict_v2 or legacy"; exit 2 ;;
+esac
+COMMON=("${LIBSET[@]}" "$D/geometry/crvcalib_sim_best_v1_5_run1400.csv"
         "$D/geometry/crvphoton_sim_best_v1_5_run1400.csv" "$D/geometry/mu2e_extracted_v04.gdml")
 NGEN=${NGEN:-20}
 TAG=array_$(date +%Y%m%d_%H%M%S)
 LOG=${LOGDIR:-$HOME/mu2e/scratch_uva}/$TAG; mkdir -p "$LOG"
 DEST=$D/reco_ref/checks_uva/$TAG
 CODE=$F/chain_code_$REF${CRV_REF:+_crv-$CRV_REF}
-echo "tag $TAG: N=$N FPP=$FPP gres=$GRES constraint=$CONSTRAINT cpus=$CPUS mem=$MEM wall=$WALL ref=$REF crv=${CRV_REF:-pinned}; log $LOG"
+echo "tag $TAG: N=$N FPP=$FPP tier1b=$T1B gres=$GRES constraint=$CONSTRAINT cpus=$CPUS mem=$MEM wall=$WALL ref=$REF crv=${CRV_REF:-pinned}; log $LOG"
 
 # one checkout for all jobs (login node: git only, no compute)
 ssh "$U" "set -e; if [ -d $CODE/.git ]; then git -C $CODE fetch -q origin; git -C $CODE checkout -q $REF; git -C $CODE reset -q --hard origin/$REF; \
@@ -32,7 +40,7 @@ ssh "$U" "set -e; if [ -d $CODE/.git ]; then git -C $CODE fetch -q origin; git -
 JIDS=()
 for k in $(seq 0 $((N-1))); do
   J=$(ssh "$U" "cd $JD && sbatch --parsable -J m2fs_arr$k --gres=$GRES -C $CONSTRAINT -c $CPUS --mem=$MEM -t $WALL \
-      --export='ALL,NPROC=1,RUNS=$FPP,SEED_BASE=$((20261021 + 1000*k)),CODE_DIR=$CODE,CODE_READY=1${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
+      --export='ALL,NPROC=1,RUNS=$FPP,SEED_BASE=$((20261021 + 1000*k)),CODE_DIR=$CODE,CODE_READY=1,T1B=$T1B${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
   JIDS+=("${J%%;*}"); echo "job $k -> ${J%%;*}"
 done
 printf "%s\n" "${JIDS[@]}" > "$LOG/jobids.txt"

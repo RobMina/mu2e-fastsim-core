@@ -154,16 +154,17 @@ def test_fanout_stream_merge(tmp_path):
     site.start(jobs[0], ep.state.get("pt1.j0").remote_dir)
     kit.status("pt1")                               # streams sub-job 0 now that its inbox exists
     names = sorted(d.rsplit("/", 1)[1] for _, d in streamed)   # streamed in parallel: order not fixed
-    assert [d for r, d in streamed if r.endswith("lib_prod_as_20files.root")] == ["/dev/shm/crvfs_lib_u_udc-x/lib_prod_as_20files.root"]
-    assert names == sorted(["lib_prod_as_20files.root", "crvcalib_sim_best_v1_5_run1400.csv",
+    shared = sorted(d for r, d in streamed if r.startswith("tier1b_"))      # the default set: library + sidecars
+    assert shared == sorted(f"/dev/shm/crvfs_lib_u_udc-x/{f}" for f in CP.TIER1B_SETS["strict_v2"][1])
+    assert names == sorted(list(CP.TIER1B_SETS["strict_v2"][1]) + ["crvcalib_sim_best_v1_5_run1400.csv",
                      "crvphoton_sim_best_v1_5_run1400.csv", "mu2e_extracted_v04.gdml",
                      "gen.001400_00000019.root", "gen.001400_00000020.root"])
-    assert all(d.startswith(f"/tmp/crvfs_kit_j{jobs[0]}_1/") for r, d in streamed if "lib_prod" not in r)
+    assert all(d.startswith(f"/tmp/crvfs_kit_j{jobs[0]}_1/") for r, d in streamed if not r.startswith("tier1b_"))
     assert any("touch" in c and "/ready" in c for c in site.cmds)
     for j, k in zip(jobs[1:], (1, 2)):           # same node: the library is already there
         site.start(j, ep.state.get(f"pt1.j{k}").remote_dir)
     kit.status("pt1")
-    assert len(streamed) == 6 + 2 * 5             # sub-jobs 1 and 2 get CSVs, GDML and gen files, not the library
+    assert len(streamed) == 10 + 2 * 5            # sub-jobs 1 and 2 get CSVs, GDML and gen files, not the library
     for j in jobs:
         site.state[j] = "COMPLETED"
     s = kit.status("pt1")
@@ -217,15 +218,18 @@ def test_body_is_valid_bash_and_keeps_inputs_off_disk(tmp_path):
     assert res.gpus == 1 and res.minutes == 45
 
 
-def test_library_streamed_once_per_node(tmp_path):
+@pytest.mark.parametrize("tier1b,lib", [(0, "tier1b_strict_v2/library.root"), (1, "tier1b_v7/lib_prod_as_20files.root")])
+def test_library_streamed_once_per_node(tmp_path, tier1b, lib):
     site, ep, kit, streamed = make(tmp_path)
-    kit.submit("pt4", {**P, "shards": 3, "files_per_job": 1}, [], [])
+    kit.submit("pt4", {**P, "shards": 3, "files_per_job": 1, "tier1b": tier1b}, [], [])
     jobs = [ep.state.get(f"pt4.j{k}").job_id for k in range(3)]
     for j, k, node in zip(jobs, range(3), ("nA", "nA", "nB")):
         site.start(j, ep.state.get(f"pt4.j{k}").remote_dir, node=node)
         kit.status("pt4")
-    libs = sorted(d for r, d in streamed if r.endswith("lib_prod_as_20files.root"))
-    assert libs == ["/dev/shm/crvfs_lib_u_nA/lib_prod_as_20files.root", "/dev/shm/crvfs_lib_u_nB/lib_prod_as_20files.root"]
+    name = lib.rsplit("/", 1)[1]
+    libs = sorted(d for r, d in streamed if r == lib)
+    assert libs == [f"/dev/shm/crvfs_lib_u_nA/{name}", f"/dev/shm/crvfs_lib_u_nB/{name}"]
+    assert sum(r.startswith("tier1b_") for r, _ in streamed) == 2 * len(CP.library_files(CP.validate({**P, "tier1b": tier1b})))
 
 
 def test_body_shares_and_releases_the_node_library(tmp_path):
@@ -233,7 +237,20 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
     body, _ = kit.chain_point.render(CP.validate(P), 0)
     assert "/dev/shm/crvfs_lib_${USER}_" in body and "flock 9" in body and "lib_release" in body
     assert body.count("trap '") >= 1 and "deleted node library" in body
-    assert '--library "$S/lib_prod_as_20files.root"' in body
+    assert '--tier1b strict_v2 --tier1b-dir "$S"' in body and "--library" not in body
+    legacy, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 1}), 0)
+    assert '--library "$S/lib_prod_as_20files.root"' in legacy and "--tier1b" not in legacy
+    named, _ = kit.chain_point.render(CP.validate({**P, "gen_set": 3, "run_config": 3, "shard_offset": 0}), 0)
+    assert '--library "$S/lib_prod_as_20files.root"' in named          # named configurations: legacy only
+
+
+def test_tier1b_sets():
+    assert CP.tier1b_set(CP.validate(P)) == "strict_v2" and CP.tier1b_set(CP.validate({**P, "tier1b": 1})) == "legacy"
+    assert CP.tier1b_set({k: v for k, v in CP.validate(P).items() if k != "tier1b"}) == "legacy"   # older records
+    assert CP.library_files(CP.validate({**P, "tier1b": 1})) == [CP.LIBRARY]
+    assert CP.library_files(CP.validate(P))[0] == "tier1b_strict_v2/library.root"
+    with pytest.raises(ValueError):
+        CP.validate({**P, "tier1b": 2})
 
 
 def test_gen_sets():
@@ -258,7 +275,8 @@ def test_wait_budget_scales_with_bytes(tmp_path):
     assert CP.wait_budget_s(small, mbps=4.0) == CP.WAIT_FLOOR_S
     cg03 = CP.validate({**P, "gen_set": 1, "shards": 4, "files_per_job": 4, "shard_offset": 0})
     cg02 = CP.validate({**cg03, "files_per_job": 20})
-    assert CP.wait_budget_s(cg03, mbps=4.0) == pytest.approx(600 + 4 * (1.007e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
+    assert CP.wait_budget_s(cg03, mbps=4.0) == pytest.approx(600 + 4 * (1.0834e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
+    assert CP.wait_budget_s({**cg03, "tier1b": 1}, mbps=4.0) == pytest.approx(600 + 4 * (1.007e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
     assert CP.wait_budget_s(cg02, mbps=4.0) > 2700 > CP.wait_budget_s(cg03, mbps=4.0) > CP.WAIT_FLOOR_S
     _, _, kit, _ = make(tmp_path)
     body, _ = kit.chain_point.render(cg02, 0)
@@ -467,7 +485,7 @@ def test_same_handle_controllers_never_rewrite_ready_inputs(tmp_path):
         second = pool.submit(other.stream_step, "race", 0)
         release.set()
         assert first.result() == second.result() == "streamed"
-    assert len(streamed) == 6
+    assert len(streamed) == 10
     cp._rec_path("race").with_suffix(".j0.streamed").unlink(missing_ok=True)
     assert other.stream_step("race", 0) == "streamed"
-    assert len(streamed) == 6
+    assert len(streamed) == 10

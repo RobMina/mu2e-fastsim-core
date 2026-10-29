@@ -17,6 +17,8 @@
 # node tmpfs; the v6_0 lookup tables come from CVMFS into tmpfs; all deleted on exit (cleanup.txt). Per-shard JSONs
 # and the merge go back to the GPVM. usage (laptop, UVA network):
 #   JOB=chain_node_uva.sh EXPORTS=NPROC=8,RUNS=4 kpp_stream_uva.sh mu2egpvm03 mu2e/fastsim_uva <files...>
+# Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v2 (default; stream library.root and both sidecars with their .json)
+# or T1B=legacy (stream lib_prod_as_20files.root; runs with --library, the sampling before 2026-10-28).
 F=${M2FS_UVA:-/scratch/$USER/mu2efastsim}
 SIF=${SIF:-$F/mu2efastsim.sif}; NP=${NPROC:-8}; MAXEV=${MAXEV:-}; REF=${REF:-main}
 umask 077
@@ -56,6 +58,11 @@ ls -la $L | grep -v ready | awk 'NR>1{print $5, $9}'
 GEN=($(ls $L/gen.*.root)); LIB=$(ls $L/lib*.root | head -1); CAL=$(ls $L/crvcalib*.csv | head -1)
 DEV=$(ls $L/crvphoton*.csv 2>/dev/null | head -1); GD=$(ls $L/*.gdml | head -1)
 echo "gen files ${#GEN[@]}; library $(basename $LIB); calib $(basename $CAL); gdml $(basename $GD)"
+T1B=${T1B:-strict_v2}
+if [ "$T1B" = legacy ]; then TIER1B="--library $LIB"
+else for f in library.root topology_sidecar_strict_v2_v2.npz topology_sidecar_strict_v2_v2.npz.json templates_v2.npz templates_v2.npz.json; do
+  [ -f $L/$f ] || { echo "tier-1b set $T1B: $f not streamed"; exit 3; }; done; TIER1B="--tier1b $T1B --tier1b-dir $L"; fi
+echo "tier 1b: $TIER1B"
 CPP=$(( ${SLURM_CPUS_ON_NODE:-128} / NP ))
 for FPP in ${RUNS:-1}; do
   R=$O/fpp$FPP; mkdir -p $R
@@ -65,7 +72,7 @@ for FPP in ${RUNS:-1}; do
     PIN=""   # one process: the Slurm cgroup already holds the job's cores (a fixed list fails on a shared node)
     [ $NP -gt 1 ] && PIN="taskset -c $((i*CPP))-$((i*CPP+CPP-1))"   # whole-node jobs only: split the node's cores
     ( A CUDA_VISIBLE_DEVICES=$i,XLA_PYTHON_CLIENT_PREALLOCATE=false,JAX_ENABLE_X64=1 \
-        $PIN python -m crvfastsim runchain "${fl[@]}" --library $LIB --calib $CAL \
+        $PIN python -m crvfastsim runchain "${fl[@]}" $TIER1B --calib $CAL \
         ${DEV:+--deviation $DEV} --gdml $GD --jax --seed $((${SEED_BASE:-20261021}+i)) ${MAXEV:+--max-events $MAXEV} \
         --emit $R/shard_$i.json --outdir $R/p$i ) > $R/p$i.txt 2>&1 & pids+=($!)
   done

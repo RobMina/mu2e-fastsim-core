@@ -15,7 +15,11 @@ max_events (per file, 0 = all), seed, wall_minutes (per sub-job), chain_flags (o
 3 crygen_run2_v1), run_config (optional, 0 extracted_v04 = default, 1 run1a_v01, 2 run1b_v01, 3 run2_v10: crvfastsim
 runconfig; it picks the GDML world, the lookup tables and the response/cuts; other configurations than extracted run
 with nominal CRVCalib constants, no CSVs streamed). A gen set belongs to one CRY configuration: extracted gen sets
-(0, 1) only with run_config 0, the default-CRY sets (2, 3) only with the others.
+(0, 1) only with run_config 0, the default-CRY sets (2, 3) only with the others. tier1b (optional; crvfastsim
+tier1b_assets): 0 = the configuration's default asset set (extracted: strict_v2, the strict library with its topology
+and template sidecars and placement options; named configurations: legacy, they have no library of their own), 1 =
+legacy (tier1b_v7 library, no placement; the default before 2026-10-28). Records written before this parameter
+existed ran legacy. The set's files are streamed once per node into the shared library dir.
 
 Input wait: a sub-job waits for its inputs until a deadline sized from the bytes the whole point streams (every sub-job
 can queue behind the others on the kit host's link): ``wait_budget_s`` = 600 s + point bytes / FASTSIMKIT_STREAM_MBPS
@@ -42,8 +46,8 @@ from .snapshots import prepare_code
 from .submission import submission_lock
 
 PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall_minutes", "gen_set", "run_config",
-          "chain_flags")
-OPTIONAL = {"gen_set": 0, "run_config": 0, "chain_flags": 0}
+          "chain_flags", "tier1b")
+OPTIONAL = {"gen_set": 0, "run_config": 0, "chain_flags": 0, "tier1b": 0}
 # chain_flags bits -> runchain options (speed only; 1 is bit-identical, 2 statistically equal, V4)
 CHAIN_FLAGS = {1: "--prefetch", 2: "--fused-response"}
 METRICS = ("accepted_events", "generated_events", "jobs_ok", "gpu_hours", "est_su", "accepted_per_gpu_hour",
@@ -60,12 +64,18 @@ GEN_SETS = {0: ("g4ref_v1_tables/gen.001400_{:08d}.root", tuple(range(1, 21))), 
             3: ("crygen_run2_v1_tables/gen.001400_{:08d}.root", tuple(range(4001, 4021)))}    # default CRY, Run 2 world
 # sizes for the input-wait budget (bytes, 2026-10-23 on /exp): per gen file and generated events per file, per set
 GEN_FILE = {0: (2.82e6, 50_000), 1: (5.60e7, 1_000_000), 2: (5.67e7, 1_000_000), 3: (5.66e7, 1_000_000)}
-LIBRARY_BYTES, SMALL_BYTES = 1.007e9, 3.9e6                 # tier1b_v7 library; CSVs + GDML
+SMALL_BYTES = 3.9e6                                         # CSVs + GDML
 WAIT_FLOOR_S, WAIT_SLACK_S, STREAM_MBPS = 1800, 600, 4.0
 # chain time per sub-job on one A100 (kitcg03: ~470 s for 4 M generated events, 22 s setup): setup + per M generated,
 # with a 1.5x margin on the per-event part
 CHAIN_SETUP_S, CHAIN_S_PER_MEVENT = 60.0, 180.0
-LIBRARY = "tier1b_v7/lib_prod_as_20files.root"
+# tier-1b asset sets (crvfastsim.tier1b_assets.SETS; crv tests keep the two equal): directory under the FNAL data root,
+# files (library first), bytes of the whole set
+TIER1B_SETS = {"strict_v2": ("tier1b_strict_v2", ("library.root", "topology_sidecar_strict_v2_v2.npz",
+                                                  "topology_sidecar_strict_v2_v2.npz.json", "templates_v2.npz",
+                                                  "templates_v2.npz.json"), 1.0834e9),
+               "legacy": ("tier1b_v7", ("lib_prod_as_20files.root",), 1.007e9)}
+LIBRARY = "tier1b_v7/lib_prod_as_20files.root"              # the legacy library
 CALIB = "geometry/crvcalib_sim_best_v1_5_run1400.csv"
 DEVIATION = "geometry/crvphoton_sim_best_v1_5_run1400.csv"
 GDML = "geometry/mu2e_extracted_v04.gdml"
@@ -79,7 +89,7 @@ RUN_CONFIGS = {0: ("extracted_v04", GDML, ("6000_0", "2370_1", "3200_0"), True),
 EXTRACTED_GEN_SETS = (0, 1)
 LIMITS = {"shards": (1, 32), "files_per_job": (1, 25), "shard_offset": (0, 99), "max_events": (0, 10 ** 7),
           "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180), "gen_set": (0, max(GEN_SETS)),
-          "run_config": (0, max(RUN_CONFIGS)), "chain_flags": (0, sum(CHAIN_FLAGS))}
+          "run_config": (0, max(RUN_CONFIGS)), "chain_flags": (0, sum(CHAIN_FLAGS)), "tier1b": (0, 1)}
 
 BODY = """@common@@tables@CODE=@code@
 C() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,CRVFS_OFFLINE_CACHE=$L/offline,PYTHONPATH=$CODE/crv:$CODE/core:$CODE/tracker" -B "$L" -B /dev/shm -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
@@ -99,7 +109,7 @@ tw=$SECONDS; while [ $((SECONDS-tw)) -lt @waits@ ]; do [ -f "$L/ready" ] && [ -f
 [ -f "$L/ready" ] && [ -f "$S/ready" ] || { echo "no input arrived within @waits@ s"; exit 3; }
 echo "{\\"input_wait_s\\": $((SECONDS-tw)), \\"wait_budget_s\\": @waits@, \\"library\\": \\"$LIBSTATE\\"}" > "$M2FS_OUT/wait.json"
 GEN=($(ls "$L"/gen.*.root))
-C python -m crvfastsim runchain "${GEN[@]}" --library "$S/@lib@" @conds@ \\
+C python -m crvfastsim runchain "${GEN[@]}" @tier1b@ @conds@ \\
   --gdml "$L/@gdml@" --jax --seed @seed@ @maxev@ @runcfg@ --emit "$M2FS_OUT/shard.json" --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1 || exit 6
 echo '{}' > "$M2FS_OUT/metrics.json"
 """
@@ -160,9 +170,23 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
     return out
 
 
+def tier1b_set(p: Dict[str, int]) -> str:
+    """Asset set of a point: strict_v2 for extracted with tier1b 0, legacy otherwise (and for records made before the
+    tier1b parameter)."""
+    if "tier1b" not in p or p["tier1b"] == 1 or p.get("run_config", 0) != 0:
+        return "legacy"
+    return "strict_v2"
+
+
+def library_files(p: Dict[str, int]) -> List[str]:
+    """The point's tier-1b files relative to the FNAL data root, library first."""
+    d, files, _ = TIER1B_SETS[tier1b_set(p)]
+    return [f"{d}/{f}" for f in files]
+
+
 def point_bytes(p: Dict[str, int]) -> float:
     """Bytes the kit streams for the whole point, worst case (every sub-job streams its own library copy)."""
-    return p["shards"] * (LIBRARY_BYTES + SMALL_BYTES * (1.6 if p.get("run_config", 0) == 3 else 1.0)
+    return p["shards"] * (TIER1B_SETS[tier1b_set(p)][2] + SMALL_BYTES * (1.6 if p.get("run_config", 0) == 3 else 1.0)
                           + p["files_per_job"] * GEN_FILE[p.get("gen_set", 0)][0])
 
 
@@ -262,27 +286,35 @@ class ChainPoint:
         body = body.replace("@runtime_a@", APPTAINER_RUNTIME["a"]).replace("@runtime_t@", APPTAINER_RUNTIME["t"])
         conds = (f'--calib "$L/{Path(CALIB).name}" --deviation "$L/{Path(DEVIATION).name}"' if rc[3]
                  else "--calib nominal")
-        subs = {"sif": sif, "code": shlex.quote(manifest["code"]["path"] if manifest else self.code), "lib": Path(LIBRARY).name, "conds": conds,
+        lib = library_files(p)
+        t1b = (f'--library "$S/{Path(lib[0]).name}"' if tier1b_set(p) == "legacy"
+               else f'--tier1b {tier1b_set(p)} --tier1b-dir "$S"')
+        if manifest:
+            shas = [next(f["sha256"] for f in manifest["inputs"]["files"] if f["src"] == src) for src in lib]
+            libkey = shas[0] if len(shas) == 1 else artifacts.digest(shas)   # legacy keeps its node cache name
+        else:
+            libkey = "preview"
+        subs = {"sif": sif, "code": shlex.quote(manifest["code"]["path"] if manifest else self.code), "tier1b": t1b, "conds": conds,
                 "gdml": Path(rc[1]).name, "seed": str(p["seed"] + 1000 * k),
                 "runcfg": " ".join(([] if p.get("run_config", 0) == 0 else [f"--run-config {rc[0]}"])
                                    + [o for b, o in CHAIN_FLAGS.items() if p.get("chain_flags", 0) & b]),
                 "maxev": f"--max-events {p['max_events']}" if p["max_events"] else "",
-                "libmd5": next(f["sha256"] for f in manifest["inputs"]["files"] if f["src"] == LIBRARY) if manifest else "preview", "waits": str(wait_budget_s(p))}
+                "libmd5": libkey, "waits": str(wait_budget_s(p))}
         for a, b in subs.items():
             body = body.replace(f"@{a}@", b)
         import re
-        if re.search(r"@(sif|code|lib|conds|gdml|seed|maxev|runcfg|libmd5|waits|common|tables|runtime_a|runtime_t)@", body):
+        if re.search(r"@(sif|code|tier1b|conds|gdml|seed|maxev|runcfg|libmd5|waits|common|tables|runtime_a|runtime_t)@", body):
             raise ValueError("fastsimkit: chain_point: unfilled placeholder")
         if manifest is not None:
             files = {f["src"]: f for f in manifest["inputs"]["files"]}
-            guard = artifacts.consumption_guard('"$S"', [files[LIBRARY]])
+            guard = artifacts.consumption_guard('"$S"', [files[src] for src in lib])
             guard += artifacts.consumption_guard('"$L"', [files[src] for src in small_inputs(p) + gen_files(p, k)])
             body = body.replace('GEN=($(ls', guard + 'GEN=($(ls', 1)
         res = Resources(cores=16, mem_gb=110, gpus=1, gpu_type="a100", minutes=p["wall_minutes"])
         return (artifacts.runtime_prefix(manifest) if manifest else "") + body, res
 
-    def lib_md5(self) -> str:
-        return self.source.md5(LIBRARY)
+    def lib_md5(self, p: Optional[Dict[str, int]] = None) -> str:
+        return self.source.md5(library_files(p or {**OPTIONAL})[0])
 
     # -- contract ------------------------------------------------------------------------------------------------
     def _admit(self, params) -> Dict[str, int]:
@@ -318,7 +350,7 @@ class ChainPoint:
         p = self._admit(params)
 
         def prepare():
-            paths = set(small_inputs(p) + [LIBRARY])
+            paths = set(small_inputs(p) + library_files(p))
             for k in range(p["shards"]):
                 paths.update(gen_files(p, k))
             inputs = artifacts.resolve_inputs(self.source, {src: Path(src).name for src in paths})
@@ -376,6 +408,7 @@ class ChainPoint:
         rec = self.record(name)
         p = rec["params"]
         entries = {f["src"]: f for f in rec["manifest"]["inputs"]["files"]}
+        lib = library_files(p)
         from concurrent.futures import ThreadPoolExecutor
 
         def one(rel):   # the library is the long pole; the small files and gen tables go alongside it
@@ -387,34 +420,36 @@ class ChainPoint:
                 raise EndpointError(f"md5 mismatch for {rel}: {got} != {want}")
         def library():   # once per node: the first sub-job there streams it, later ones find it (or wait for it)
             if shared is None:
-                one(LIBRARY)
+                for rel in lib:
+                    one(rel)
                 return
             cache_key = artifacts.digest([getattr(self.ep, "host", ""), host, shared])
             with self._node_lib.setdefault(host, threading.Lock()), submission_lock(self.dir / ".cache-writers", cache_key):
                 have = self.ep.run_on_node(sub, host, f"test -f {shlex.quote(shared)}/ready && echo have || true").strip()
                 if have == "have":
-                    if not artifacts.verify_cache(self.ep, sub, host, shared, [entries[LIBRARY]]):
+                    if not artifacts.verify_cache(self.ep, sub, host, shared, [entries[src] for src in lib]):
                         raise EndpointError("cached library differs from pinned manifest")
                     self._mark(sub, "libreused", host)
                     return
-                want = entries[LIBRARY]["md5"]
-                with self._chan:
-                    got = self.ep.stream_in(sub, host, f"{shared}/{Path(LIBRARY).name}", entries[LIBRARY]["argv"])
-                if got != want:
-                    raise EndpointError(f"md5 mismatch for {LIBRARY}: {got} != {want}")
-                if not artifacts.verify_cache(self.ep, sub, host, shared, [entries[LIBRARY]]):
+                for rel in lib:
+                    want = entries[rel]["md5"]
+                    with self._chan:
+                        got = self.ep.stream_in(sub, host, f"{shared}/{Path(rel).name}", entries[rel]["argv"])
+                    if got != want:
+                        raise EndpointError(f"md5 mismatch for {rel}: {got} != {want}")
+                if not artifacts.verify_cache(self.ep, sub, host, shared, [entries[src] for src in lib]):
                     raise EndpointError("streamed library differs from pinned manifest")
                 self.ep.run_on_node(sub, host, f"touch {shlex.quote(shared)}/ready")
                 self._mark(sub, "libstreamed", host)
 
         try:
             with submission_lock(self.dir / ".stage-writers", sub):
-                used = small_inputs(p) + gen_files(p, k) + ([LIBRARY] if shared is None else [])
+                used = small_inputs(p) + gen_files(p, k) + (lib if shared is None else [])
                 have = self.ep.run_on_node(sub, host, f"test -f {shlex.quote(tmp)}/ready && echo have || true").strip()
                 if have == "have":
                     if not artifacts.verify_cache(self.ep, sub, host, tmp, [entries[src] for src in used]):
                         raise EndpointError("ready shard inputs differ from pinned manifest; refusing overwrite")
-                    if shared is not None and not artifacts.verify_cache(self.ep, sub, host, shared, [entries[LIBRARY]]):
+                    if shared is not None and not artifacts.verify_cache(self.ep, sub, host, shared, [entries[src] for src in lib]):
                         raise EndpointError("ready shared library differs from pinned manifest")
                 else:
                     with ThreadPoolExecutor(max_workers=self.streams) as ex:
