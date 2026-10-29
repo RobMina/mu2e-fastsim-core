@@ -155,8 +155,8 @@ def test_fanout_stream_merge(tmp_path):
     kit.status("pt1")                               # streams sub-job 0 now that its inbox exists
     names = sorted(d.rsplit("/", 1)[1] for _, d in streamed)   # streamed in parallel: order not fixed
     shared = sorted(d for r, d in streamed if r.startswith("tier1b_"))      # the default set: library + sidecars
-    assert shared == sorted(f"/dev/shm/crvfs_lib_u_udc-x/{f}" for f in CP.TIER1B_SETS["strict_v2"][1])
-    assert names == sorted(list(CP.TIER1B_SETS["strict_v2"][1]) + ["crvcalib_sim_best_v1_5_run1400.csv",
+    assert shared == sorted(f"/dev/shm/crvfs_lib_u_udc-x/{f}" for f in CP.TIER1B_SETS["strict_v3"][1])
+    assert names == sorted(list(CP.TIER1B_SETS["strict_v3"][1]) + ["crvcalib_sim_best_v1_5_run1400.csv",
                      "crvphoton_sim_best_v1_5_run1400.csv", "mu2e_extracted_v04.gdml",
                      "gen.001400_00000019.root", "gen.001400_00000020.root"])
     assert all(d.startswith(f"/tmp/crvfs_kit_j{jobs[0]}_1/") for r, d in streamed if not r.startswith("tier1b_"))
@@ -237,7 +237,9 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
     body, _ = kit.chain_point.render(CP.validate(P), 0)
     assert "/dev/shm/crvfs_lib_${USER}_" in body and "flock 9" in body and "lib_release" in body
     assert body.count("trap '") >= 1 and "deleted node library" in body
-    assert '--tier1b strict_v2 --tier1b-dir "$S"' in body and "--library" not in body
+    assert '--tier1b strict_v3 --tier1b-dir "$S"' in body and "--library" not in body
+    old, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 2}), 0)
+    assert '--tier1b strict_v2 --tier1b-dir "$S"' in old
     legacy, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 1}), 0)
     assert '--library "$S/lib_prod_as_20files.root"' in legacy and "--tier1b" not in legacy
     named, _ = kit.chain_point.render(CP.validate({**P, "gen_set": 3, "run_config": 3, "shard_offset": 0}), 0)
@@ -245,12 +247,15 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
 
 
 def test_tier1b_sets():
-    assert CP.tier1b_set(CP.validate(P)) == "strict_v2" and CP.tier1b_set(CP.validate({**P, "tier1b": 1})) == "legacy"
+    assert CP.tier1b_set(CP.validate(P)) == "strict_v3" and CP.tier1b_set(CP.validate({**P, "tier1b": 1})) == "legacy"
+    assert CP.tier1b_set(CP.validate({**P, "tier1b": 2})) == "strict_v2"
+    assert CP.library_files(CP.validate(P))[3] == "tier1b_strict_v2/templates_v3.npz"
+    assert CP.library_files(CP.validate({**P, "tier1b": 2}))[3] == "tier1b_strict_v2/templates_v2.npz"
     assert CP.tier1b_set({k: v for k, v in CP.validate(P).items() if k != "tier1b"}) == "legacy"   # older records
     assert CP.library_files(CP.validate({**P, "tier1b": 1})) == [CP.LIBRARY]
     assert CP.library_files(CP.validate(P))[0] == "tier1b_strict_v2/library.root"
     with pytest.raises(ValueError):
-        CP.validate({**P, "tier1b": 2})
+        CP.validate({**P, "tier1b": 3})
 
 
 def test_gen_sets():
@@ -275,7 +280,8 @@ def test_wait_budget_scales_with_bytes(tmp_path):
     assert CP.wait_budget_s(small, mbps=4.0) == CP.WAIT_FLOOR_S
     cg03 = CP.validate({**P, "gen_set": 1, "shards": 4, "files_per_job": 4, "shard_offset": 0})
     cg02 = CP.validate({**cg03, "files_per_job": 20})
-    assert CP.wait_budget_s(cg03, mbps=4.0) == pytest.approx(600 + 4 * (1.0834e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
+    assert CP.wait_budget_s(cg03, mbps=4.0) == pytest.approx(600 + 4 * (1.1699e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
+    assert CP.wait_budget_s({**cg03, "tier1b": 2}, mbps=4.0) == pytest.approx(600 + 4 * (1.0834e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
     assert CP.wait_budget_s({**cg03, "tier1b": 1}, mbps=4.0) == pytest.approx(600 + 4 * (1.007e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
     assert CP.wait_budget_s(cg02, mbps=4.0) > 2700 > CP.wait_budget_s(cg03, mbps=4.0) > CP.WAIT_FLOOR_S
     _, _, kit, _ = make(tmp_path)
@@ -288,7 +294,10 @@ def test_wait_budget_scales_with_bytes(tmp_path):
 def test_check_refuses_wall_too_short_for_wait_and_chain(tmp_path):
     _, _, kit, _ = make(tmp_path)
     cg = {**P, "gen_set": 1, "shards": 4, "shard_offset": 0}
-    assert kit.check("a", {**cg, "files_per_job": 4, "wall_minutes": 45}, [], [])["ok"]      # kitcg03
+    assert kit.check("a", {**cg, "files_per_job": 4, "wall_minutes": 50}, [], [])["ok"]      # kitcg03
+    # the strict_v3 set (v3 templates, +86 MB) needs ~46.3 min of wait + chain for this point; strict_v2 ~44.9
+    assert not kit.check("a2", {**cg, "files_per_job": 4, "wall_minutes": 45}, [], [])["ok"]
+    assert kit.check("a3", {**cg, "files_per_job": 4, "wall_minutes": 45, "tier1b": 2}, [], [])["ok"]
     r = kit.check("b", {**cg, "files_per_job": 20, "wall_minutes": 45}, [], [])             # kitcg02 at 45 min
     assert not r["ok"] and "wall_minutes" in r["message"] and "GB streamed" in r["message"]
     assert kit.check("c", {**cg, "files_per_job": 20, "wall_minutes": 120}, [], [])["ok"]

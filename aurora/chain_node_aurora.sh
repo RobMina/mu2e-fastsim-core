@@ -14,8 +14,9 @@
 # library, CRVCalib/CRVPhoton CSVs, GDML: all streamed by kpp_stream.sh into tmpfs and deleted on exit (the lookup
 # tables come from CVMFS, also into tmpfs). Never on Flare; per-shard JSONs and the merge go back to the GPVM.
 # usage (from the laptop): EXTRA_V=NPROC=12,RUNS=1 kpp_stream.sh mu2egpvm03 chain_node_aurora.sh <files...>
-# Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v2 (default; stream library.root and both sidecars with their .json)
-# or T1B=legacy (stream lib_prod_as_20files.root; runs with --library, the sampling before 2026-10-28).
+# Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v3 (default; stream library.root, the topology sidecar and
+# templates_v3.npz, each with its .json), T1B=strict_v2 (templates_v2.npz instead) or T1B=legacy (stream
+# lib_prod_as_20files.root; runs with --library, the sampling before 2026-10-28).
 # (RUNS: space-separated files-per-process passes; qsub -v cannot carry spaces or commas, so set RUNSFILE instead)
 PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
 F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
@@ -51,9 +52,9 @@ ls -la $L | grep -v ready | awk '{print $5, $9}'
 GEN=($(ls $L/gen.*.root)); LIB=$(ls $L/lib*.root | head -1); CAL=$(ls $L/crvcalib*.csv | head -1)
 DEV=$(ls $L/crvphoton*.csv 2>/dev/null | head -1); GD=$(ls $L/*.gdml | head -1)
 echo "gen files ${#GEN[@]}; library $(basename $LIB); calib $(basename $CAL); gdml $(basename $GD)"
-T1B=${T1B:-strict_v2}
+T1B=${T1B:-strict_v3}
 if [ "$T1B" = legacy ]; then TIER1B="--library $LIB"
-else for f in library.root topology_sidecar_strict_v2_v2.npz topology_sidecar_strict_v2_v2.npz.json templates_v2.npz templates_v2.npz.json; do
+else TV=${T1B#strict_}; for f in library.root topology_sidecar_strict_v2_v2.npz topology_sidecar_strict_v2_v2.npz.json templates_$TV.npz templates_$TV.npz.json; do
   [ -f $L/$f ] || { echo "tier-1b set $T1B: $f not streamed"; exit 3; }; done; TIER1B="--tier1b $T1B --tier1b-dir $L"; fi
 echo "tier 1b: $TIER1B"
 cores() { local i=$1; [ $i -lt 6 ] && echo "$((1+8*i))-$((8+8*i))" || echo "$((53+8*(i-6)))-$((60+8*(i-6)))"; }

@@ -16,10 +16,11 @@ max_events (per file, 0 = all), seed, wall_minutes (per sub-job), chain_flags (o
 runconfig; it picks the GDML world, the lookup tables and the response/cuts; other configurations than extracted run
 with nominal CRVCalib constants, no CSVs streamed). A gen set belongs to one CRY configuration: extracted gen sets
 (0, 1) only with run_config 0, the default-CRY sets (2, 3) only with the others. tier1b (optional; crvfastsim
-tier1b_assets): 0 = the configuration's default asset set (extracted: strict_v2, the strict library with its topology
-and template sidecars and placement options; named configurations: legacy, they have no library of their own), 1 =
-legacy (tier1b_v7 library, no placement; the default before 2026-10-28). Records written before this parameter
-existed ran legacy. The set's files are streamed once per node into the shared library dir.
+tier1b_assets): 0 = the configuration's default asset set (extracted: strict_v3, the strict library with its topology
+and v3 template sidecars, placement options and chord placement; named configurations: legacy, they have no library
+of their own), 1 = legacy (tier1b_v7 library, no placement; the default before 2026-10-28), 2 = strict_v2 (v2
+templates, no chord placement; the extracted default 2026-10-28 to 2026-10-29, so records with tier1b 0 from those
+days ran it). Records written before this parameter existed ran legacy. The set's files are streamed once per node into the shared library dir.
 
 Input wait: a sub-job waits for its inputs until a deadline sized from the bytes the whole point streams (every sub-job
 can queue behind the others on the kit host's link): ``wait_budget_s`` = 600 s + point bytes / FASTSIMKIT_STREAM_MBPS
@@ -71,7 +72,10 @@ WAIT_FLOOR_S, WAIT_SLACK_S, STREAM_MBPS = 1800, 600, 4.0
 CHAIN_SETUP_S, CHAIN_S_PER_MEVENT = 60.0, 180.0
 # tier-1b asset sets (crvfastsim.tier1b_assets.SETS; crv tests keep the two equal): directory under the FNAL data root,
 # files (library first), bytes of the whole set
-TIER1B_SETS = {"strict_v2": ("tier1b_strict_v2", ("library.root", "topology_sidecar_strict_v2_v2.npz",
+TIER1B_SETS = {"strict_v3": ("tier1b_strict_v2", ("library.root", "topology_sidecar_strict_v2_v2.npz",
+                                                  "topology_sidecar_strict_v2_v2.npz.json", "templates_v3.npz",
+                                                  "templates_v3.npz.json"), 1.1699e9),
+               "strict_v2": ("tier1b_strict_v2", ("library.root", "topology_sidecar_strict_v2_v2.npz",
                                                   "topology_sidecar_strict_v2_v2.npz.json", "templates_v2.npz",
                                                   "templates_v2.npz.json"), 1.0834e9),
                "legacy": ("tier1b_v7", ("lib_prod_as_20files.root",), 1.007e9)}
@@ -89,7 +93,7 @@ RUN_CONFIGS = {0: ("extracted_v04", GDML, ("6000_0", "2370_1", "3200_0"), True),
 EXTRACTED_GEN_SETS = (0, 1)
 LIMITS = {"shards": (1, 32), "files_per_job": (1, 25), "shard_offset": (0, 99), "max_events": (0, 10 ** 7),
           "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180), "gen_set": (0, max(GEN_SETS)),
-          "run_config": (0, max(RUN_CONFIGS)), "chain_flags": (0, sum(CHAIN_FLAGS)), "tier1b": (0, 1)}
+          "run_config": (0, max(RUN_CONFIGS)), "chain_flags": (0, sum(CHAIN_FLAGS)), "tier1b": (0, 2)}
 
 BODY = """@common@@tables@CODE=@code@
 C() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,CRVFS_OFFLINE_CACHE=$L/offline,PYTHONPATH=$CODE/crv:$CODE/core:$CODE/tracker" -B "$L" -B /dev/shm -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
@@ -171,11 +175,11 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
 
 
 def tier1b_set(p: Dict[str, int]) -> str:
-    """Asset set of a point: strict_v2 for extracted with tier1b 0, legacy otherwise (and for records made before the
-    tier1b parameter)."""
+    """Asset set of a point: for extracted strict_v3 with tier1b 0 and strict_v2 with tier1b 2; legacy otherwise (and
+    for records made before the tier1b parameter)."""
     if "tier1b" not in p or p["tier1b"] == 1 or p.get("run_config", 0) != 0:
         return "legacy"
-    return "strict_v2"
+    return "strict_v2" if p["tier1b"] == 2 else "strict_v3"
 
 
 def library_files(p: Dict[str, int]) -> List[str]:

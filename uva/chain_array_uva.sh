@@ -6,20 +6,21 @@
 # when it starts (srun --overlap), never stored on UVA; outputs (stats only) go back to the GPVM and are removed.
 # Then throughput_uva.py: accepted events per GPU-hour, per SU, and per hour of campaign wall time.
 # usage: [N=8] [FPP=4] [GRES=gpu:a100:1] [CONSTRAINT=a100] [CPUS=16] [MEM=110G] [WALL=00:45:00] [REF=main] \
-#        [T1B=strict_v2|legacy] chain_array_uva.sh [gpvm]      (T1B: tier-1b asset set, crvfastsim.tier1b_assets)
+#        [T1B=strict_v3|strict_v2|legacy] chain_array_uva.sh [gpvm]      (T1B: tier-1b asset set, crvfastsim.tier1b_assets)
 set -uo pipefail
 G=${1:-mu2egpvm03}
 N=${N:-8}; FPP=${FPP:-4}; GRES=${GRES:-gpu:a100:1}; CONSTRAINT=${CONSTRAINT:-a100}; CPUS=${CPUS:-16}
 MEM=${MEM:-110G}; WALL=${WALL:-00:45:00}; REF=${REF:-main}; MAXEV=${MAXEV:-}; CRV_REF=${CRV_REF:-}   # CRV_REF: a crv branch to test
 U=${UVA_HOST:-uva-hpc}; F=/scratch/ram2aq/mu2efastsim; JD=mu2e/fastsim_uva
 D=/exp/mu2e/data/users/ram2aq/crv_fastsim
-T1B=${T1B:-strict_v2}
+T1B=${T1B:-strict_v3}
 case $T1B in
-  strict_v2) LIBSET=("$D/tier1b_strict_v2/library.root" "$D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz"
-                     "$D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz.json" "$D/tier1b_strict_v2/templates_v2.npz"
-                     "$D/tier1b_strict_v2/templates_v2.npz.json") ;;
+  strict_v3|strict_v2) TV=${T1B#strict_}
+                     LIBSET=("$D/tier1b_strict_v2/library.root" "$D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz"
+                     "$D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz.json" "$D/tier1b_strict_v2/templates_$TV.npz"
+                     "$D/tier1b_strict_v2/templates_$TV.npz.json") ;;
   legacy) LIBSET=("$D/tier1b_v7/lib_prod_as_20files.root") ;;
-  *) echo "T1B must be strict_v2 or legacy"; exit 2 ;;
+  *) echo "T1B must be strict_v3, strict_v2 or legacy"; exit 2 ;;
 esac
 COMMON=("${LIBSET[@]}" "$D/geometry/crvcalib_sim_best_v1_5_run1400.csv"
         "$D/geometry/crvphoton_sim_best_v1_5_run1400.csv" "$D/geometry/mu2e_extracted_v04.gdml")
