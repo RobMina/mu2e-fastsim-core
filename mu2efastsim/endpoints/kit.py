@@ -132,7 +132,7 @@ APPTAINER_RUNTIME = {"a": 'A() { apptainer exec --nv --cleanenv --env CUDA_VISIB
 # Tasks on Mu2e-internal inputs read in place (G4 gen shards, the tier-1b asset set, CRVCalib/CRVPhoton CSVs under
 # @fnal_data@): only on an endpoint that mounts that storage (EAF; `endpoint.fnal_data`). Elsewhere the kit refuses them
 # at check and submit: those inputs may not be copied off site except copy-compute-delete, which these tasks do not do.
-# Tier 1b: the default asset set strict_v3 (library + topology/v3 template sidecars; chainpoint.TIER1B_SETS).
+# Tier 1b: the default asset set strict_v4 (library + topology/v3 template sidecars; chainpoint.TIER1B_SETS).
 _FNAL_INPUTS = """D=@fnal_data@
 G=$D/geometry; T1B=$D/tier1b_strict_v2; GDML=$G/mu2e_extracted_v04.gdml
 CAL=$G/crvcalib_sim_best_v1_5_run1400.csv; DEVF=$G/crvphoton_sim_best_v1_5_run1400.csv
@@ -155,7 +155,7 @@ N=@p_shards@; [ "$N" -ge 1 ] && [ "$N" -le 10 ] || { echo "shards must be 1..10 
 for i in $(seq 11 $((10 + N))); do   # stock chain (G4 + digi + reco) on the same shards: the V2 reference tables
   GEN+=("$D/g4ref_v1_tables/gen.001400_000000$i.root"); r="$D/v2_fastC_v1/ref.001400_000000$i.root"
   [ -r "$r" ] && REF+=("$r"); done
-T python -m crvfastsim runchain "${GEN[@]}" --tier1b strict_v3 --tier1b-dir "$T1B" --calib "$CAL" --deviation "$DEVF" --gdml "$GDML" --jax \
+T python -m crvfastsim runchain "${GEN[@]}" --tier1b strict_v4 --tier1b-dir "$T1B" --calib "$CAL" --deviation "$DEVF" --gdml "$GDML" --jax \
   --max-events @p_max_events@ --seed @p_seed@ ${REF:+--compare "${REF[@]}"} --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1 || exit 6
 """ + _METRICS.replace("@metrics_py@", """j = load("chain/runchain_stats.json")
 T = j["timers"]; nev = max(T.get("events_with_steps", 1), 1)
@@ -185,7 +185,7 @@ T python -m crvfastsim v4sipm "$D/g4ref_v1_tables/crvsteps.001400_00000012.root"
 A python -m crvfastsim reco-repro synthetic --max-events 5000 --outdir "$M2FS_OUT/repro_gpu" > "$M2FS_OUT/repro_gpu.txt" 2>&1
 RX=$(ls "$M2FS_OUT"/repro_gpu/repro_*.npz 2>/dev/null | head -1)
 JAX_PLATFORMS=cpu A python -m crvfastsim reco-repro synthetic --max-events 5000 --outdir "$M2FS_OUT/repro_cpu" ${RX:+--against "$RX"} > "$M2FS_OUT/repro_cpu.txt" 2>&1
-T python -m crvfastsim runchain "$D/g4ref_v1_tables/gen.001400_00000011.root" --tier1b strict_v3 --tier1b-dir "$T1B" --calib "$CAL" --deviation "$DEVF" --gdml "$GDML" \
+T python -m crvfastsim runchain "$D/g4ref_v1_tables/gen.001400_00000011.root" --tier1b strict_v4 --tier1b-dir "$T1B" --calib "$CAL" --deviation "$DEVF" --gdml "$GDML" \
   --jax --max-events 10000 --seed @p_seed@ --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1
 find "$M2FS_OUT" -name '*.npz' -delete
 """ + _METRICS.replace("@metrics_py@", """import re

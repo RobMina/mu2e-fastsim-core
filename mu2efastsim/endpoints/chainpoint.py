@@ -16,11 +16,12 @@ max_events (per file, 0 = all), seed, wall_minutes (per sub-job), chain_flags (o
 runconfig; it picks the GDML world, the lookup tables and the response/cuts; other configurations than extracted run
 with nominal CRVCalib constants, no CSVs streamed). A gen set belongs to one CRY configuration: extracted gen sets
 (0, 1) only with run_config 0, the default-CRY sets (2, 3) only with the others. tier1b (optional; crvfastsim
-tier1b_assets): 0 = the configuration's default asset set (extracted: strict_v3, the strict library with its topology
-and v3 template sidecars, placement options and chord placement; named configurations: legacy, they have no library
-of their own), 1 = legacy (tier1b_v7 library, no placement; the default before 2026-10-28), 2 = strict_v2 (v2
-templates, no chord placement; the extracted default 2026-10-28 to 2026-10-29, so records with tier1b 0 from those
-days ran it). Records written before this parameter existed ran legacy. The set's files are streamed once per node into the shared library dir.
+tier1b_assets): 0 = the configuration's default asset set (extracted: strict_v4, the strict library with its topology
+and v3 template sidecars, placement options, chord placement and hard-muon draws; named configurations: legacy, they
+have no library of their own), 1 = legacy (tier1b_v7 library, no placement; the default before 2026-10-28), 2 =
+strict_v2 (v2 templates, no chord placement; the extracted default 2026-10-28 to 2026-10-29, so records with tier1b 0
+from those days ran it), 3 = strict_v3 (strict_v4 without the hard-muon draws; the extracted default 2026-10-29 to
+2026-10-30). Records written before this parameter existed ran legacy. The set's files are streamed once per node into the shared library dir.
 
 Generated gen_sets 4/5 require run_config=0, files_per_job=1, shard_offset=max_events=0 and no prefetch flag.
 It removes gen-table streaming only; geometry, conditions, tier-1b and optics are still needed. Fresh sources use
@@ -76,7 +77,10 @@ WAIT_FLOOR_S, WAIT_SLACK_S, STREAM_MBPS = 1800, 600, 4.0
 CHAIN_SETUP_S, CHAIN_S_PER_MEVENT = 60.0, 180.0
 # tier-1b asset sets (crvfastsim.tier1b_assets.SETS; crv tests keep the two equal): directory under the FNAL data root,
 # files (library first), bytes of the whole set
-TIER1B_SETS = {"strict_v3": ("tier1b_strict_v2", ("library.root", "topology_sidecar_strict_v2_v2.npz",
+_V3_FILES = ("library.root", "topology_sidecar_strict_v2_v2.npz", "topology_sidecar_strict_v2_v2.npz.json",
+             "templates_v3.npz", "templates_v3.npz.json")
+TIER1B_SETS = {"strict_v4": ("tier1b_strict_v2", _V3_FILES, 1.1699e9),      # strict_v3's files, hard-muon draws on
+               "strict_v3": ("tier1b_strict_v2", ("library.root", "topology_sidecar_strict_v2_v2.npz",
                                                   "topology_sidecar_strict_v2_v2.npz.json", "templates_v3.npz",
                                                   "templates_v3.npz.json"), 1.1699e9),
                "strict_v2": ("tier1b_strict_v2", ("library.root", "topology_sidecar_strict_v2_v2.npz",
@@ -102,7 +106,7 @@ EXTRACTED_GEN_SETS = (0, 1)
 NATIVE_GENERATION_S_PER_MEVENT = 900.0
 LIMITS = {"shards": (1, 32), "files_per_job": (1, 25), "shard_offset": (0, 99), "max_events": (0, 10 ** 7),
           "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180), "gen_set": (0, DEVICE_GEN_SET),
-          "run_config": (0, max(RUN_CONFIGS)), "chain_flags": (0, sum(CHAIN_FLAGS)), "tier1b": (0, 2),
+          "run_config": (0, max(RUN_CONFIGS)), "chain_flags": (0, sum(CHAIN_FLAGS)), "tier1b": (0, 3),
           "gen_events": (0, 2**20 - 1)}
 
 BODY = """@common@@tables@CODE=@code@
@@ -198,11 +202,11 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
 
 
 def tier1b_set(p: Dict[str, int]) -> str:
-    """Asset set of a point: for extracted strict_v3 with tier1b 0 and strict_v2 with tier1b 2; legacy otherwise (and
-    for records made before the tier1b parameter)."""
+    """Asset set of a point: for extracted strict_v4 with tier1b 0, strict_v2 with 2 and strict_v3 with 3; legacy
+    otherwise (and for records made before the tier1b parameter)."""
     if "tier1b" not in p or p["tier1b"] == 1 or p.get("run_config", 0) != 0:
         return "legacy"
-    return "strict_v2" if p["tier1b"] == 2 else "strict_v3"
+    return {2: "strict_v2", 3: "strict_v3"}.get(p["tier1b"], "strict_v4")
 
 
 def library_files(p: Dict[str, int]) -> List[str]:

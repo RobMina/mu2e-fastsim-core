@@ -155,8 +155,8 @@ def test_fanout_stream_merge(tmp_path):
     kit.status("pt1")                               # streams sub-job 0 now that its inbox exists
     names = sorted(d.rsplit("/", 1)[1] for _, d in streamed)   # streamed in parallel: order not fixed
     shared = sorted(d for r, d in streamed if r.startswith("tier1b_"))      # the default set: library + sidecars
-    assert shared == sorted(f"/dev/shm/crvfs_lib_u_udc-x/{f}" for f in CP.TIER1B_SETS["strict_v3"][1])
-    assert names == sorted(list(CP.TIER1B_SETS["strict_v3"][1]) + ["crvcalib_sim_best_v1_5_run1400.csv",
+    assert shared == sorted(f"/dev/shm/crvfs_lib_u_udc-x/{f}" for f in CP.TIER1B_SETS["strict_v4"][1])
+    assert names == sorted(list(CP.TIER1B_SETS["strict_v4"][1]) + ["crvcalib_sim_best_v1_5_run1400.csv",
                      "crvphoton_sim_best_v1_5_run1400.csv", "mu2e_extracted_v04.gdml",
                      "gen.001400_00000019.root", "gen.001400_00000020.root"])
     assert all(d.startswith(f"/tmp/crvfs_kit_j{jobs[0]}_1/") for r, d in streamed if not r.startswith("tier1b_"))
@@ -237,7 +237,9 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
     body, _ = kit.chain_point.render(CP.validate(P), 0)
     assert "/dev/shm/crvfs_lib_${USER}_" in body and "flock 9" in body and "lib_release" in body
     assert body.count("trap '") >= 1 and "deleted node library" in body
-    assert '--tier1b strict_v3 --tier1b-dir "$S"' in body and "--library" not in body
+    assert '--tier1b strict_v4 --tier1b-dir "$S"' in body and "--library" not in body
+    v3, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 3}), 0)
+    assert '--tier1b strict_v3 --tier1b-dir "$S"' in v3
     old, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 2}), 0)
     assert '--tier1b strict_v2 --tier1b-dir "$S"' in old
     legacy, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 1}), 0)
@@ -247,7 +249,9 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
 
 
 def test_tier1b_sets():
-    assert CP.tier1b_set(CP.validate(P)) == "strict_v3" and CP.tier1b_set(CP.validate({**P, "tier1b": 1})) == "legacy"
+    assert CP.tier1b_set(CP.validate(P)) == "strict_v4" and CP.tier1b_set(CP.validate({**P, "tier1b": 1})) == "legacy"
+    assert CP.tier1b_set(CP.validate({**P, "tier1b": 3})) == "strict_v3"
+    assert CP.TIER1B_SETS["strict_v4"][1] == CP.TIER1B_SETS["strict_v3"][1]
     assert CP.tier1b_set(CP.validate({**P, "tier1b": 2})) == "strict_v2"
     assert CP.library_files(CP.validate(P))[3] == "tier1b_strict_v2/templates_v3.npz"
     assert CP.library_files(CP.validate({**P, "tier1b": 2}))[3] == "tier1b_strict_v2/templates_v2.npz"
@@ -255,7 +259,7 @@ def test_tier1b_sets():
     assert CP.library_files(CP.validate({**P, "tier1b": 1})) == [CP.LIBRARY]
     assert CP.library_files(CP.validate(P))[0] == "tier1b_strict_v2/library.root"
     with pytest.raises(ValueError):
-        CP.validate({**P, "tier1b": 3})
+        CP.validate({**P, "tier1b": 4})
 
 
 def test_gen_sets():
