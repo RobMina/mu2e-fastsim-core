@@ -107,3 +107,14 @@ Next slices, before general unattended BO commissioning:
    output composition; do not promote truth-conditioned diagnostics to evaluators.
 5. Agree retention, storage class and allowed outputs; cleanup receipts alone do not
    prove deletion. No data movement or retention-policy change is part of this patch.
+
+## Opt-in native CRY chain points
+
+`chain_point` additionally admits `gen_set=4` (CPU) or `gen_set=5` (JAX GPU) and positive `gen_events` per
+sub-job for extracted_v04 only. Counts/key bounds, unsupported combinations,
+CPU-generation wall allowance, preserved table identities and rollout limits
+are documented in [native-cry.md](native-cry.md). This removes gen-table
+resolution/streaming, not detector input bindings or tmpfs cleanup. Its native
+receipts and exposure rates are result metadata; existing metric meanings and
+board measurement identity are unchanged. Capability descriptors advertise
+implementation support, not physics certification or a live rollout.

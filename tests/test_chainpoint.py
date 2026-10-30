@@ -498,3 +498,175 @@ def test_same_handle_controllers_never_rewrite_ready_inputs(tmp_path):
     cp._rec_path("race").with_suffix(".j0.streamed").unlink(missing_ok=True)
     assert other.stream_step("race", 0) == "streamed"
     assert len(streamed) == 10
+
+
+NATIVE = {**P, "gen_set": CP.NATIVE_GEN_SET, "gen_events": 50000,
+          "files_per_job": 1, "shard_offset": 0, "max_events": 0}
+
+
+def test_native_admission_bytes_budget_and_descriptor(tmp_path):
+    _, _, kit, _ = make(tmp_path)
+    p = CP.validate(NATIVE)
+    assert CP.gen_files(p, 0) == CP.gen_files(p, 31) == []
+    assert CP.point_bytes(p) == p["shards"] * (CP.TIER1B_SETS["strict_v3"][2] + CP.SMALL_BYTES)
+    assert CP.chain_estimate_s(p) == 60 + (180 + 900) * .05
+    assert kit.check("native", {"task": "chain_point", **p}, [], [])["ok"]
+    assert "gen_events" not in CP.validate(P)
+    desc = kit.describe()["tasks"]["chain_point"]
+    assert desc["params"]["gen_events"]["maximum"] == 2**20 - 1
+    assert desc["configurations"]["gen_set"]["4"]["files"] == 0
+
+
+@pytest.mark.parametrize("changes,message", [({"gen_events": 0}, "gen_events"),
+    ({"gen_events": 2**20}, "gen_events"), ({"files_per_job": 2}, "files_per_job"),
+    ({"shard_offset": 1}, "shard_offset"), ({"max_events": 1}, "max_events"),
+    ({"run_config": 3}, "run_config"), ({"chain_flags": 1}, "prefetch"),
+    ({"chain_flags": 3}, "prefetch"), ({"gen_set": 0}, "gen_events"),
+    ({"gen_events": 1000000, "wall_minutes": 45}, "wall_minutes")])
+def test_native_check_submit_refuse_before_resolution(tmp_path, changes, message):
+    site, _, kit, streamed = make(tmp_path)
+    params = {**NATIVE, **changes}
+    result = kit.check("badnative", params, [], [])
+    assert not result["ok"] and message in result["message"]
+    with pytest.raises(ValueError, match=message):
+        kit.submit("badnative", params, [], [])
+    assert not site.cmds and not streamed and kit.chain_point.record("badnative") is None
+
+
+def native_source(kit):
+    from mu2efastsim.cry_receipts import EXTRACTED_V04_GDML_SHA256
+    original = kit.chain_point.source.fingerprint
+    kit.chain_point.source.fingerprint = lambda rel: {
+        **original(rel), **({"sha256": EXTRACTED_V04_GDML_SHA256} if rel == CP.GDML else {})}
+
+
+def test_native_fanout_pins_only_detector_inputs_and_preserves_guards(tmp_path):
+    site, ep, kit, streamed = make(tmp_path)
+    native_source(kit)
+    kit.submit("native", NATIVE, [], [])
+    rec = kit.chain_point.record("native")
+    assert {f["src"] for f in rec["manifest"]["inputs"]["files"]} == set(CP.small_inputs(rec["params"]) + CP.library_files(rec["params"]))
+    for k, body in enumerate(rec["body"]):
+        assert "GEN=(native)" in body and 'ls "$L"/gen.' not in body
+        assert f'--gen native --gen-events 50000 --gen-seed {7 + 1000*k} --gen-subrun {k+1}' in body
+        assert "staged artifact digest mismatch" in body and "runtime image changed" in body
+        assert "artifact-manifest.json" in body and "lib_release" in body and "cleanup.txt" in body
+        assert "CrySource(seed=0)" in body
+        assert subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True).returncode == 0
+        job = ep.state.get(f"native.j{k}").job_id
+        site.start(job, ep.state.get(f"native.j{k}").remote_dir)
+        kit.status("native")
+    assert not any("/gen." in rel for rel, _ in streamed)
+    assert len(streamed) == len(CP.library_files(rec["params"])) + 3 * len(CP.small_inputs(rec["params"]))
+    kit.submit("native", NATIVE, [], [])
+    assert len(site.state) == 3
+
+
+def test_native_rejects_unknown_geometry_before_code_and_dispatch(tmp_path, monkeypatch):
+    site, _, kit, _ = make(tmp_path)
+    monkeypatch.setattr(kit.chain_point, "ensure_code", lambda: pytest.fail("code preparation reached"))
+    with pytest.raises(ValueError, match="verified extracted-v04 GDML"):
+        kit.submit("wronggeom", NATIVE, [], [])
+    assert not site.state
+
+
+@pytest.mark.parametrize("corrupt", [False, True, "missing"])
+@pytest.mark.parametrize("backend", ["native", "device"])
+def test_native_results_check_bound_receipts(tmp_path, corrupt, backend):
+    from mu2efastsim.cry_receipts import EXTRACTED_V04_GDML_SHA256, GENERATOR
+    site, ep, kit, _ = make(tmp_path)
+    native_source(kit)
+    kit.submit("native", {**NATIVE, "gen_set": CP.DEVICE_GEN_SET if backend == "device" else CP.NATIVE_GEN_SET}, [], [])
+    original = site.out_files
+
+    def output(directory):
+        files = original(directory)
+        k = int(directory.rsplit(".j", 1)[1])
+        shard = json.loads(files["out/shard.json"])
+        shard.update(generated_events=50000, live_seconds=0.8)
+        shard["native_generator"] = {"generator": GENERATOR, "seed": 7 + 1000*k + int(corrupt is True),
+            "accepted_events": 50000, "live_seconds": 0.8, "raw_batch_size": 100000,
+            "cosmic_config": {"geometry_sha256": EXTRACTED_V04_GDML_SHA256},
+            "cosmic_time_offset": "fixture", "stock_overenergy_accumulation": True,
+            "event_range": {"run": 1400, "subrun": k+1, "first_event": 1, "last_event": 50000}}
+        if backend == "device":
+            from mu2efastsim.cry_constants import SEA_LEVEL_SHA256
+            shard["native_generator"].update(generator="jax-cry-1.7", sampling={
+                "table_sha256": SEA_LEVEL_SHA256, "subbox_m": 300., "date": "2021-06-21",
+                "latitude": 41.8, "lifetime_s": 5e-8}, rng="jax threefry2x32", device="cuda:0",
+                particle_capacity=400000, selected_capacity=8192)
+        if corrupt == "missing":
+            del shard["native_generator"]
+        files["out/shard.json"] = json.dumps(shard).encode()
+        return files
+
+    site.out_files = output
+    for k in range(3):
+        site.state[ep.state.get(f"native.j{k}").job_id] = "COMPLETED"
+    if corrupt:
+        with pytest.raises(ValueError, match="bound request|no generator receipt"):
+            kit.results("native")
+    else:
+        result = kit.results("native")
+        metadata = result["metadata"]["native_generation"]
+        assert metadata["live_seconds"] == pytest.approx(2.4)
+        assert len(metadata["native_generators"]) == 3
+        assert metadata["clusters_per_live_second"]["EX"] == pytest.approx(3*3900/2.4)
+        assert result["metrics"]["generated_events"] == 150000
+
+
+def test_table_normalization_preserves_existing_request_identity():
+    expected = {k: v for k, v in P.items() if k != "task"}
+    expected.update(gen_set=0, run_config=0, chain_flags=0, tier1b=0)
+    assert CP.validate(P) == CP.validate({**P, "gen_events": 0}) == expected
+    assert CP.validate({**NATIVE, "gen_events": 50000.0})["gen_events"] == 50000
+
+
+def test_native_fused_flag_remains_opt_in(tmp_path):
+    _, _, kit, _ = make(tmp_path)
+    body, _ = kit.chain_point.render(CP.validate({**NATIVE, "chain_flags": 2}), 1)
+    assert "--fused-response" in body and "--prefetch" not in body
+    assert "--gen-seed 1007 --gen-subrun 2" in body
+
+
+def test_native_retry_uses_original_image_code_manifest_and_body(tmp_path, monkeypatch):
+    site, _, kit, _ = make(tmp_path)
+    native_source(kit)
+    kit.submit("nativepin", NATIVE, [], [])
+    original = kit.chain_point.record("nativepin")
+    kit.chain_point.code_ref, kit.sif = "new-code", "/new-image.sif"
+    monkeypatch.setattr(kit.chain_point.source, "fingerprint", lambda _: pytest.fail("new resolution"))
+    monkeypatch.setattr(kit.chain_point, "ensure_code", lambda: pytest.fail("new code preparation"))
+    kit.submit("nativepin", NATIVE, [], [])
+    assert kit.chain_point.record("nativepin") == original
+    assert len(site.state) == 3
+
+
+def test_native_ready_cache_corruption_cancels_without_regeneration(tmp_path, monkeypatch):
+    site, ep, kit, streamed = make(tmp_path)
+    native_source(kit)
+    kit.submit("nativecache", {**NATIVE, "shards": 1}, [], [])
+    job = ep.state.get("nativecache.j0").job_id
+    site.start(job, ep.state.get("nativecache.j0").remote_dir)
+    site.node_files[f"/tmp/crvfs_kit_j{job}_1/ready"] = "ready"
+    monkeypatch.setattr(CP.artifacts, "verify_cache", lambda *a: False)
+    kit.status("nativecache")
+    assert site.state[job] == "CANCELLED" and not streamed
+
+
+def test_device_gen_set_admission_and_render(tmp_path):
+    site, ep, kit, _ = make(tmp_path)
+    params = {**NATIVE, "gen_set": CP.DEVICE_GEN_SET}
+    p = CP.validate(params)
+    assert CP.gen_files(p, 0) == [] and CP.point_bytes(p) == CP.point_bytes(CP.validate(NATIVE))
+    assert kit.check("device", params, [], [])["ok"]
+    body, _ = kit.chain_point.render(p, 1)
+    assert "--gen device --gen-events 50000 --gen-seed 1007 --gen-subrun 2" in body
+    assert "cry_device import device_tables" in body and "CrySource" not in body
+    assert subprocess.run(["bash", "-n"], input=body.encode(), capture_output=True).returncode == 0
+    desc = kit.describe()["tasks"]["chain_point"]["configurations"]["gen_set"]["5"]
+    assert desc["generator"] == "jax-cry-1.7" and desc["files"] == 0
+    native_source(kit)
+    kit.submit("device", params, [], [])
+    assert len(site.state) == 3
+    assert kit.chain_point.record("device")["manifest"]["resolved_params"]["gen_set"] == CP.DEVICE_GEN_SET

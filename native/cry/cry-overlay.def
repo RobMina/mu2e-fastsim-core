@@ -1,0 +1,77 @@
+Bootstrap: localimage
+From: {{ BASE_IMAGE }}
+Stage: crybuild
+
+%files
+    native/cry/cry_shim.cc /opt/cry-build/cry_shim.cc
+    mu2efastsim/cry_native.py /opt/cry-build/cry_native.py
+    tests/test_cry_native.py /opt/cry-build/test_cry_native.py
+
+%post
+    set -eu
+    cd /opt/cry-build
+    test -r cry_shim.cc
+    test -r cry_native.py
+    test -r test_cry_native.py
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends g++ curl ca-certificates
+    curl --fail --location --retry 3 --max-time 180 https://nuclear.llnl.gov/simulation/cry_v1.7.tar.gz -o cry_v1.7.tar.gz
+    echo 'dcee2428f81cba113f82e0c7c42f4d85bff4b8530e5ab5c82c059bed3e570c20  cry_v1.7.tar.gz' | sha256sum -c -
+    tar -xzf cry_v1.7.tar.gz
+    mkdir -p /opt/cry/lib /opt/cry/share/licenses /opt/cry/tests
+    cp -a cry_v1.7/data /opt/cry/data
+    cd /opt/cry/data
+    echo 'b5227d8c1d38ab249a3b238456a67a60c9a9a5b6f91f748562f4a517390dca75  cosmics_0.data' | sha256sum -c -
+    echo '86cc99fb87fad93896d307fdbe8a90c63855e02c788bfb1eafee77c4c8254e95  cosmics_2100.data' | sha256sum -c -
+    echo '8d583055d1c38a941c1e84a7843337ef4e00bce7d95df7dbb71f2947e2aec9e8  cosmics_11300.data' | sha256sum -c -
+    sha256sum *.data > /opt/cry/DATA.sha256
+    cd /opt/cry-build
+    cp cry_v1.7/src/COPYRIGHT.TXT /opt/cry/share/licenses/CRY-COPYRIGHT.TXT
+    curl --fail --location --retry 3 --max-time 60 https://nuclear.llnl.gov/simulations/additional_bsd.html -o /opt/cry/share/licenses/CRY-additional_bsd.html
+    echo '732e701b1f9c3bfc8b8d57b53ad116cdde1367aef1942ea50796a7d6ea0dbc9b  /opt/cry/share/licenses/CRY-additional_bsd.html' | sha256sum -c -
+    g++ -std=c++17 -O2 -fPIC -shared -pthread -Wl,-z,defs -Icry_v1.7/src cry_shim.cc cry_v1.7/src/CRY*.cc -o /opt/cry/lib/libmu2ecry.so
+    strip /opt/cry/lib/libmu2ecry.so
+    cp cry_native.py /opt/cry/cry_native.py
+    cp test_cry_native.py /opt/cry/tests/test_cry_native.py
+    sha256sum cry_v1.7.tar.gz cry_shim.cc cry_native.py test_cry_native.py > /opt/cry/BUILD.sha256
+    g++ --version > /opt/cry/COMPILER.txt
+    printf '%s\n' 'CRY 1.7; https://nuclear.llnl.gov/simulation/cry_v1.7.tar.gz' 'Raw shower backend only; Mu2e projection/acceptance and stock validation pending.' > /opt/cry/VERSION
+    chmod -R a+rX /opt/cry
+
+Bootstrap: localimage
+From: {{ BASE_IMAGE }}
+Stage: final
+
+%files from crybuild
+    /opt/cry /opt/cry
+
+%labels
+    org.opencontainers.image.title mu2e-fastsim-cry
+    org.opencontainers.image.licenses Apache-2.0 AND BSD-3-Clause
+    org.mu2e.cry.version 1.7
+    org.mu2e.cry.status raw-backend-not-stock-validated
+
+%post
+    set -eu
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends libstdc++6
+    rm -rf /var/lib/apt/lists/*
+    dest=$(python3 -c 'import pathlib, mu2efastsim; print(pathlib.Path(mu2efastsim.__file__).parent)')
+    cp /opt/cry/cry_native.py "$dest/cry_native.py"
+    printf '%s\n' 'CRY third-party notices: /opt/cry/share/licenses/' 'Additional LLNL/DOE notice accompanies the CRY BSD-style licence.' > /opt/cry/NOTICE
+
+%environment
+    export CRYDATAPATH=/opt/cry/data
+    export MU2E_CRY_LIBRARY=/opt/cry/lib/libmu2ecry.so
+
+%help
+    Fast simulation base image plus CRY 1.7 CPU raw-shower backend.
+    No art, Geant4, CVMFS or Spack runtime dependency.
+    python3 -m mu2efastsim.cry_native --showers 100 --seed 1
+    Raw CRY showers are NOT stock-selected Mu2e primaries; chain hook pending.
+    Notices: /opt/cry/share/licenses/. Provenance: /opt/cry/*sha256, VERSION, COMPILER.txt.
+
+%test
+    set -eu
+    cd /opt/cry/data && sha256sum -c /opt/cry/DATA.sha256
+    MU2E_CRY_TEST_NATIVE=1 python3 -m pytest -q -p no:cacheprovider /opt/cry/tests/test_cry_native.py

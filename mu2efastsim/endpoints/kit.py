@@ -595,7 +595,7 @@ class FastsimKit:
         chain_roles = {"shards": "execution", "files_per_job": "fidelity", "shard_offset": "fidelity",
                        "max_events": "fidelity", "seed": "stochastic_stream", "wall_minutes": "execution",
                        "gen_set": "scenario", "run_config": "scenario", "chain_flags": "numerical",
-                       "tier1b": "scenario"}
+                       "tier1b": "scenario", "gen_events": "fidelity"}
         tasks["chain_point"] = {
             "params": {k: {"type": "integer", "minimum": lo, "maximum": hi,
                            "unit": "min" if k == "wall_minutes" else "1", "role": chain_roles[k]}

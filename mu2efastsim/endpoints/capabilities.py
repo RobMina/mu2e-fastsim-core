@@ -163,7 +163,19 @@ def describe_tasks(tasks, chainpoint_module):
                                                "extracted": bool(v[3])} for k, v in run_configs.items()},
                        "gen_set": {str(k): {"file_pattern": v[0], "files": len(v[1])}
                                    for k, v in getattr(chainpoint_module, "GEN_SETS", {}).items()},
-                       "compatibility": "Extracted gen sets require run_config=0; other sets require nonzero run_config."}
+                       "compatibility": "Extracted table sets and generated sets 4/5 require run_config=0; table sets 2/3 require nonzero run_config."}
+            if hasattr(chainpoint_module, "NATIVE_GEN_SET"):
+                configs["gen_set"][str(chainpoint_module.NATIVE_GEN_SET)] = {
+                    "generator": "native-cry-1.7", "files": 0, "events_parameter": "gen_events",
+                    "requires": "CRY-enabled image and matching core/crv code; extracted_v04 only",
+                    "seed": "seed+1000*k per sub-job; caller selects independent seeds across points",
+                    "restrictions": "files_per_job=1, shard_offset=max_events=0, no prefetch"}
+            if hasattr(chainpoint_module, "DEVICE_GEN_SET"):
+                configs["gen_set"][str(chainpoint_module.DEVICE_GEN_SET)] = {
+                    "generator": "jax-cry-1.7", "files": 0, "events_parameter": "gen_events",
+                    "requires": "JAX GPU and verified CRY distribution tables; extracted_v04 only",
+                    "seed": "seed+1000*k per sub-job; caller selects independent seeds across points",
+                    "restrictions": "files_per_job=1, shard_offset=max_events=0, no prefetch"}
         elif task == "crv_response":
             terms = _crv_manifest()
             if terms is None:

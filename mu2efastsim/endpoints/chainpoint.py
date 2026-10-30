@@ -12,7 +12,7 @@ so the kit host must stay up and on the endpoint's network for the point's lifet
 Params: shards (sub-jobs, 1..32), files_per_job (gen files each, 1..25), shard_offset (first gen file in the set),
 max_events (per file, 0 = all), seed, wall_minutes (per sub-job), chain_flags (optional bitmask: 1 --prefetch, 2
 --fused-response), gen_set (0 g4ref_v1, 1 crygen_v1, 2 crygen_run1a_v1,
-3 crygen_run2_v1), run_config (optional, 0 extracted_v04 = default, 1 run1a_v01, 2 run1b_v01, 3 run2_v10: crvfastsim
+3 crygen_run2_v1, 4 native CPU CRY, 5 device JAX CRY), gen_events (native accepted events per sub-job, 1..2**20-1), run_config (optional, 0 extracted_v04 = default, 1 run1a_v01, 2 run1b_v01, 3 run2_v10: crvfastsim
 runconfig; it picks the GDML world, the lookup tables and the response/cuts; other configurations than extracted run
 with nominal CRVCalib constants, no CSVs streamed). A gen set belongs to one CRY configuration: extracted gen sets
 (0, 1) only with run_config 0, the default-CRY sets (2, 3) only with the others. tier1b (optional; crvfastsim
@@ -21,6 +21,10 @@ and v3 template sidecars, placement options and chord placement; named configura
 of their own), 1 = legacy (tier1b_v7 library, no placement; the default before 2026-10-28), 2 = strict_v2 (v2
 templates, no chord placement; the extracted default 2026-10-28 to 2026-10-29, so records with tier1b 0 from those
 days ran it). Records written before this parameter existed ran legacy. The set's files are streamed once per node into the shared library dir.
+
+Generated gen_sets 4/5 require run_config=0, files_per_job=1, shard_offset=max_events=0 and no prefetch flag.
+It removes gen-table streaming only; geometry, conditions, tier-1b and optics are still needed. Fresh sources use
+seed+1000*k and subrun k+1 within each point; seeds across separate points are the caller's responsibility.
 
 Input wait: a sub-job waits for its inputs until a deadline sized from the bytes the whole point streams (every sub-job
 can queue behind the others on the kit host's link): ``wait_budget_s`` = 600 s + point bytes / FASTSIMKIT_STREAM_MBPS
@@ -47,8 +51,8 @@ from .snapshots import prepare_code
 from .submission import submission_lock
 
 PARAMS = ("shards", "files_per_job", "shard_offset", "max_events", "seed", "wall_minutes", "gen_set", "run_config",
-          "chain_flags", "tier1b")
-OPTIONAL = {"gen_set": 0, "run_config": 0, "chain_flags": 0, "tier1b": 0}
+          "chain_flags", "tier1b", "gen_events")
+OPTIONAL = {"gen_set": 0, "run_config": 0, "chain_flags": 0, "tier1b": 0, "gen_events": 0}
 # chain_flags bits -> runchain options (speed only; 1 is bit-identical, 2 statistically equal, V4)
 CHAIN_FLAGS = {1: "--prefetch", 2: "--fused-response"}
 METRICS = ("accepted_events", "generated_events", "jobs_ok", "gpu_hours", "est_su", "accepted_per_gpu_hour",
@@ -90,15 +94,21 @@ RUN_CONFIGS = {0: ("extracted_v04", GDML, ("6000_0", "2370_1", "3200_0"), True),
                3: ("run2_v10", "geometry/mu2e_run2_v10.gdml",
                    ("4550_0", "1045_1", "3040_0", "3200_0", "6000_1", "6000_0", "5000_1", "6900_1", "5700_0", "2370_1",
                     "2100_1", "1550_1"), False)}
+NATIVE_GEN_SET = 4
+DEVICE_GEN_SET = 5
+GENERATED_SETS = (NATIVE_GEN_SET, DEVICE_GEN_SET)
 EXTRACTED_GEN_SETS = (0, 1)
+# Conservative admission heuristic includes CPU generation; not a runtime prediction or throughput claim.
+NATIVE_GENERATION_S_PER_MEVENT = 900.0
 LIMITS = {"shards": (1, 32), "files_per_job": (1, 25), "shard_offset": (0, 99), "max_events": (0, 10 ** 7),
-          "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180), "gen_set": (0, max(GEN_SETS)),
-          "run_config": (0, max(RUN_CONFIGS)), "chain_flags": (0, sum(CHAIN_FLAGS)), "tier1b": (0, 2)}
+          "seed": (0, 2 ** 31 - 1), "wall_minutes": (10, 180), "gen_set": (0, DEVICE_GEN_SET),
+          "run_config": (0, max(RUN_CONFIGS)), "chain_flags": (0, sum(CHAIN_FLAGS)), "tier1b": (0, 2),
+          "gen_events": (0, 2**20 - 1)}
 
 BODY = """@common@@tables@CODE=@code@
 C() { apptainer exec --nv --cleanenv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,CRVFS_OFFLINE_CACHE=$L/offline,PYTHONPATH=$CODE/crv:$CODE/core:$CODE/tracker" -B "$L" -B /dev/shm -B "$M2FS_OUT" -B "$CODE" --pwd "$CODE" @sif@ "$@"; }
 C python -c "import crvfastsim.analyses.runchain as r; assert hasattr(r, 'merge')" || { echo "runchain --emit missing in $CODE"; exit 5; }
-# library once per node: /dev/shm/crvfs_lib_<user>_<md5>, one holder file per job, deleted by the last holder (flock);
+@native_probe@# library once per node: /dev/shm/crvfs_lib_<user>_<md5>, one holder file per job, deleted by the last holder (flock);
 # holders of jobs that left the queue are dropped first, so a killed job cannot keep the copy alive
 S=/dev/shm/crvfs_lib_${USER}_@libmd5@; LOCK=/dev/shm/crvfs_lib_${USER}.lock; J=${SLURM_JOB_ID:-0}
 lib_hold() { ( flock 9; mkdir -p "$S/holders"; chmod 700 "$S"
@@ -112,8 +122,8 @@ echo "$(hostname) $L $S $LIBSTATE" > "$(dirname "$M2FS_OUT")/inbox"      # read 
 tw=$SECONDS; while [ $((SECONDS-tw)) -lt @waits@ ]; do [ -f "$L/ready" ] && [ -f "$S/ready" ] && break; sleep 5; done
 [ -f "$L/ready" ] && [ -f "$S/ready" ] || { echo "no input arrived within @waits@ s"; exit 3; }
 echo "{\\"input_wait_s\\": $((SECONDS-tw)), \\"wait_budget_s\\": @waits@, \\"library\\": \\"$LIBSTATE\\"}" > "$M2FS_OUT/wait.json"
-GEN=($(ls "$L"/gen.*.root))
-C python -m crvfastsim runchain "${GEN[@]}" @tier1b@ @conds@ \\
+@gen_setup@
+C python -m crvfastsim runchain "${GEN[@]}" @genopts@ @tier1b@ @conds@ \\
   --gdml "$L/@gdml@" --jax --seed @seed@ @maxev@ @runcfg@ --emit "$M2FS_OUT/shard.json" --outdir "$M2FS_OUT/chain" > "$M2FS_OUT/chain.txt" 2>&1 || exit 6
 echo '{}' > "$M2FS_OUT/metrics.json"
 """
@@ -165,6 +175,19 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
         if not lo <= v <= hi:
             raise ValueError(f"fastsimkit: chain_point {k} must be in [{lo}, {hi}], got {v!r}")
         out[k] = int(v)
+    if out["gen_set"] in GENERATED_SETS:
+        if out["run_config"] != 0:
+            raise ValueError("fastsimkit: generated CRY supports only run_config=0 (extracted_v04)")
+        if out["files_per_job"] != 1 or out["shard_offset"] != 0 or out["max_events"] != 0:
+            raise ValueError("fastsimkit: native CRY needs files_per_job=1, shard_offset=0, max_events=0; use gen_events")
+        if not out["gen_events"]:
+            raise ValueError("fastsimkit: native CRY requires positive gen_events per sub-job")
+        if out["chain_flags"] & 1:
+            raise ValueError("fastsimkit: native CRY does not support chain_flags prefetch")
+        return out
+    if out["gen_events"]:
+        raise ValueError("fastsimkit: gen_events requires generated gen_set=4 or 5")
+    del out["gen_events"]
     if (out["gen_set"] in EXTRACTED_GEN_SETS) != RUN_CONFIGS[out["run_config"]][3]:
         raise ValueError(f"fastsimkit: chain_point gen_set {out['gen_set']} is not a CRY sample of run_config "
                          f"{out['run_config']} ({RUN_CONFIGS[out['run_config']][0]})")
@@ -190,8 +213,9 @@ def library_files(p: Dict[str, int]) -> List[str]:
 
 def point_bytes(p: Dict[str, int]) -> float:
     """Bytes the kit streams for the whole point, worst case (every sub-job streams its own library copy)."""
+    gen_bytes = 0 if p.get("gen_set", 0) in GENERATED_SETS else p["files_per_job"] * GEN_FILE[p.get("gen_set", 0)][0]
     return p["shards"] * (TIER1B_SETS[tier1b_set(p)][2] + SMALL_BYTES * (1.6 if p.get("run_config", 0) == 3 else 1.0)
-                          + p["files_per_job"] * GEN_FILE[p.get("gen_set", 0)][0])
+                          + gen_bytes)
 
 
 def small_inputs(p: Dict[str, int]) -> List[str]:
@@ -222,6 +246,8 @@ def wait_budget_s(p: Dict[str, int], mbps: Optional[float] = None) -> int:
 
 def chain_estimate_s(p: Dict[str, int]) -> float:
     """Estimated chain time of one sub-job [s] (setup + per million generated events, with margin)."""
+    if p.get("gen_set", 0) in GENERATED_SETS:
+        return CHAIN_SETUP_S + (CHAIN_S_PER_MEVENT + NATIVE_GENERATION_S_PER_MEVENT) * p["gen_events"] / 1e6
     per_file = GEN_FILE[p.get("gen_set", 0)][1]
     if p["max_events"]:
         per_file = min(per_file, p["max_events"])
@@ -230,6 +256,8 @@ def chain_estimate_s(p: Dict[str, int]) -> float:
 
 def gen_files(p: Dict[str, int], k: int) -> List[str]:
     """Gen tables of sub-job k: files_per_job consecutive shards starting at shard_offset + k * files_per_job (cycled)."""
+    if p.get("gen_set", 0) in GENERATED_SETS:
+        return []
     f, o = p["files_per_job"], p["shard_offset"]
     pat, subruns = GEN_SETS[p.get("gen_set", 0)]
     return [pat.format(subruns[(o + k * f + i) % len(subruns)]) for i in range(f)]
@@ -298,8 +326,21 @@ class ChainPoint:
             libkey = shas[0] if len(shas) == 1 else artifacts.digest(shas)   # legacy keeps its node cache name
         else:
             libkey = "preview"
-        subs = {"sif": sif, "code": shlex.quote(manifest["code"]["path"] if manifest else self.code), "tier1b": t1b, "conds": conds,
+        native = p.get("gen_set", 0) in GENERATED_SETS
+        backend = "device" if p.get("gen_set") == DEVICE_GEN_SET else "native"
+        native_seed, native_subrun = p["seed"] + 1000 * k, k + 1
+        subs = {"gen_setup": 'GEN=(native)' if native else 'GEN=($(ls "$L"/gen.*.root))',
+                "genopts": (f'--gen {backend} --gen-events {p["gen_events"]} --gen-seed {native_seed} '
+                            f'--gen-subrun {native_subrun}' if native else ""),
+                "sif": sif, "code": shlex.quote(manifest["code"]["path"] if manifest else self.code),
+                "tier1b": t1b, "conds": conds,
                 "gdml": Path(rc[1]).name, "seed": str(p["seed"] + 1000 * k),
+                "native_probe": ((
+                    'C python -c "import jax; from mu2efastsim.cry_device import device_tables; '
+                    'assert jax.default_backend() == \'gpu\'; device_tables()" || exit 5\n'
+                    if backend == "device" else
+                    'C python -c "from mu2efastsim.cry_native import CrySource; s=CrySource(seed=0); s.close()" || exit 5\n')
+                    if native else ""),
                 "runcfg": " ".join(([] if p.get("run_config", 0) == 0 else [f"--run-config {rc[0]}"])
                                    + [o for b, o in CHAIN_FLAGS.items() if p.get("chain_flags", 0) & b]),
                 "maxev": f"--max-events {p['max_events']}" if p["max_events"] else "",
@@ -307,13 +348,13 @@ class ChainPoint:
         for a, b in subs.items():
             body = body.replace(f"@{a}@", b)
         import re
-        if re.search(r"@(sif|code|tier1b|conds|gdml|seed|maxev|runcfg|libmd5|waits|common|tables|runtime_a|runtime_t)@", body):
+        if re.search(r"@(sif|code|tier1b|conds|gdml|seed|maxev|runcfg|libmd5|waits|common|tables|runtime_a|runtime_t|gen_setup|genopts|native_probe)@", body):
             raise ValueError("fastsimkit: chain_point: unfilled placeholder")
         if manifest is not None:
             files = {f["src"]: f for f in manifest["inputs"]["files"]}
             guard = artifacts.consumption_guard('"$S"', [files[src] for src in lib])
             guard += artifacts.consumption_guard('"$L"', [files[src] for src in small_inputs(p) + gen_files(p, k)])
-            body = body.replace('GEN=($(ls', guard + 'GEN=($(ls', 1)
+            body = body.replace(subs["gen_setup"], guard + subs["gen_setup"], 1)
         res = Resources(cores=16, mem_gb=110, gpus=1, gpu_type="a100", minutes=p["wall_minutes"])
         return (artifacts.runtime_prefix(manifest) if manifest else "") + body, res
 
@@ -358,6 +399,11 @@ class ChainPoint:
             for k in range(p["shards"]):
                 paths.update(gen_files(p, k))
             inputs = artifacts.resolve_inputs(self.source, {src: Path(src).name for src in paths})
+            if p.get("gen_set", 0) in GENERATED_SETS:
+                from ..cry_receipts import EXTRACTED_V04_GDML_SHA256
+                geometry = next(f for f in inputs["files"] if f["src"] == GDML)
+                if geometry["sha256"] != EXTRACTED_V04_GDML_SHA256:
+                    raise ValueError("native chain_point requires the verified extracted-v04 GDML")
             code = self.ensure_code()
             image = artifacts.resolve_image(self.ep, self.kit.sif)
             manifest = artifacts.make_manifest("chain_point", code, image, inputs, p)
@@ -500,7 +546,8 @@ class ChainPoint:
         cl: Dict[int, int] = {}
         files, ends, ids = [], [], []
         reused = 0
-        for sub in self.subs(name):
+        native_shards = []
+        for index, sub in enumerate(self.subs(name)):
             fs = self.ep.fetch(sub, self.kit.out_root)
             out = Path(self.kit.out_root) / sub / "out"
             if not (out / "cleanup.txt").exists():
@@ -508,6 +555,22 @@ class ChainPoint:
             if "manifest" in rec:
                 artifacts.verify_result(out, rec["manifest"])
             s = json.loads((out / "shard.json").read_text())
+            if rec["params"].get("gen_set", 0) in GENERATED_SETS:
+                from ..cry_receipts import merge_receipts, EXTRACTED_V04_GDML_SHA256
+                if "native_generator" not in s:
+                    raise ValueError("native shard has no generator receipt")
+                merge_receipts([s])
+                receipt = s["native_generator"]
+                expected_range = {"run": 1400, "subrun": index + 1, "first_event": 1,
+                                  "last_event": rec["params"]["gen_events"]}
+                expected_generator = "jax-cry-1.7" if rec["params"]["gen_set"] == DEVICE_GEN_SET else "native-cry-1.7"
+                if (receipt.get("generator") != expected_generator or receipt.get("seed") != rec["params"]["seed"] + 1000 * index
+                        or receipt.get("event_range") != expected_range
+                        or receipt.get("cosmic_config", {}).get("geometry_sha256") != EXTRACTED_V04_GDML_SHA256):
+                    raise ValueError("native shard receipt differs from bound request")
+                native_shards.append(s)
+            elif "native_generator" in s:
+                raise ValueError("table chain_point returned a native generator receipt")
             T = s["timers"]
             acc += int(T.get("events_with_steps", 0))
             gen += int(s["generated_events"])
@@ -539,10 +602,18 @@ class ChainPoint:
                 m[f"clusters_per_generated_{lab}"] = float("nan")
             for k, v in sorted(cl.items()):
                 m[f"clusters_per_generated_type{k}"] = v / gen if gen else 0.0
+        generator_metadata = {}
+        if native_shards:
+            from ..cry_receipts import merge_receipts
+            generator_metadata = merge_receipts(native_shards)
+            live = generator_metadata["live_seconds"]
+            generator_metadata["clusters_per_live_second"] = {SECTOR.get(k, str(k)): v / live for k, v in cl.items()}
+            generator_metadata["generation_s"] = sum(s["timers"].get("generation_s", 0.0) for s in native_shards)
         return {"metrics": {k: float(v) for k, v in m.items()},
                 "files": [{"name": str(p.relative_to(self.kit.out_root)), "uri": p.resolve().as_uri(), "kind": "text"}
                           for p in files],
                 "metadata": {"endpoint": self.ep.name, "job_ids": ",".join(ids), "code_ref": rec["code_ref"],
+                             **({"native_generation": generator_metadata} if generator_metadata else {}),
                              "artifact_manifest": rec.get("manifest"), "manifest_sha": rec.get("manifest", {}).get("manifest_sha"),
                              "artifact_binding": "verified" if "manifest" in rec else "legacy-unverified",
                              "su_note": "est_su from Slurm elapsed time and the measured UVA rates; MAM posts the charge later"}}

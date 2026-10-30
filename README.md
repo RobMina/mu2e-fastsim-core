@@ -65,6 +65,20 @@ from mu2efastsim import eloss, materials
 loss = eloss.sample_loss(rng, materials.POLYSTYRENE, p_MeV, length_mm, tcut_MeV)
 ```
 
+## Native CRY backend (opt-in)
+
+An original C ABI and ctypes adapter can be bundled with public CRY 1.7 in a
+separate container extension; see [native CRY](docs/native-cry.md) for the
+user-run build recipe, licensing and smoke checks. `cry_native` returns raw
+showers and live time; `cosmic_cry` adds the extracted stock-style projection,
+selection, accepted-event grouping and CosmicTimeOffset convention. The
+CRV chain can use this wrapper in-process without gen tables; `chain_point`
+admits extracted-only `gen_set=4` with explicit `gen_events`. Emitted summaries
+retain native exposure and reject mixed/duplicate generator contracts on merge.
+The [JAX device sampler](docs/device-cry.md) generates correlated showers and
+performs Mu2e selection on the GPU (`--gen device`, endpoint `gen_set=5`); it
+does not upload host-generated showers. Table defaults are unchanged.
+
 ## History
 
 The modules were first written in `mu2e-crv-fastsim` and moved here from its commit `f451d7b` (2026-10-16); the CRV

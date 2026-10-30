@@ -9,3 +9,7 @@ is distributed under the Geant4 Software License. Code first written in mu2e-crv
 
 Mu2e-internal inputs (conditions, calibration and lookup tables, detector data) and physics results are not part of
 this repository and must not be added to it.
+
+The optional cry_tables/cry_device modules re-implement the published CRY 1.7 model (LLNL UCRL-CODE-227323).
+The retained CRY redistribution and additional DOE notices are in docs/third-party/cry.txt. CRY is not Apache-2.0;
+the distribution tables are external hash-verified runtime inputs, not repository contents.
