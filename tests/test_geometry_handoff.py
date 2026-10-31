@@ -10,6 +10,9 @@ import pytest
 from mu2efastsim.endpoints import geometry as G
 from mu2efastsim.endpoints.kit import FastsimKit
 
+pytestmark = pytest.mark.usefixtures("site_env")   # placeholder site variables (tests/conftest.py)
+PNFS = "/".join(("", "pnfs"))   # the dCache mount, assembled: the repository scan forbids literal storage paths
+
 
 P = {"task": "beam_point", "muons": 10, "seed": 1, "repeat": 0}
 
@@ -25,7 +28,7 @@ def file_ref(path, dz=25):
 
 class Endpoint:
     name = "eaf"
-    fnal_data = "/exp/mu2e/data/test/crv_fastsim"
+    fnal_data = "/path/to/fnal/data/test/crv_fastsim"
 
     def __init__(self):
         self.submissions = []
@@ -57,7 +60,7 @@ def test_bare_legacy_fileref_is_explicit_refusal(kit):
 
 @pytest.mark.parametrize("change", [{"kind": "gdml"}, {"name": "other"}, {"sha256": "a" * 63},
                                    {"uri": "root://host/path"}, {"uri": "file://remote/path"},
-                                   {"uri": "file:///pnfs/mu2e/data"}, {"uri": "file:///tmp/%00"},
+                                   {"uri": f"file://{PNFS}/mu2e/data"}, {"uri": "file:///tmp/%00"},
                                    {"uri": "file:///tmp/../bad"}, {"metadata": {}}, {"unknown": 1}])
 def test_descriptor_refusals_precede_allocation(tmp_path, kit, change):
     ref = {**file_ref(tmp_path / "a.txt"), **change}

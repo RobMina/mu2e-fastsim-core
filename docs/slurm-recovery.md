@@ -82,7 +82,7 @@ threads/processes, lock release after process death, and unsupported acknowledge
 No test contacts SSH or a scheduler. The existing endpoint/streaming suites also
 run against fake sites. See `tests/test_submission_recovery.py`. The combined
 endpoint/streaming suite passes **240 tests with 3 macOS `setsid` skips**, and
-**243 tests with no skips** on mu2egpvm02 in isolated publication worktrees (ana
+**243 tests with no skips** on a Mu2e GPVM in isolated publication worktrees (ana
 2.8.0 / Python 3.12). Both runs report five existing fork warnings from the
 channel-slot test. Add `core/tests/test_submission_recovery.py` to the test command
 in [endpoint admission](endpoint-admission.md) to reproduce the combined suite.

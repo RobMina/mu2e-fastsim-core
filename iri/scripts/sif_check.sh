@@ -12,7 +12,8 @@ module use /soft/spack/base/0.8.1/install/modulefiles/Core; module load apptaine
 A=$(command -v apptainer || true)
 echo "apptainer: ${A:-none} $($A --version 2>/dev/null)"; [ -n "$A" ] || { echo exit=3; exit 3; }
 cd $E/code && git pull -q --ff-only && git submodule update -q --init --recursive && git log -1 --format="code %h"
-export APPTAINER_TMPDIR=/local/scratch/$USER/apptainer_tmp APPTAINER_CACHEDIR=/local/scratch/$USER/apptainer_cache
+NL=$(mktemp -d -p /local/scratch)   # node-local NVMe
+export APPTAINER_TMPDIR=$NL/apptainer_tmp APPTAINER_CACHEDIR=$NL/apptainer_cache
 mkdir -p $APPTAINER_TMPDIR $APPTAINER_CACHEDIR
 for V in ${VARIANTS:-full trim}; do
   S=$E/mu2efastsim_$V.sif
@@ -20,12 +21,12 @@ for V in ${VARIANTS:-full trim}; do
   [ "${REBUILD:-0}" = 1 ] && rm -f $S
   if [ ! -s $S ]; then
     case $V in full) env="VARIANT=gpu TRIM=" ;; trim) env="VARIANT=gpu" ;; cpu) env="VARIANT=cpu" ;; esac
-    tb=$(date +%s); env $env bash container/build.sh /local/scratch/$USER/build.sif > $O/build_$V.txt 2>&1; rc=$?
+    tb=$(date +%s); env $env bash container/build.sh $NL/build.sif > $O/build_$V.txt 2>&1; rc=$?
     te=$(date +%s); echo "build_exit $rc build_s $((te-tb))"; [ $rc -eq 0 ] || { tail -5 $O/build_$V.txt; continue; }
-    cp /local/scratch/$USER/build.sif $S && rm -f /local/scratch/$USER/build.sif
+    cp $NL/build.sif $S && rm -f $NL/build.sif
   fi
   echo "image_bytes $(stat -c %s $S)"
-  L=/local/scratch/$USER/sif; rm -rf $L $APPTAINER_CACHEDIR/*; mkdir -p $L
+  L=$NL/sif; rm -rf $L $APPTAINER_CACHEDIR/*; mkdir -p $L
   NV=--nv; [ $V = cpu ] && NV=
   t0=$(date +%s.%N); cp $S $L/img.sif; t1=$(date +%s.%N)
   $A exec $NV --cleanenv $L/img.sif python -c "import jax, crvfastsim.cli, crvfastsim.reco.chain_jax; print('devices', jax.devices())" 2>&1 | grep -v "^INFO" | tail -3

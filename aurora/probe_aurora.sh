@@ -1,6 +1,5 @@
 #!/bin/bash
 #PBS -N m2fs_probe
-#PBS -A GenesisHackathonOct26
 #PBS -q debug
 #PBS -l select=1
 #PBS -l place=scatter
@@ -11,8 +10,8 @@
 # Aurora step-0 probe for the Mu2e fastsim: node/network inventory, venv with jax[oneapi] on Flare, JAX on the PVC
 # tiles (float64), pytest and synthetic CRV benches on one tile and on CPU. Submit: qsub [-v M2FS_FLARE=...] probe_aurora.sh
 # Synthetic inputs only: no Mu2e-internal file is read or written.
-PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
-F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
+# Site settings (site.env.example): submit with qsub -A "$ALCF_PROJECT" -v M2FS_FLARE=<work area on Flare>,...
+F=${M2FS_FLARE:?set M2FS_FLARE (work area on Flare; qsub -v M2FS_FLARE=...)}
 JAXV=${JAXV:-0.11.2}
 OFFD=$F/offline_data   # fixed here: the frameworks module (un)load overwrites $F
 O=$F/probe/$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}
@@ -22,7 +21,7 @@ s() { echo; echo "==== $*"; }
 s "node"; echo "host=$(hostname) job=${PBS_JOBID:-none} date=$(date -Is) out=$O"
 lscpu | grep -E "^(Model name|Socket|Core|Thread|NUMA node\(s\))"; free -g | head -2
 s "storage"; df -h /tmp /dev/shm "$F" 2>&1; lsblk -d -o NAME,SIZE,TYPE,MOUNTPOINT 2>&1 | head
-ls -d /local/scratch /local /scratch 2>&1
+ls -d /local/scratch /local 2>&1
 s "containers/fuse"; ls -l /dev/fuse 2>&1; cat /proc/sys/user/max_user_namespaces 2>&1
 module use /soft/modulefiles 2>/dev/null; module -t avail apptainer 2>&1 | head -3; ls -d /cvmfs/* 2>&1 | head -3
 s "gpus"; command -v xpu-smi >/dev/null && xpu-smi discovery 2>&1 | grep -E "Device Name|Device ID" | head -14
@@ -44,7 +43,7 @@ BASEPY=${CONDA_PREFIX:-/opt/aurora/26.181.0/frameworks/aurora_frameworks-2026.1.
 echo "base $BASEPY $($BASEPY --version 2>&1)"
 V=$F/venv
 $V/bin/python -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null || { rm -rf $V; $BASEPY -m venv $V; }
-export PIP_CACHE_DIR=/tmp/pipcache_$USER
+export PIP_CACHE_DIR=$(mktemp -d)
 t0=$SECONDS
 $V/bin/python -m pip install -q --retries 10 --upgrade pip
 $V/bin/python -m pip install -q --retries 10 "jax[oneapi]==$JAXV" numpy h5py pyarrow pandas awkward uproot matplotlib pytest 2>&1 | tail -3

@@ -39,7 +39,7 @@ no-blind-redispatch rule after an ambiguous outcome.
 
 Source snapshots are atomically published after verification and made read-only.
 No existing code checkout is reset or modified. Site filesystem aliases such as
-UVA's `/scratch` are resolved at preparation; the resulting canonical snapshot
+a symlinked cluster scratch area are resolved at preparation; the resulting canonical snapshot
 path is retained. Internal/escaping snapshot symlinks, dirty/staged/untracked
 (including ignored) content, missing pins and changed executable modes fail
 verification. The job verifies source bytes against Git objects before runtime.
@@ -112,7 +112,7 @@ From the umbrella:
 
 ```bash
 PYTHONPATH=core:crv:beam PYTHONDONTWRITEBYTECODE=1 \
-  /Users/rmina/mu2e/.venv/bin/python3 -m pytest -q -p no:cacheprovider --import-mode=importlib \
+  python3 -m pytest -q -p no:cacheprovider --import-mode=importlib \
   core/tests/test_artifacts.py core/tests/test_snapshots.py \
   core/tests/test_kit_parameters.py core/tests/test_endpoints.py \
   core/tests/test_endpoint_eaf.py core/tests/test_chainpoint.py \

@@ -15,7 +15,7 @@
   "attributes": {
     "duration": 900,
     "queue_name": "default",
-    "account": "hackathon2610-project",
+    "account": "${ESNET_PROJECT}",
     "custom_attributes": {}
   }
 }

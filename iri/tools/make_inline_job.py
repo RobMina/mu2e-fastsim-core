@@ -4,8 +4,8 @@
 ALCF IRI (2026-10) has no file upload and no pre_launch, allows at most 2 arguments for /bin/bash, and flattens
 newlines in `bash -c` strings to "; " (which breaks heredocs). So the script travels as one base64 word that is
 decoded to <directory>/<name> on the node and run from there; its arguments become `set --` in the decoded copy.
-The template may use ${M2FS_EAGLE} and ${ALCF_PROJECT} (site.env): they are expanded here, because the API does not
-expand variables, and M2FS_EAGLE is exported at the top of the shipped script.
+The template may use ${M2FS_EAGLE}, ${ALCF_PROJECT}, ${ESNET_WORK}, ${ESNET_PROJECT} and ${ESNET_IMAGE_TAG} (site.env):
+they are expanded here, because the API does not expand variables, and M2FS_EAGLE is exported at the top of the shipped script.
 """
 import argparse
 import base64

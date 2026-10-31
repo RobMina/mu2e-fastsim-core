@@ -2,11 +2,12 @@
 """Drive a Fermilab EAF JupyterHub session from a GPVM with a hub API token (no browser after the token is made).
 
 The token comes from $EAF_TOKEN_FILE (mode 600, outside any synced tree); make it once at <hub>/hub/token.
-EAF mounts /exp, so `run` writes the job's log on /exp and the GPVM reads it directly.
+EAF mounts the FNAL shared storage ($FASTSIMKIT_EAF_SHARED_PREFIX, required by `run`), so `run` writes the job's log
+there and the GPVM reads it directly.
 
     eafhub.py whoami | status | profiles [--html F] | start [key=value ...] | stop
-    eafhub.py run --log /exp/.../job.log [--wait] -- 'bash core/eaf/p2_real_steps.sh'
-    eafhub.py wait --log /exp/.../job.log
+    eafhub.py run --log <shared dir>/job.log [--wait] -- 'bash path/to/job_script.sh'
+    eafhub.py wait --log <shared dir>/job.log
 Needs: python3 with websocket-client (the Mu2e ana env has it). Hub: $EAF_HUB (default https://analytics-hub.fnal.gov).
 """
 import argparse
@@ -107,14 +108,17 @@ def wait_log(log, timeout):
 
 
 def cmd_run(a):
-    """Start the command detached in a server terminal; its output goes to --log (on /exp), exit code to --log.done."""
+    """Start the command detached in a server terminal; its output goes to --log (shared storage), exit code to --log.done."""
     import websocket
     s = server(me())
     if not (s and s.get("ready")):
         sys.exit("eafhub: no running server; `start` first")
     log = os.path.abspath(a.log)
-    if not log.startswith("/exp/"):
-        sys.exit("eafhub: --log must be under /exp (shared by EAF and the GPVM)")
+    shared = os.environ.get("FASTSIMKIT_EAF_SHARED_PREFIX")
+    if not shared:
+        sys.exit("eafhub: set FASTSIMKIT_EAF_SHARED_PREFIX (storage mounted by both EAF and the GPVM)")
+    if not log.startswith(shared):
+        sys.exit(f"eafhub: --log must be under {shared} (shared by EAF and the GPVM)")
     for f in (log, log + ".done"):
         if os.path.exists(f):
             os.remove(f)

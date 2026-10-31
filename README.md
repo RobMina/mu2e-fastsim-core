@@ -1,5 +1,21 @@
 # mu2e-fastsim-core
 
+## Portable input verification
+
+`python3 -m mu2efastsim.inputs check-inputs --manifest release.json --root /path/to/inputs`
+verifies an explicit versioned input manifest. `fetch-inputs` is dry-run by default,
+requires an explicit approved source, and never overwrites corrupt existing files.
+See the umbrella [collaborator setup](https://github.com/RobMina/mu2e-fastsim/blob/main/setup/README.md)
+for schema, approval boundary and site configuration. No Mu2e-internal manifests
+or data are bundled.
+
+## Site configuration
+
+No site, user or storage path is built into the package. Every path, host and account comes from the environment
+(`mu2efastsim/site.py`; copy [`site.env.example`](site.env.example) to a private `site.env` outside the repository,
+fill it in and `source` it). Code that needs an unset variable raises `mu2efastsim.site.SiteConfigError` naming it;
+shell scripts stop with `${VAR:?...}`. `tests/test_no_site_paths.py` keeps user names and site paths out of the tree.
+
 Detector-independent core of the Mu2e Geant4-free fast simulation for the extracted (KPP, no-field) cosmic
 configuration: muon energy loss and fluctuations matched to Geant4 11.3.2, material constants, the passive world
 from a GDML export, straight-line crossings, transport helpers, the flat-table interchange format and shared
@@ -30,7 +46,7 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 | `mu2efastsim/match.py` | joins and lookups on multi-column integer keys, two-sample KS test (fast-vs-stock comparisons) |
 | `iri/` | ALCF Polaris job drivers through the IRI API (inline job shipping, venv setup, GPU smoke test, git sync) |
 | `mu2efastsim/endpoints/` | compute endpoints behind one interface (`submit`/`status`/`fetch`/`cancel`): `slurm_ssh` (any Slurm site over `ssh`; UVA today), `eaf` (Fermilab EAF: jobs in the user's JupyterHub server on an A100 MIG slice, driven with a hub token from the Fermilab network; one slice with a queue, auto-stop, keepalive), and `kit` = `fastsimkit`, the Mu2eBO evaluator-contract MCP server (one point = one job; tasks that read Fermilab-resident inputs in place run only on `eaf`). `chainpoint.py` runs a CRV chain point as N one-GPU jobs with streamed inputs. Tasks: `reco_bench`, `response_bench`, `v4_response`, `chain_point`, `chain`, `regression`, `veto_c4`, and `beam_point` when the umbrella's `beam/` is importable |
-| `eaf/` | Fermilab EAF tools: `eafhub.py` (start, run, wait, stop a session from a GPVM), the P2 script on real steps, live tests of the kit and its queue, read-only probes of slice usage and server lifetime |
+| `eaf/` | Fermilab EAF tools: `eafhub.py` (start, run, wait, stop a session from a GPVM), live tests of the kit and its queue, read-only probes of slice usage and server lifetime |
 | `aurora/` | ALCF Aurora (Intel PVC) job scripts over SSH + PBS |
 | `uva/` | UVA Rivanna/Afton Slurm jobs: step-0 probe, in-image validation with the real tables, KPP V-R2/V-R3 with a streamed reference; see `uva/README.md` |
 

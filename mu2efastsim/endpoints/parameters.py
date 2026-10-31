@@ -62,8 +62,13 @@ class Parameter:
             if not re.fullmatch(r"[A-Za-z0-9_./-]+", value) or ".." in value.split("/"):
                 raise ValueError(f"{prefix} must be a plain geometry name or path")
             if value.startswith("/"):
-                if not value.startswith("/exp/mu2e/"):
-                    raise ValueError(f"{prefix} path must be on FNAL storage (/exp/mu2e/...)")
+                from mu2efastsim import site
+                root = site.geometry_prefix()
+                if not root:
+                    raise ValueError(f"{prefix} absolute path needs FASTSIMKIT_GEOMETRY_PREFIX (the FNAL storage "
+                                     "prefix geometry files may live under); it is not set")
+                if not value.startswith(root.rstrip("/") + "/"):
+                    raise ValueError(f"{prefix} path must be on FNAL storage ({root.rstrip('/')}/...)")
             elif value != "nominal" and ("/" in value or not value.endswith(".txt") or value.startswith("-")):
                 raise ValueError(f"{prefix} must be nominal or a .txt file name under beam/geom")
         return value

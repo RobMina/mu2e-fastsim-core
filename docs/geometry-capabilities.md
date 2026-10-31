@@ -30,7 +30,7 @@ are refused in both `check` and `submit` before dispatch.
 
 The URI names a file readable by the **kit process**, not a presumed endpoint
 mount or arbitrary remote host. Only normalized local `file://` URIs (empty
-host or localhost) are supported; no root/HTTP fetching, `/pnfs` traversal or
+host or localhost) are supported; no root/HTTP fetching, dCache (pnfs) traversal or
 symlinks. The final input must be a bounded regular ASCII file, at most 256 KiB;
 the kit checks the content digest and retains those exact bytes. Missing legacy
 digest/renderer fields are refused, not guessed. Renderer metadata is a caller
@@ -59,7 +59,7 @@ still apply at execution; admission does not certify arbitrary combinations.
 The bounded render contains candidate configuration, not an upload channel for
 Mu2e event/conditions data. It is retained in the durable request and job script,
 then written read-only as `out/geometry.txt` on both routes. Output paths are
-canonicalized before use (including UVA's `/scratch` alias). UVA uses this file
+canonicalized before use (including a symlinked cluster scratch area). UVA uses this file
 for both public dependency staging and beam transport; EAF passes it to its
 existing beam runtime. No mutable caller path is consumed after binding.
 

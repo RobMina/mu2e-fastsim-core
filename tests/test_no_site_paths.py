@@ -1,0 +1,106 @@
+"""No user name and no site, user or storage path may be written into the repository.
+
+Site paths come from configuration (see mu2efastsim/site.py and site.env.example). Public locations stay allowed:
+/cvmfs, system paths (/usr, /bin, /dev, /proc, /etc), relative and home-relative paths, and placeholders such as
+/path/to.
+"""
+import hashlib
+import os
+import re
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# User names, matched as whole alphanumeric tokens (case-insensitive) by SHA-256, so the names never appear here.
+USER_NAME_SHA256 = {"4baf0263de48597ccb579ba119bb6d2f8fea4bba418326f375a4853462ab82fa",
+                    "05436ea5391c8a9c46f09d1200e8669806543032d865c86649dfacc9293603f4"}
+_TOKEN = re.compile(r"[A-Za-z0-9]+")
+
+
+class _UserNames:
+    """search() like a compiled pattern: the first token whose hash is in USER_NAME_SHA256, or None."""
+    hashes = USER_NAME_SHA256
+
+    def search(self, line):
+        for m in _TOKEN.finditer(line):
+            if hashlib.sha256(m.group(0).lower().encode()).hexdigest() in self.hashes:
+                return m
+        return None
+
+
+USER_NAMES = _UserNames()
+
+# Absolute site, user or storage paths: the prefix must start a path (not follow a word, a dot or a variable).
+_PREFIXES = (
+    "exp", "pnfs", "scratch", "sfs", "lus", "eagle", "grand", "flare", "home", "nashome", "Users", "project",
+    "projects", "gpfs", "lustre", "wclustre", "global",
+)
+_START = r"(?:(?<=://)|(?<![\w.~}$\-/]))"     # start of a path, including right after file://
+SITE_PATH = re.compile(_START + r"/(?:" + "|".join(_PREFIXES) + r")(?=/|\b)")
+# Named directories under /tmp (a bare /tmp, ${TMPDIR:-/tmp} or tempfile is fine).
+TMP_DIR = re.compile(_START + r"/tmp/[A-Za-z0-9_]")
+
+SELF = Path(__file__).resolve()
+
+
+def _tracked_files():
+    try:
+        # tracked files plus new files not yet added (ignored files excluded), so a check before `git add` sees them
+        out = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT,
+                             check=True, capture_output=True).stdout
+        names = [n for n in out.decode().split("\0") if n]
+        if names:
+            return [ROOT / n for n in names]
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    found = []
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", ".pytest_cache", ".venv")]
+        found.extend(Path(dirpath) / f for f in filenames)
+    return found
+
+
+def _text(path):
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if b"\0" in data[:8192]:
+        return None
+    return data.decode("utf-8", errors="replace")
+
+
+def _violations():
+    bad = []
+    for path in _tracked_files():
+        if path.resolve() == SELF or not path.is_file():
+            continue
+        text = _text(path)
+        if text is None:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for rx in (USER_NAMES, SITE_PATH, TMP_DIR):
+                m = rx.search(line)
+                if m:
+                    bad.append(f"{path.relative_to(ROOT)}:{lineno}: {m.group(0)!r} in {line.strip()[:120]}")
+                    break
+    return bad
+
+
+def test_patterns_catch_what_they_should():
+    for s in ("/exp/mu2e/data/x", "cd /pnfs/mu2e", "'/scratch/abc'", "/lus/eagle/projects/x", "x=/home/u",
+              "/Users/someone", "/project/area", "file:///pnfs/x"):
+        assert SITE_PATH.search(s), s
+    names = _UserNames()
+    names.hashes = {hashlib.sha256(b"alice").hexdigest()}
+    assert names.search("user ALICE here") and names.search("/data/alice/x") and not names.search("malice")
+    assert TMP_DIR.search("out=/tmp/my_run")
+    for s in ("/cvmfs/mu2e.opensciencegrid.org", "/usr/bin/env", "/path/to/scratch", "terminal", "determinant",
+              "$HOME/exp/x", "${SCRATCH}/scratch/y", "relative/exp/z", "https://example.org/projects/x", "/tmp"):
+        assert not (USER_NAMES.search(s) or SITE_PATH.search(s) or TMP_DIR.search(s)), s
+
+
+def test_no_user_names_or_site_paths_in_tracked_files():
+    bad = _violations()
+    assert not bad, "site paths or user names in the repository:\n" + "\n".join(bad)

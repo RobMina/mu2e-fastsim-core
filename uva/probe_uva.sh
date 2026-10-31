@@ -1,16 +1,17 @@
 #!/bin/bash
 #SBATCH -J m2fs_probe
-#SBATCH -A ldmxuva
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH -c 8
 #SBATCH --mem=48G
 #SBATCH -t 01:00:00
-#SBATCH -o /scratch/%u/mu2efastsim/probe/slurm-%j.out
 # UVA Rivanna/Afton step-0 probe for the Mu2e fastsim: node/storage/network inventory, venv with jax[cuda12] on
-# /scratch, JAX on one A100 (float64), pytest and synthetic CRV benches on GPU and CPU. Synthetic inputs only.
-# Submit from the laptop (on UVA network/VPN): ssh uva-hpc 'mkdir -p /scratch/$USER/mu2efastsim/probe && sbatch' < probe_uva.sh
-F=${M2FS_UVA:-/scratch/$USER/mu2efastsim}
+# the cluster scratch, JAX on one A100 (float64), pytest and synthetic CRV benches on GPU and CPU. Synthetic inputs only.
+# Submit from the laptop (on UVA network/VPN), with F the cluster work area:
+#   ssh "$FASTSIMKIT_SLURM_HOST" "mkdir -p $F/probe && sbatch -A $FASTSIMKIT_SLURM_ACCOUNT -o $F/probe/slurm-%j.out --export=ALL,FASTSIMKIT_SCRATCH=$F" < probe_uva.sh
+# Site settings come from the environment (site.env.example): FASTSIMKIT_SCRATCH (work area on the cluster), the
+# account at submission (sbatch -A "$FASTSIMKIT_SLURM_ACCOUNT"), and the log path (sbatch -o "$FASTSIMKIT_SCRATCH/probe/slurm-%j.out").
+F=${M2FS_UVA:-${FASTSIMKIT_SCRATCH:?set FASTSIMKIT_SCRATCH (work area on the cluster scratch; sbatch --export=ALL,FASTSIMKIT_SCRATCH=...)}}
 JAXV=${JAXV:-0.11.2}
 O=$F/probe/$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-none}
 mkdir -p "$O" || { echo "cannot create $O"; exit 2; }
@@ -19,8 +20,8 @@ s() { echo; echo "==== $*"; }
 s "node"; echo "host=$(hostname) job=${SLURM_JOB_ID:-none} account=${SLURM_JOB_ACCOUNT:-?} date=$(date -Is) out=$O"
 lscpu | grep -E "^(Model name|Socket|Core|Thread|NUMA node\(s\))"; free -g | head -2
 echo "cpus_on_node=${SLURM_CPUS_ON_NODE:-?} nproc=$(nproc) TMPDIR=${TMPDIR:-unset}"
-s "storage"; df -hT /tmp /dev/shm "${TMPDIR:-/tmp}" "$F" /home/$USER 2>&1 | sort -u
-ls -d /localscratch /local /scratch/local 2>&1
+s "storage"; df -hT /tmp /dev/shm "${TMPDIR:-/tmp}" "$F" "$HOME" 2>&1 | sort -u
+ls -d /local* "$(dirname "$F")/local" 2>&1
 t=${TMPDIR:-/tmp}/m2fs_dd_$$; dd if=/dev/zero of=$t bs=1M count=1024 conv=fdatasync 2>&1 | tail -1; rm -f $t
 s "containers/fuse"; ls -l /dev/fuse 2>&1; cat /proc/sys/user/max_user_namespaces 2>&1; ls -d /cvmfs/* 2>&1 | head -3
 module load apptainer >/dev/null 2>&1; apptainer --version 2>&1   # no pipe: a subshell would drop the module
@@ -41,7 +42,7 @@ BASEPY=$(command -v python3); echo "base $BASEPY $($BASEPY --version 2>&1)"
 V=$F/venv
 $V/bin/python -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null || { rm -rf $V; $BASEPY -m venv $V; }
 module unload miniforge 2>/dev/null
-export PIP_CACHE_DIR=${TMPDIR:-/tmp}/pipcache_$USER
+export PIP_CACHE_DIR=$(mktemp -d)
 t0=$SECONDS
 $V/bin/python -m pip install -q --retries 10 --upgrade pip
 $V/bin/python -m pip install -q --retries 10 "jax[cuda12]==$JAXV" numpy h5py pyarrow pandas awkward uproot matplotlib pytest 2>&1 | tail -3
@@ -85,5 +86,5 @@ s "CPU (JAX cpu, ${SLURM_CPUS_ON_NODE:-?} cores)"
 JAX_PLATFORMS=cpu timeout 900 $V/bin/python -m crvfastsim reco-bench synthetic --stage chain --max-events 20000 \
   --length 12 --repeat 2 --outdir $O/cpu_chain > $O/cpu_chain.txt 2>&1; echo "chain jax-cpu exit=$? $(tail -1 $O/cpu_chain.txt)"
 s "done"; echo "outdir $O elapsed $SECONDS s"
-echo "SU check after the job ends: sacct -j ${SLURM_JOB_ID} -X -o JobID,Elapsed,AllocTRES%60,State; allocations -a ldmxuva"
+echo "SU check after the job ends: sacct -j ${SLURM_JOB_ID} -X -o JobID,Elapsed,AllocTRES%60,State; allocations -a ${SLURM_JOB_ACCOUNT:-<account>}"
 echo exit=0

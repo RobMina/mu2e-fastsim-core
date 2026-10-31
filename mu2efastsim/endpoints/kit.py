@@ -9,7 +9,9 @@ resources, the params it accepts and the metrics it returns.
 
 Run as an MCP stdio server (``python -m mu2efastsim.endpoints.kit``) for a kits.toml entry, or use FastsimKit directly.
 Environment: FASTSIMKIT_ENDPOINT (default uva; eaf), FASTSIMKIT_STATE_DIR (local job records and fetched outputs),
-FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_SIF (image path on the site).
+FASTSIMKIT_MAX_SU_PER_JOB (default 500), FASTSIMKIT_SIF (image path on the site; default
+<FASTSIMKIT_SCRATCH>/mu2efastsim.sif, needed only by image-based endpoints). Endpoint settings: see
+mu2efastsim.site and each endpoint module.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from . import EndpointError, Resources, get
+from mu2efastsim import site
 from .parameters import schema, validate as validate_parameters
 from . import capabilities, geometry as geometry_artifacts
 from .artifacts import digest
@@ -40,7 +43,7 @@ class Task:
 
 
 _COMMON = """module load apptainer >/dev/null 2>&1
-M2FS_OUT=$(readlink -f "$M2FS_OUT")   # /scratch is a symlink on UVA: bind the real path
+M2FS_OUT=$(readlink -f "$M2FS_OUT")   # the scratch area may be a symlink (UVA): bind the real path
 @runtime_a@echo "host $(hostname) job ${SLURM_JOB_ID:-none} out $M2FS_OUT"; nvidia-smi -L
 A python -c "import jax, sys; print(jax.devices()); sys.exit(jax.default_backend() != 'gpu')" || { echo "JAX not on the GPU"; exit 5; }
 """
@@ -125,7 +128,7 @@ T python -m crvfastsim v4sipm "$L/steps.root" --jax --no-stock --seed @p_seed@ -
 }
 
 # default runtime: the project image under Apptainer (Slurm sites); an endpoint with a runtime() method supplies its own
-# A/T definitions instead (EAF: a venv on /exp, since EAF starts its own images)
+# A/T definitions instead (EAF: a venv on shared FNAL storage, since EAF starts its own images)
 APPTAINER_RUNTIME = {"a": 'A() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }\n',
                      "t": 'T() { apptainer exec --nv --cleanenv --env CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0},CRVFS_LOOKUP_DIR=$L -B "$L" -B "$M2FS_OUT" --pwd /opt/mu2e-fastsim @sif@ "$@"; }'}
 
@@ -318,7 +321,7 @@ class FastsimKit:
         root = Path(state_dir or os.environ.get("FASTSIMKIT_STATE_DIR", "~/.mu2efastsim/kit")).expanduser()
         self.out_root = root / "out"
         self.out_root.mkdir(parents=True, exist_ok=True)
-        self.sif = sif or os.environ.get("FASTSIMKIT_SIF", "/scratch/ram2aq/mu2efastsim/mu2efastsim.sif")
+        self._sif = sif
         self.ep = endpoint or get(os.environ.get("FASTSIMKIT_ENDPOINT", "uva"), state_dir=root / "jobs",
                                   max_su_per_job=float(os.environ.get("FASTSIMKIT_MAX_SU_PER_JOB", "500")))
         self._cp = None
@@ -366,6 +369,15 @@ class FastsimKit:
         t = self._task(params)
         return {"task": params["task"], **validate_parameters(params["task"], params, t.params, t.defaults)}
 
+    @property
+    def sif(self) -> str:
+        """The project image: the constructor argument, $FASTSIMKIT_SIF or <FASTSIMKIT_SCRATCH>/mu2efastsim.sif."""
+        return self._sif or site.setting("FASTSIMKIT_SIF") or site.scratch() + "/mu2efastsim.sif"
+
+    @sif.setter
+    def sif(self, value):
+        self._sif = value
+
     def render(self, params: Dict[str, Any], geometry=None) -> Tuple[str, Resources]:
         params = self._parameters(params)
         t = self._task(params)
@@ -381,7 +393,7 @@ class FastsimKit:
             setup = geometry_artifacts.stage_shell(geometry) + 'GEOM="$M2FS_GEOMETRY"\n'
         else:
             setup = ""
-        subs = {"sif": shlex.quote(self.sif),
+        subs = {**({"sif": shlex.quote(self.sif)} if "@sif@" in body else {}),
                 **{f"p_{k}": shlex.quote(_arg(params.get(k, t.defaults.get(k)))) for k in t.params}}
         if fnal:
             subs["fnal_data"] = shlex.quote(fnal)

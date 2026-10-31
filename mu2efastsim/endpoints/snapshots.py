@@ -160,7 +160,7 @@ def prepare():
     base = Path(request["requested_base"])
     require(requested_root.parent == Path(str(base) + ".snapshots"),
             "snapshot location does not match requested base")
-    # Resolve site aliases (e.g. UVA /scratch) once, never the checkout,
+    # Resolve site aliases (e.g. a symlinked scratch area) once, never the checkout,
     # snapshots directory, or anything below it. Guards use only this stored
     # canonical path, even if the original site alias is later retargeted.
     parent = base.parent.resolve() / (base.name + ".snapshots")

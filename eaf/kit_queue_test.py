@@ -2,18 +2,19 @@
 """Live test of the EAF queue through fastsimkit: two points submitted back to back, run one after the other on one
 slice, results of both, then the server stops by itself after the linger time (no stop_idle call here).
     EAF_TOKEN_FILE=... python3 core/eaf/kit_queue_test.py
+State and job directories under mu2efastsim.site.crv_data(), as kit_live_test.py.
 """
 import json
 import os
 import time
 
+from mu2efastsim import site
 from mu2efastsim.endpoints.eaf import EAFEndpoint
 from mu2efastsim.endpoints.kit import FastsimKit
 
-D = os.environ.get("CRVFS_DATA", "/exp/mu2e/data/users/ram2aq/crv_fastsim")
-
 
 def main():
+    D = site.crv_data()
     ep = EAFEndpoint(workdir=f"{D}/eafkit", state_dir=f"{D}/eafkit_state/jobs",
                      slices=os.environ.get("EAF_SLICES", "1g.10gb").split(","), linger_s=60)
     kit = FastsimKit(endpoint=ep, state_dir=f"{D}/eafkit_state")

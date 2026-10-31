@@ -13,6 +13,8 @@ from mu2efastsim.endpoints import EndpointError, JobRecord, Resources
 from mu2efastsim.endpoints.slurm_ssh import SlurmSSHEndpoint
 from mu2efastsim.endpoints.submission import IntentStore, durable_json, submission_lock
 
+pytestmark = pytest.mark.usefixtures("site_env")   # placeholder site variables (tests/conftest.py)
+
 R = Resources(minutes=30)
 
 

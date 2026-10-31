@@ -2,8 +2,9 @@
 slice, driven from a GPVM with a hub API token.
 
 EAF has no batch queue and no ssh: one server per user, holding one MIG slice (1g.10gb, 2g.20gb or 4g.40gb). A job is
-a script started detached in a server terminal (websocket); it reads its inputs in place from /exp and writes
-``<workdir>/<handle>/{job.sh, job.log, job.pid, job.done, out/}`` on /exp, which the GPVM reads directly: no transfer,
+a script started detached in a server terminal (websocket); it reads its inputs in place from FNAL storage and writes
+``<workdir>/<handle>/{job.sh, job.log, job.pid, job.done, out/}`` on storage that EAF and the FNAL host both mount
+(under ``shared_prefix``), which the FNAL host reads directly: no transfer,
 nothing Mu2e-internal leaves FNAL. The adapter
 
 * starts the server when none runs, trying slices in ``slices`` order (largest first by default; a slice that does not
@@ -23,7 +24,11 @@ nothing Mu2e-internal leaves FNAL. The adapter
   ``stop_idle`` does the same at once (CLI ``stop-idle``, or a cron).
 
 Configuration: ``token_file`` (default $EAF_TOKEN_FILE), ``hub`` (default https://analytics-hub.fnal.gov), ``workdir``
-(on /exp), ``state_dir`` (local job records). ``hub_client`` is injectable for tests (see FakeHub in the tests).
+(default $FASTSIMKIT_EAF_WORKDIR, else <M2FS_DATA>/crv_fastsim/eafkit), ``shared_prefix`` (default
+$FASTSIMKIT_EAF_SHARED_PREFIX), ``fnal_data`` (default mu2efastsim.site.crv_data()), ``code`` and ``venv`` (default
+$FASTSIMKIT_EAF_CODE or $M2FS_CODE, and $FASTSIMKIT_EAF_VENV or <M2FS_DATA>/crv_fastsim/venv_eaf; needed only to run a
+job), ``state_dir`` (local job records). A missing setting raises mu2efastsim.site.SiteConfigError naming it.
+``hub_client`` is injectable for tests (see FakeHub in the tests).
 """
 from __future__ import annotations
 
@@ -38,12 +43,11 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 from . import EndpointError, JobRecord, JobStatus, Resources, StateDir, spec_sha
+from mu2efastsim import site
 
 PROFILE = "fife-sl7-unpriv-gpu-a100"
 IMAGE = "fife-al9-unpriv-htcondor-gpu-a100-{gb}gb"
 SLICE_GB = {"4g.40gb": 40, "2g.20gb": 20, "1g.10gb": 10}
-CODE = "/exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim"
-VENV = "/exp/mu2e/data/users/ram2aq/crv_fastsim/venv_eaf"
 ANA_PY = "/cvmfs/mu2e.opensciencegrid.org/env/ana/current/bin/python"
 JAX_PKG = "jax[cuda12]==0.11.2"
 
@@ -115,8 +119,8 @@ def slice_of(options: Optional[dict]) -> str:
 
 
 class EAFEndpoint:
-    def __init__(self, workdir: str = "/exp/mu2e/data/users/ram2aq/crv_fastsim/eafkit", code: str = CODE,
-                 venv: str = VENV, shared_prefix: str = "/exp/", fnal_data: str = "/exp/mu2e/data/users/ram2aq/crv_fastsim",
+    def __init__(self, workdir: str | None = None, code: str | None = None,
+                 venv: str | None = None, shared_prefix: str | None = None, fnal_data: str | None = None,
                  state_dir: str | Path = "~/.mu2efastsim/eaf", token_file: Optional[str] = None,
                  hub: str = "https://analytics-hub.fnal.gov", slices: Sequence[str] = ("4g.40gb", "2g.20gb", "1g.10gb"),
                  start_timeout_s: float = 420.0, poll_s: float = 10.0, hub_client: Optional[HubClient] = None,
@@ -124,10 +128,13 @@ class EAFEndpoint:
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
                  name: str = "eaf", **_ignored):
         self.name = name
-        self.workdir, self.code, self.venv = workdir.rstrip("/"), code.rstrip("/"), venv.rstrip("/")
-        self.fnal_data = fnal_data.rstrip("/")     # Mu2e-internal inputs read in place (kit FNAL_TASKS)
+        self.workdir = (workdir or site.setting("FASTSIMKIT_EAF_WORKDIR")
+                        or site.output_root() + "/crv_fastsim/eafkit").rstrip("/")
+        self._code, self._venv = code, venv          # resolved when a job runs (runtime)
+        self.fnal_data = (fnal_data or site.crv_data()).rstrip("/")     # Mu2e-internal inputs read in place (kit FNAL_TASKS)
+        shared_prefix = shared_prefix or site.eaf_shared_prefix()
         if not self.workdir.startswith(shared_prefix):
-            raise EndpointError(f"eaf: workdir must be under {shared_prefix} (shared by EAF and the GPVM)")
+            raise EndpointError(f"eaf: workdir must be under {shared_prefix} (shared by EAF and the FNAL host)")
         bad = [s for s in slices if s not in SLICE_GB]
         if bad or not slices:
             raise EndpointError(f"eaf: unknown slices {bad}; choose from {list(SLICE_GB)}")
@@ -140,7 +147,16 @@ class EAFEndpoint:
         env_age = os.environ.get("EAF_MAX_AGE_S")
         self.max_age_s = float(env_age) if max_age_s is None and env_age else max_age_s
 
-    # -- files on /exp -------------------------------------------------------------------------------------------
+    @property
+    def code(self) -> str:
+        return (self._code or site.setting("FASTSIMKIT_EAF_CODE") or site.code_root()).rstrip("/")
+
+    @property
+    def venv(self) -> str:
+        venv = self._venv or site.setting("FASTSIMKIT_EAF_VENV") or site.output_root() + "/crv_fastsim/venv_eaf"
+        return venv.rstrip("/")
+
+    # -- files on shared storage ------------------------------------------------------------------------------------
     def _dir(self, handle: str) -> Path:
         return Path(self.workdir) / handle
 
@@ -220,8 +236,8 @@ class EAFEndpoint:
 
     def runtime(self) -> Dict[str, str]:
         """Shell definitions of A (run a command in the fast-chain environment) and T (the same with the staged
-        tables in CRVFS_LOOKUP_DIR) for the kit's task bodies: the venv on /exp (built on first use from the Mu2e
-        ana env plus pip JAX) instead of an Apptainer image, which EAF cannot start."""
+        tables in CRVFS_LOOKUP_DIR) for the kit's task bodies: the venv on shared storage (built on first use from the
+        Mu2e ana env plus pip JAX) instead of an Apptainer image, which EAF cannot start."""
         v, c = shlex.quote(self.venv), shlex.quote(self.code)
         a = (f'M2FS_VENV={v}; M2FS_CODE={c}\n'
              f'[ -x "$M2FS_VENV/bin/python" ] || {ANA_PY} -m venv --system-site-packages "$M2FS_VENV" || exit 2\n'
@@ -377,7 +393,7 @@ class EAFEndpoint:
             pass                                    # best effort: a failed ping must not fail a status call
 
     def fetch(self, handle: str, dest: Path) -> List[Path]:
-        """Copy out/ and job.log into dest/<handle>/ (both are on /exp already)."""
+        """Copy out/ and job.log into dest/<handle>/ (both are on shared storage already)."""
         import shutil
         rec = self._record(handle)
         src, target = Path(rec.remote_dir), Path(dest) / handle

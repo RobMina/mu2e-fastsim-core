@@ -2,13 +2,14 @@
 # Stage the R3 inputs GPVM -> Eagle by ssh stream through the laptop (no laptop copy), md5-checked, resumable.
 # Run on the laptop with a live ssh master to a Polaris login node (MobilePASS+); the GPVM cannot reach ALCF.
 #   stage_r3_eagle.sh [--dry-run] [--with-g4ref]
-# Env: GPVM (mu2egpvm03), POLARIS (ssh alias, default polaris), EAGLE_R3 (destination).
+# Env (site.env.example): GPVM or FASTSIMKIT_FNAL_HOST (FNAL host), POLARIS (ssh alias, default polaris), EAGLE_R3
+# (destination, default $M2FS_EAGLE/r3_inputs), FASTSIMKIT_FNAL_DATA (FNAL dir of the CRV inputs).
 # Layout on Eagle (mode 700): steps/crvsteps.*.root, [g4ref/crvsteps.*.root], cond/{crvcalib,crvphoton}.csv,
 # MANIFEST.txt. The objective code is in the public crv package (crvfastsim.objective), so no crvextrap archive.
 set -euo pipefail
-G=${GPVM:-mu2egpvm03}; P=${POLARIS:-polaris}
-DEST=${EAGLE_R3:-/eagle/GenesisHackathonOct26/ram2aq/crvfastsim/r3_inputs}
-D=/exp/mu2e/data/users/ram2aq/crv_fastsim
+G=${GPVM:-${FASTSIMKIT_FNAL_HOST:?set FASTSIMKIT_FNAL_HOST (FNAL host that holds the inputs)}}; P=${POLARIS:-polaris}
+DEST=${EAGLE_R3:-${M2FS_EAGLE:?set M2FS_EAGLE (work area on Eagle) or EAGLE_R3}/r3_inputs}
+D=${FASTSIMKIT_FNAL_DATA:-${CRVFS_DATA:-${M2FS_INPUTS:-${M2FS_DATA:?set FASTSIMKIT_FNAL_DATA (FNAL dir of the CRV inputs) or M2FS_INPUTS/M2FS_DATA}}/crv_fastsim}}
 DRY=false; G4REF=false
 for a in "$@"; do case "$a" in --dry-run) DRY=true ;; --with-g4ref) G4REF=true ;; *) echo "unknown $a"; exit 2 ;; esac; done
 

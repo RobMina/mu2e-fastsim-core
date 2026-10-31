@@ -7,12 +7,17 @@
 # Then throughput_uva.py: accepted events per GPU-hour, per SU, and per hour of campaign wall time.
 # usage: [N=8] [FPP=4] [GRES=gpu:a100:1] [CONSTRAINT=a100] [CPUS=16] [MEM=110G] [WALL=00:45:00] [REF=main] \
 #        [T1B=strict_v4|strict_v3|strict_v2|legacy] chain_array_uva.sh [gpvm]      (T1B: tier-1b asset set, crvfastsim.tier1b_assets)
+# Site settings (site.env.example): FASTSIMKIT_FNAL_HOST, FASTSIMKIT_SLURM_HOST, FASTSIMKIT_SLURM_ACCOUNT, FASTSIMKIT_SCRATCH,
+# the FNAL input dir (FASTSIMKIT_FNAL_DATA) and M2FS_CODE (umbrella checkout on the FNAL host, for throughput_uva.py).
 set -uo pipefail
-G=${1:-mu2egpvm03}
+G=${1:-${FASTSIMKIT_FNAL_HOST:?set FASTSIMKIT_FNAL_HOST (FNAL host that holds the inputs) or pass it as the first argument}}
 N=${N:-8}; FPP=${FPP:-4}; GRES=${GRES:-gpu:a100:1}; CONSTRAINT=${CONSTRAINT:-a100}; CPUS=${CPUS:-16}
 MEM=${MEM:-110G}; WALL=${WALL:-00:45:00}; REF=${REF:-main}; MAXEV=${MAXEV:-}; CRV_REF=${CRV_REF:-}   # CRV_REF: a crv branch to test
-U=${UVA_HOST:-uva-hpc}; F=/scratch/ram2aq/mu2efastsim; JD=mu2e/fastsim_uva
-D=/exp/mu2e/data/users/ram2aq/crv_fastsim
+U=${UVA_HOST:-${FASTSIMKIT_SLURM_HOST:?set FASTSIMKIT_SLURM_HOST (ssh host of the Slurm cluster)}}
+F=${FASTSIMKIT_SCRATCH:?set FASTSIMKIT_SCRATCH (work area on the cluster scratch)}; JD=mu2e/fastsim_uva
+ACCT=${FASTSIMKIT_SLURM_ACCOUNT:?set FASTSIMKIT_SLURM_ACCOUNT (Slurm account)}
+D=${FASTSIMKIT_FNAL_DATA:-${CRVFS_DATA:-${M2FS_INPUTS:-${M2FS_DATA:?set FASTSIMKIT_FNAL_DATA (FNAL dir of the CRV inputs) or M2FS_INPUTS/M2FS_DATA}}/crv_fastsim}}
+CODE_FNAL=${M2FS_CODE:?set M2FS_CODE (umbrella checkout on the FNAL host)}
 T1B=${T1B:-strict_v4}
 case $T1B in
   strict_v4|strict_v3|strict_v2) TV=${T1B#strict_}; [ "$TV" = v4 ] && TV=v3
@@ -26,7 +31,7 @@ COMMON=("${LIBSET[@]}" "$D/geometry/crvcalib_sim_best_v1_5_run1400.csv"
         "$D/geometry/crvphoton_sim_best_v1_5_run1400.csv" "$D/geometry/mu2e_extracted_v04.gdml")
 NGEN=${NGEN:-20}
 TAG=array_$(date +%Y%m%d_%H%M%S)
-LOG=${LOGDIR:-$HOME/mu2e/scratch_uva}/$TAG; mkdir -p "$LOG"
+LOG=${LOGDIR:-$HOME/.mu2efastsim/chain_array}/$TAG; mkdir -p "$LOG"
 DEST=$D/reco_ref/checks_uva/$TAG
 CODE=$F/chain_code_$REF${CRV_REF:+_crv-$CRV_REF}
 echo "tag $TAG: N=$N FPP=$FPP tier1b=$T1B gres=$GRES constraint=$CONSTRAINT cpus=$CPUS mem=$MEM wall=$WALL ref=$REF crv=${CRV_REF:-pinned}; log $LOG"
@@ -40,8 +45,8 @@ ssh "$U" "set -e; if [ -d $CODE/.git ]; then git -C $CODE fetch -q origin; git -
 
 JIDS=()
 for k in $(seq 0 $((N-1))); do
-  J=$(ssh "$U" "cd $JD && sbatch --parsable -J m2fs_arr$k --gres=$GRES -C $CONSTRAINT -c $CPUS --mem=$MEM -t $WALL \
-      --export='ALL,NPROC=1,RUNS=$FPP,SEED_BASE=$((20261021 + 1000*k)),CODE_DIR=$CODE,CODE_READY=1,T1B=$T1B${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
+  J=$(ssh "$U" "cd $JD && sbatch --parsable -A $ACCT -o $F/kpp/slurm-%j.out -J m2fs_arr$k --gres=$GRES -C $CONSTRAINT -c $CPUS --mem=$MEM -t $WALL \
+      --export='ALL,FASTSIMKIT_SCRATCH=$F,NPROC=1,RUNS=$FPP,SEED_BASE=$((20261021 + 1000*k)),CODE_DIR=$CODE,CODE_READY=1,T1B=$T1B${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
   JIDS+=("${J%%;*}"); echo "job $k -> ${J%%;*}"
 done
 printf "%s\n" "${JIDS[@]}" > "$LOG/jobids.txt"
@@ -78,7 +83,7 @@ cat "$LOG"/stream_*.log
 sleep 60
 ssh "$U" "for j in ${JIDS[*]}; do \
   s=\$(sacct -n -X -P -j \$j -o Start,End,ElapsedRaw,NodeList,AllocTRES,Partition | head -1); \
-  su=\$(mam-list-transactions -a ldmxuva -s \$(date +%F -d yesterday) 2>/dev/null | awk -v j=\$j '\$6==j && \$9>0 {print \$9}' | head -1); \
+  su=\$(mam-list-transactions -a $ACCT -s \$(date +%F -d yesterday) 2>/dev/null | awk -v j=\$j '\$6==j && \$9>0 {print \$9}' | head -1); \
   echo \"\$j|\$s|\$su\"; done" </dev/null > "$LOG/acct.txt"
 ssh "$G" "cd $DEST && for j in ${JIDS[*]}; do w=\$(grep -ho 'input wait [0-9]*' \$j/run.log 2>/dev/null | awk '{print \$3}'); echo \"\$j \${w:-0}\"; done" </dev/null > "$LOG/waits.txt"
 python3 - "$LOG" <<'EOF'
@@ -98,6 +103,6 @@ open(f"{log}/jobs.tsv", "w").write("\n".join(rows) + "\n")
 print(f"{len(rows) - 1} jobs with accounting -> {log}/jobs.tsv")
 EOF
 scp -q "$LOG/jobs.tsv" "$G:$DEST/jobs.tsv"
-ssh "$G" "cd $DEST && python3 /exp/mu2e/app/users/ram2aq/analysis/mu2e-fastsim/core/uva/throughput_uva.py jobs.tsv */fpp$FPP/shard_0.json --out throughput.json" </dev/null \
+ssh "$G" "cd $DEST && python3 $CODE_FNAL/core/uva/throughput_uva.py jobs.tsv */fpp$FPP/shard_0.json --out throughput.json" </dev/null \
   | tee "$LOG/throughput.txt"
 echo "outputs in $G:$DEST"

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Globus transfers for the ESnet East collection (and any other collection) with globus-sdk >= 4, no CLI.
 
-Login is two steps so it works from a non-interactive agent shell:
+Login is two steps so it works from a non-interactive shell:
   globus_esnet.py login-url            # prints a URL; the user opens it, logs in, copies the code
   globus_esnet.py login-code <CODE>    # exchanges it; refresh tokens saved (mode 600) to $GLOBUS_TOKEN_FILE
 Then:
   globus_esnet.py whoami | ls <coll> <path> | search <text> | info <coll>
   globus_esnet.py transfer <src coll> <src path> <dst coll> <dst path> [--recursive] [--label L]
   globus_esnet.py task <task id> [--wait SEC]
-<coll> is a collection UUID or the alias "esnet" (AmSC Genesis Hackathon 2610 ESnet East; its "/" is the IRI path
-/data/home/hackathon2610). Collections that need a data_access consent (GCS v5 mapped) go in GLOBUS_DATA_ACCESS
+<coll> is a collection UUID or the alias "esnet" (AmSC Genesis Hackathon 2610 ESnet East; its "/" is the IRI home
+directory of the shared project user). Collections that need a data_access consent (GCS v5 mapped) go in GLOBUS_DATA_ACCESS
 (comma-separated UUIDs or aliases; not the ESnet one, a guest collection with no data_access scope) before login-url; ConsentRequired errors print which one to add.
 """
 import argparse

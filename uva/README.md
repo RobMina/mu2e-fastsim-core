@@ -1,7 +1,12 @@
 # UVA Rivanna/Afton endpoint
 
-Slurm jobs for the fast chain on UVA HPC (allocation `ldmxuva`; reachable only from the UVA network or the UVA Anywhere
-VPN, key-based `ssh uva-hpc`). Image: `mu2efastsim.sif` built on an `interactive` node with `container/build.sh`
+Slurm jobs for the fast chain on UVA HPC (reachable only from the UVA network or the UVA Anywhere VPN, key-based ssh).
+Site settings come from a private `site.env` (see `site.env.example`): `FASTSIMKIT_SLURM_HOST` (the ssh host),
+`FASTSIMKIT_SLURM_ACCOUNT` (the Slurm allocation), `FASTSIMKIT_SCRATCH` (the work area on the cluster scratch, holding the
+image, the job outputs and `kpp/`), `FASTSIMKIT_FNAL_HOST` and `FASTSIMKIT_FNAL_DATA` (the FNAL host and directory of the
+Mu2e-internal inputs). The job scripts carry no account or log path: submit them with
+`sbatch -A "$FASTSIMKIT_SLURM_ACCOUNT" -o "$FASTSIMKIT_SCRATCH/probe/slurm-%j.out" --export=ALL,FASTSIMKIT_SCRATCH="$FASTSIMKIT_SCRATCH"`
+(the stream drivers do this themselves). Image: `mu2efastsim.sif` built on an `interactive` node with `container/build.sh`
 (gpu variant keeps cuDNN and cuFFT). Measured cost ~60 SU per A100-hour (8-16 cores).
 
 | Script | What | Inputs |
@@ -21,7 +26,8 @@ params `shards`, `files_per_job`, `shard_offset`, `max_events`, `seed`, `wall_mi
 an `inbox` file and the kit streams the Mu2e-internal inputs from the FNAL host (`FASTSIMKIT_FNAL_HOST`,
 `FASTSIMKIT_FNAL_DATA`) through the kit host into its tmpfs (`srun --overlap`, md5 checked, never on disk), 2 files at a
 time per sub-job (`FASTSIMKIT_STREAMS`) and at most 6 streams overall (`FASTSIMKIT_MAX_CHANNELS`: one ssh connection per
-host carries at most 10 channels). Code comes from a checkout on `/scratch` (`FASTSIMKIT_CODE`, `FASTSIMKIT_CODE_REF`).
+host carries at most 10 channels). Code comes from a checkout on the cluster scratch (`FASTSIMKIT_CODE`, default `$FASTSIMKIT_SCRATCH/chain_code_kit`;
+`FASTSIMKIT_CODE_REF`).
 Metrics: accepted and generated events, accepted per GPU-hour (charged and chain-only), per estimated SU, input wait,
 campaign time, clusters per generated event per sector type. The kit host must stay up and on the UVA network. A Mu2eBO `kits.toml` entry:
 

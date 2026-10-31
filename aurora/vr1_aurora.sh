@@ -1,6 +1,5 @@
 #!/bin/bash
 #PBS -N m2fs_vr1
-#PBS -A GenesisHackathonOct26
 #PBS -q capacity
 #PBS -l select=1
 #PBS -l place=scatter
@@ -12,8 +11,8 @@
 #   noise off: crvreco_mcnonoise (every stock digi sample-identical); noise on: crvreco_mc vs the noise-free one.
 # Both references are Mu2e-internal: streamed into tmpfs by kpp_stream.sh (NAMES = space-separated basenames), deleted
 # on exit, never on Flare. Same commands on the node CPU as a control. BRANCH: a crv branch to test (optional).
-PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
-F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
+# Site settings (site.env.example): submit with qsub -A "$ALCF_PROJECT" -v M2FS_FLARE=<work area on Flare>,...
+F=${M2FS_FLARE:?set M2FS_FLARE (work area on Flare; qsub -v M2FS_FLARE=...)}
 FL=$F; V=$FL/venv/bin/python; CODE=$FL/code
 umask 077
 O=$FL/bench/vr1_$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O; chmod 700 $O
@@ -30,7 +29,7 @@ export PYTHONPATH=$CRV:$CODE/core${PYTHONPATH:+:$PYTHONPATH}
 echo "host=$(hostname) job=${PBS_JOBID:-none} out=$O"; git log -1 --format="umbrella %h %s"; git -C $CRV log -1 --format="crv %h %s"
 export LD_LIBRARY_PATH=$FL/venv/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} MU2E_SEARCH_PATH=$FL/offline_data
 export JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false MPLBACKEND=Agg ZE_FLAT_DEVICE_HIERARCHY=FLAT
-L=/tmp/crvfs_vr1_$$; mkdir -p $L; chmod 700 $L
+L=${TMPDIR:-/tmp}/crvfs_vr1_$$; mkdir -p $L; chmod 700 $L
 trap 'rm -rf $L; echo "deleted $L"' EXIT
 trap 'exit 143' TERM INT
 echo "$(hostname) $L $O" > $FL/bench/kpp_inbox_${PBS_JOBID%%.*}

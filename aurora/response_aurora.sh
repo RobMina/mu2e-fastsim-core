@@ -1,6 +1,5 @@
 #!/bin/bash
 #PBS -N m2fs_resp
-#PBS -A GenesisHackathonOct26
 #PBS -q debug
 #PBS -l select=1
 #PBS -l place=scatter
@@ -9,11 +8,11 @@
 #PBS -j oe
 #PBS -o m2fs_resp.out
 # Aurora: CRV fast response (photons + SiPM charges) with the REAL v6_0 lookup table and photon map, one PVC tile and
-# then all 12 tiles (one process per tile). Tables come from the Mu2e CVMFS Stratum-1 over HTTP into tmpfs /tmp and
+# then all 12 tiles (one process per tile). Tables come from the Mu2e CVMFS Stratum-1 over HTTP into node tmpfs and
 # are deleted on exit (Mu2e-internal: never on Flare). Needs the venv of probe_aurora.sh.
 # usage: qsub [-v M2FS_FLARE=...,N=rows_per_tile,NS=sipms_per_tile] response_aurora.sh
-PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
-F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
+# Site settings (site.env.example): submit with qsub -A "$ALCF_PROJECT" -v M2FS_FLARE=<work area on Flare>,...
+F=${M2FS_FLARE:?set M2FS_FLARE (work area on Flare; qsub -v M2FS_FLARE=...)}
 FL=$F; V=$FL/venv; CODE=$FL/code; OFFD=$FL/offline_data; N=${N:-1000000}; NS=${NS:-500000}
 O=$FL/bench/response_$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O
 exec > >(tee "$O/run.log") 2>&1
@@ -23,7 +22,7 @@ cd $CODE && git pull -q --ff-only && git submodule update -q --init --recursive
 echo "host=$(hostname) job=${PBS_JOBID:-none} out=$O"; git log -1 --format="umbrella %h %s"; git submodule status
 export LD_LIBRARY_PATH=$V/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} MU2E_SEARCH_PATH=$OFFD
 export JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false MPLBACKEND=Agg ZE_FLAT_DEVICE_HIERARCHY=FLAT
-L=/tmp/crvfs_lookup_$$; mkdir -p $L; chmod 700 $L
+L=${TMPDIR:-/tmp}/crvfs_lookup_$$; mkdir -p $L; chmod 700 $L
 trap 'rm -rf $L; echo "deleted $L"' EXIT
 trap 'exit 143' TERM INT
 for f in LookupTable_3200_0 photonMap.root; do

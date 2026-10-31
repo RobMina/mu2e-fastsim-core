@@ -50,8 +50,8 @@ binding. The runner checks input SHA256/size before and after consumption and re
 this is not an immutable snapshot or protection against transient change-and-restore. Runner provenance remains
 output evidence, not a lifetime guarantee.
 
-UVA uses `FASTSIMKIT_TRACKER_DATA` (default `/exp/mu2e/data/users/ram2aq`),
-`FASTSIMKIT_FNAL_HOST` (default `mu2egpvm03`), `FASTSIMKIT_TRACKER_CODE` and
+UVA uses `FASTSIMKIT_TRACKER_DATA` (FNAL directory of the tracker inputs),
+`FASTSIMKIT_FNAL_HOST` (the FNAL host that serves them; see `site.env.example`), `FASTSIMKIT_TRACKER_CODE` and
 `FASTSIMKIT_CODE_REF`. Source snapshots prepare **core and tracker**, not beam
 or CRV. The five inputs stream directly into a private per-job `/dev/shm`
 tmpfs directory. Bound MD5/SHA256/size expectations are checked after streaming,
@@ -88,11 +88,11 @@ modified by this registration work.
 
 ## Local verification
 
-With the laptop workspace venv and `PYTHONDONTWRITEBYTECODE=1`, using default
+With a Python environment that has the test dependencies and `PYTHONDONTWRITEBYTECODE=1`, using default
 pytest import mode (tracker tests import sibling fixtures):
 
 ```bash
-PYTHONPATH="$CORE:$TRACKER:$CRV:$BEAM" /Users/rmina/mu2e/.venv/bin/python3 \
+PYTHONPATH="$CORE:$TRACKER:$CRV:$BEAM" python3 \
   -m pytest -q -p no:cacheprovider \
   "$TRACKER/tests/test_kit_task.py" "$TRACKER/tests/test_kit_uva.py" \
   "$TRACKER/tests/test_kitpoint.py" "$CORE/tests/test_tracker_registration.py" \

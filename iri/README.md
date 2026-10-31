@@ -45,7 +45,7 @@ Literal paths only in the submitted JSON (the API does not expand `$HOME`/`$USER
 - **HTTP 403 with a Cloudflare "Just a moment..." page** (even for `/openapi.json`): the client's network is challenged,
   not the account. Seen from a residential laptop connection on 2026-10-16 while a FNAL GPVM and the AI node got 200.
   Submit from a host that gets 200: copy the access token (`token_manager.py ensure --print-token`) and the JobSpec
-  built by `make_inline_job.py` to that host's `/tmp` (mode 600) and POST with curl:
+  built by `make_inline_job.py` to a private temporary file on that host (mode 600) and POST with curl:
   `curl -A iri-api-client/1.0 -H "Authorization: Bearer $(cat tok)" -H "Content-Type: application/json"
   -X POST --data @job.json https://api.alcf.anl.gov/api/v2/compute/job/<polaris resource id>`; status:
   `GET /api/v2/compute/status/<resource id>/<job id>`.
@@ -66,8 +66,9 @@ source site.env        # IRI, IRI_PY, M2FS_EAGLE, ALCF_PROJECT
 $IRI_PY $IRI/scripts/token_manager.py ensure --facilities alcf --min-ttl 300
 
 # any job: template JSON + local script -> inline JobSpec -> submit, wait, read output
-python3 iri/tools/make_inline_job.py iri/jobs/hello_polaris.json iri/scripts/hello_gpu.sh --out /tmp/job.json
-iri/tools/iri.sh submit /tmp/job.json          # prints the PBS job id
+J=$(mktemp)
+python3 iri/tools/make_inline_job.py iri/jobs/hello_polaris.json iri/scripts/hello_gpu.sh --out $J
+iri/tools/iri.sh submit $J                     # prints the PBS job id
 iri/tools/iri.sh wait <jobid> 280
 iri/tools/iri.sh cat $M2FS_EAGLE/hello/hello.out
 ```
@@ -91,35 +92,36 @@ iri/tools/iri.sh cat $M2FS_EAGLE/hello/hello.out
 project selected when it is made; 30 days) from `$AMSC_TOKEN` or the mode-600 file `$AMSC_TOKEN_FILE` (default
 `~/.amsc/pat`). No Globus login, no Cloudflare challenge: the laptop can submit. Every job is a Kubernetes pod running a
 **public** OCI image (`container.image`); resources are per pod (`cpu_cores_per_process`, `memory` in bytes,
-`gpu_cores_per_process`). The hackathon project maps every participant to one shared user (`hackathon2610`) with a
+`gpu_cores_per_process`). The hackathon project maps every participant to one shared project user with a
 shared EFS home: unique run directories, nothing non-public on EFS, cancel only your own job ids.
 
 | Item | Value |
 |---|---|
 | compute resource | `fb0aafe1-c780-55c0-b635-a7121f1b0ce5` (Low Priority, Kueue) |
-| storage resource | `b6d59ba3-5c2d-57dd-b3b9-108832da0578` (EFS: `/data/home/<user>`, `/data/projects/<project>`) |
+| storage resource | `b6d59ba3-5c2d-57dd-b3b9-108832da0578` (EFS: a home per user and a directory per project) |
 | pod (probe 2026-10-20) | 80 GB overlay root, `/dev/shm` 64 MB, no GPU/FUSE/userns in a CPU pod; open egress (PyPI, GitHub, ghcr, CVMFS S1) |
 | files API | `mkdir`, `upload` (multipart), `ls`, `view`, `download` (base64, **max 2 MiB**), `rm` (recursive, `{path}` only) work |
 | image | public `ghcr.io/robmina/mu2e-fastsim:<umbrella sha7>-cpu\|gpu` (and `latest-*`), built by `.github/workflows/image.yml` of the umbrella from `container/Dockerfile`; `/opt/mu2e-fastsim` is read-only for the pod uid, so every `--outdir` goes to `/tmp` |
 
 ```bash
 RUN=$(date -u +%Y%m%dT%H%M%SZ)-$(python3 -c 'import uuid;print(uuid.uuid4().hex[:8])')
-export ESNET_WORK=/data/home/hackathon2610/mu2efastsim/$RUN
+export ESNET_WORK=${ESNET_HOME:?set ESNET_HOME (your EFS home on ESnet)}/mu2efastsim/$RUN   # ESNET_PROJECT: the job account
 export IRI_FACILITY=esnet
 tools/iri.sh mkdir $ESNET_WORK/probe
-python3 tools/make_inline_job.py jobs/probe_esnet.json scripts/probe_esnet.sh --out /tmp/job.json
-tools/iri.sh submit /tmp/job.json          # prints {"id": ...}
+J=$(mktemp)
+python3 tools/make_inline_job.py jobs/probe_esnet.json scripts/probe_esnet.sh --out $J
+tools/iri.sh submit $J                     # prints {"id": ...}
 tools/iri.sh wait <id> 400
 tools/iri.sh cat $ESNET_WORK/probe/probe.out
 tools/iri.sh alloc                         # node-hours and bytes used / allocated (counters lag)
 tools/iri.sh rm $ESNET_WORK                # recursive; clean up the shared home when done
-# image jobs: ESNET_IMAGE_TAG=<sha7>-cpu with jobs/bench_esnet.json + scripts/bench_esnet.sh (real tables -> pod /tmp,
+# image jobs: ESNET_IMAGE_TAG=<sha7>-cpu with jobs/bench_esnet.json + scripts/bench_esnet.sh (real tables -> pod tmp,
 # deleted on exit) or jobs/repro_esnet.json + scripts/repro_esnet.sh (R5/P6 npz under the download cap)
 ```
 
 ### Globus (ESnet collection)
 
-`tools/globus_esnet.py` (globus-sdk >= 4; on the laptop the conda env `/opt/miniconda3/envs/globus_env`) moves files
+`tools/globus_esnet.py` (a Python with globus-sdk >= 4) moves files
 larger than the 2 MiB IRI download cap. Login once: `login-url` prints a URL, the user logs in and pastes the code to
 `login-code <CODE>`; refresh tokens go to `~/.globus/mu2efastsim_transfer_tokens.json` (mode 600). Then `ls esnet /`,
 `search <text>`, `transfer <src> <path> <dst> <path> [--recursive]`, `task <id> --wait 600`. The ESnet collection

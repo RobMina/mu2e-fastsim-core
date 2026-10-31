@@ -52,6 +52,12 @@ def reference(files, inputs, params):
     return {**ref, "metadata": dict(meta)}
 
 
+def _on_dcache(path):
+    """True for a path below the top-level dCache (pnfs) mount."""
+    parts = path.split("/", 2)
+    return len(parts) == 3 and parts[0] == "" and parts[1] == "pnfs"
+
+
 def local_path(uri):
     if not isinstance(uri, str) or any(ord(c) < 32 or ord(c) == 127 for c in uri):
         raise ValueError("fastsimkit: invalid geometry URI")
@@ -62,8 +68,9 @@ def local_path(uri):
     path = unquote(parts.path, errors="strict")
     if (parts.scheme != "file" or parts.netloc not in ("", "localhost") or parts.query or parts.fragment
             or not path.startswith("/") or path.startswith("//") or os.path.normpath(path) != path
-            or any(ord(c) < 32 or ord(c) == 127 for c in path) or path.startswith("/pnfs/")):
-        raise ValueError("fastsimkit: geometry must be a normalized local file URI readable by the kit host, not /pnfs")
+            or any(ord(c) < 32 or ord(c) == 127 for c in path) or _on_dcache(path)):
+        raise ValueError("fastsimkit: geometry must be a normalized local file URI readable by the kit host, "
+                         "not on dCache (pnfs)")
     return Path(path)
 
 

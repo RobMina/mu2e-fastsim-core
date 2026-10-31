@@ -1,5 +1,9 @@
 """Slurm over SSH: an endpoint for a Slurm site reached by ``ssh <host>`` with a key (UVA Rivanna/Afton).
 
+Site settings come from arguments or the environment, never from the package: ``host`` ($FASTSIMKIT_SLURM_HOST),
+``account`` ($FASTSIMKIT_SLURM_ACCOUNT) and ``workdir`` ($FASTSIMKIT_WORKDIR, else <FASTSIMKIT_SCRATCH>/kit); a
+missing one raises mu2efastsim.site.SiteConfigError naming the variable when it is first needed.
+
 Every remote action is one ssh command through ``runner`` (injectable for tests). Job layout on the site:
 ``<workdir>/<handle>/{job.sh, out/, slurm.out}``; the job script writes its results under ``out/``. The job id is kept
 in a local state dir, so a restarted caller finds its jobs. ``status`` asks ``squeue`` first and ``sacct`` once the job
@@ -19,6 +23,8 @@ import tarfile
 import time
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
+
+from mu2efastsim import site
 
 from . import EndpointError, JobRecord, JobStatus, Resources, StateDir, spec_sha
 from .submission import IntentStore, durable_json, handle_key, read_json, request_digest, submission_lock
@@ -55,19 +61,35 @@ def map_state(site_state: str, exit_code: str = "0:0") -> str:
 
 
 class SlurmSSHEndpoint:
-    def __init__(self, host: str = "uva-hpc", account: str = "ldmxuva", partition: str = "gpu",
-                 workdir: str = "/scratch/ram2aq/mu2efastsim/kit", state_dir: str | Path = "~/.mu2efastsim/uva",
+    def __init__(self, host: str | None = None, account: str | None = None, partition: str = "gpu",
+                 workdir: str | None = None, state_dir: str | Path = "~/.mu2efastsim/uva",
                  max_su_per_job: float = 500.0, runner: Optional[Runner] = None, name: str = "uva",
                  su_per_gpu_h: float = 53.0, su_per_core_h: float = 0.5, timeout_s: float = 120.0,
                  stream_runner=None):
-        self.name, self.host, self.account, self.partition = name, host, account, partition
-        self.workdir = workdir.rstrip("/")
+        self.name, self._host, self._account, self.partition = name, host, account, partition
+        self.workdir = (workdir or site.setting("FASTSIMKIT_WORKDIR") or site.scratch() + "/kit").rstrip("/")
         self.state = StateDir(Path(state_dir).expanduser())
         self.max_su_per_job = max_su_per_job
         self.su_rates = (su_per_gpu_h, su_per_core_h)
-        self.run = runner or ssh_runner(host)
+        self.run = runner or (lambda cmd, stdin, timeout: ssh_runner(self.host)(cmd, stdin, timeout))
         self.timeout_s = timeout_s
         self.stream_runner = stream_runner   # tests: (source_argv, host, remote_cmd, timeout) -> node md5 output
+
+    @property
+    def host(self) -> str:
+        return self._host or site.slurm_host()
+
+    @host.setter
+    def host(self, value: str) -> None:     # explicit retarget: overrides $FASTSIMKIT_SLURM_HOST for this endpoint
+        self._host = value
+
+    @property
+    def account(self) -> str:
+        return self._account or site.slurm_account()
+
+    @account.setter
+    def account(self, value: str) -> None:  # overrides $FASTSIMKIT_SLURM_ACCOUNT for this endpoint
+        self._account = value
 
     # -- helpers -------------------------------------------------------------------------------------------------
     def _sh(self, script: str, stdin: Optional[bytes] = None, timeout: Optional[float] = None) -> str:

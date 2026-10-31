@@ -1,19 +1,19 @@
 #!/bin/bash
 #SBATCH -J m2fs_kpp
-#SBATCH -A ldmxuva
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH -c 16
 #SBATCH --mem=96G
 #SBATCH -t 01:00:00
-#SBATCH -o /scratch/%u/mu2efastsim/kpp/slurm-%j.out
 # UVA: CRV reco checks on real KPP data (run 124155, CrvRecoTableDumper reference) inside the SIF on one A100:
 #   V-R3 (reco-vr3 --jax: JAX coincidence finder vs stock clusters) on GPU and on CPU as a control;
 #   V-R2 (reco-vr2jax: JAX pulse fit vs stock pulses) on GPU.
 # The reference file is Mu2e-internal: it is streamed into the job by core/uva/kpp_stream_uva.sh (srun --overlap into
-# tmpfs /tmp/crvfs_kpp_<pid>), never written to /scratch, and deleted on exit. Outputs (stats only) go to an unsynced
+# node tmpfs, crvfs_kpp_j<job>_<pid>), never written to the cluster scratch, and deleted on exit. Outputs (stats only) go to an unsynced
 # dir that the stream script copies back to FNAL and removes. Submit only through kpp_stream_uva.sh.
-F=${M2FS_UVA:-/scratch/$USER/mu2efastsim}
+# Site settings come from the environment (site.env.example): FASTSIMKIT_SCRATCH (work area on the cluster), the
+# account at submission (sbatch -A "$FASTSIMKIT_SLURM_ACCOUNT"), and the log path (sbatch -o "$FASTSIMKIT_SCRATCH/kpp/slurm-%j.out").
+F=${M2FS_UVA:-${FASTSIMKIT_SCRATCH:?set FASTSIMKIT_SCRATCH (work area on the cluster scratch; sbatch --export=ALL,FASTSIMKIT_SCRATCH=...)}}
 SIF=${SIF:-$F/mu2efastsim.sif}; NAME=${NAME:-crvreco_data.124155_000001.root}
 umask 077
 O=$F/kpp/kpp_$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-none}; mkdir -p $O

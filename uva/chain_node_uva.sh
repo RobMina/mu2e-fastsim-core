@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH -J m2fs_chain
-#SBATCH -A ldmxuva
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:8
 #SBATCH -C a100_80gb
@@ -8,7 +7,6 @@
 #SBATCH -c 128
 #SBATCH --mem=900G
 #SBATCH -t 01:00:00
-#SBATCH -o /scratch/%u/mu2efastsim/kpp/slurm-%j.out
 # UVA production template: the fast CRV chain (runchain: transport -> tier 1b -> photons -> SiPM -> waveforms ->
 # pulses -> coincidences) on a whole 8 x A100-80 node, one process per GPU, response AND reco on the GPU (unlike
 # Aurora, where reco ran on the CPU), 16 cores per process. Code: the SIF's Python stack with a fresh git clone of
@@ -16,11 +14,13 @@
 # Inputs (CRY gen tables, tier-1b library, CRVCalib/CRVPhoton CSVs, GDML) are streamed by kpp_stream_uva.sh into
 # node tmpfs; the v6_0 lookup tables come from CVMFS into tmpfs; all deleted on exit (cleanup.txt). Per-shard JSONs
 # and the merge go back to the GPVM. usage (laptop, UVA network):
-#   JOB=chain_node_uva.sh EXPORTS=NPROC=8,RUNS=4 kpp_stream_uva.sh mu2egpvm03 mu2e/fastsim_uva <files...>
+#   JOB=chain_node_uva.sh EXPORTS=NPROC=8,RUNS=4 kpp_stream_uva.sh "$FASTSIMKIT_FNAL_HOST" mu2e/fastsim_uva <files...>
 # Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v4 (default; stream library.root, the topology sidecar and
 # templates_v3.npz, each with its .json; T1B=strict_v3 the same files), T1B=strict_v2 (templates_v2.npz instead) or T1B=legacy (stream
 # lib_prod_as_20files.root; runs with --library, the sampling before 2026-10-28).
-F=${M2FS_UVA:-/scratch/$USER/mu2efastsim}
+# Site settings come from the environment (site.env.example): FASTSIMKIT_SCRATCH (work area on the cluster), the
+# account at submission (sbatch -A "$FASTSIMKIT_SLURM_ACCOUNT"), and the log path (sbatch -o "$FASTSIMKIT_SCRATCH/kpp/slurm-%j.out").
+F=${M2FS_UVA:-${FASTSIMKIT_SCRATCH:?set FASTSIMKIT_SCRATCH (work area on the cluster scratch; sbatch --export=ALL,FASTSIMKIT_SCRATCH=...)}}
 SIF=${SIF:-$F/mu2efastsim.sif}; NP=${NPROC:-8}; MAXEV=${MAXEV:-}; REF=${REF:-main}
 umask 077
 O=$F/kpp/chain_$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-none}; mkdir -p $O

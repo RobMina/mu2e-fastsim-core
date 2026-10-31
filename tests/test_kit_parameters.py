@@ -7,10 +7,12 @@ import pytest
 from mu2efastsim.endpoints.kit import FastsimKit, TASKS
 from mu2efastsim.endpoints.parameters import validate
 
+pytestmark = pytest.mark.usefixtures("site_env")   # placeholder site variables (tests/conftest.py)
+
 
 class Endpoint:
     name = "eaf"
-    fnal_data = "/exp/mu2e/data/test/crv_fastsim"
+    fnal_data = "/path/to/fnal/data/test/crv_fastsim"
 
     def __init__(self):
         self.submissions = []
@@ -72,8 +74,8 @@ def test_artifacts_rejected_before_handlers(kit, monkeypatch, task, field):
     ("crv_response", {"speed_EX": 0}), ("crv_response", {"atten_T10": -1}),
     ("crv_response", {"cross_talk": 1.01}), ("crv_response", {"wf_noise": -1}),
     ("beam_point", {"repeat": 0.5}), ("beam_point", {"muons": float("inf")}),
-    ("beam_point", {"geom": "/exp/mu2e/../elsewhere/a.txt"}),
-    ("beam_point", {"geom": "${AUDIT_MARKER}.txt"}), ("beam_point", {"geom": "/tmp/a.txt"}),
+    ("beam_point", {"geom": "/path/to/fnal/../elsewhere/a.txt"}),
+    ("beam_point", {"geom": "${AUDIT_MARKER}.txt"}), ("beam_point", {"geom": "/elsewhere/a.txt"}),
 ])
 def test_task_domains(kit, task, kwargs):
     if task not in TASKS:

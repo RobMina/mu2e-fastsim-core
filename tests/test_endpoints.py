@@ -11,6 +11,8 @@ from mu2efastsim.endpoints import EndpointError, Resources
 from mu2efastsim.endpoints.kit import FastsimKit
 from mu2efastsim.endpoints.slurm_ssh import SlurmSSHEndpoint, map_state, su_estimate
 
+pytestmark = pytest.mark.usefixtures("site_env")   # placeholder site variables (tests/conftest.py)
+
 
 class FakeSite:
     """Answers the shell snippets SlurmSSHEndpoint sends, from an in-memory queue."""
@@ -58,7 +60,7 @@ class FakeSite:
 @pytest.fixture
 def site_ep(tmp_path):
     site = FakeSite()
-    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/scratch/u/kit", max_su_per_job=100)
+    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/path/to/scratch/kit", max_su_per_job=100)
     return site, ep
 
 
@@ -81,7 +83,7 @@ def test_submit_status_fetch(site_ep, tmp_path):
     site, ep = site_ep
     rec = ep.submit("p1.bench", "echo hi\n", Resources(minutes=30))
     script = site.scripts[rec.job_id]
-    assert "#SBATCH -A ldmxuva" in script and "#SBATCH --gres=gpu:a100:1" in script and script.endswith("echo hi\n")
+    assert "#SBATCH -A test_account" in script and "#SBATCH --gres=gpu:a100:1" in script and script.endswith("echo hi\n")
     assert ep.status("p1.bench").state == "working"
     site.finish(rec.job_id)
     st = ep.status("p1.bench")
@@ -115,14 +117,14 @@ def test_cancel_and_failure(site_ep):
 
 def test_kit_contract_roundtrip(site_ep, tmp_path):
     site, ep = site_ep
-    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/scratch/u/m.sif")
+    kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/path/to/scratch/m.sif")
     p = {"task": "reco_bench", "events": 200000, "seed": 7}
     assert kit.check("c1.bench", p, [], [])["ok"]
     assert not kit.check("c1.bench", {"task": "nope"}, [], [])["ok"]
     assert not kit.check("c1.bench", {"task": "reco_bench", "events": 1}, [], [])["ok"]
     assert kit.submit("c1.bench", p, [], []) == {"handle": "c1.bench"}
     jid = ep.state.get("c1.bench").job_id
-    assert "--max-events 200000" in site.scripts[jid] and "/scratch/u/m.sif" in site.scripts[jid]
+    assert "--max-events 200000" in site.scripts[jid] and "/path/to/scratch/m.sif" in site.scripts[jid]
     s = kit.status("c1.bench")
     assert s["state"] == "working" and s["poll_ms"] > 0 and set(s) == {"state", "message", "poll_ms", "progress"}
     with pytest.raises(ValueError):
@@ -161,7 +163,7 @@ def test_table_tasks_stage_and_delete(site_ep, tmp_path):
         body, _ = kit.render(params)
         assert "cvmfsget" in body and "trap 'rm -rf" in body and "cleanup.txt" in body
         code = "\n".join(line.split("#")[0] for line in body.splitlines())
-        assert "chmod 700" in code and "/scratch" not in code   # tables never on scratch
+        assert "chmod 700" in code and "/path/to/scratch" not in code   # tables never on scratch
 
 
 def test_results_require_cleanup_record_for_table_tasks(site_ep, tmp_path):

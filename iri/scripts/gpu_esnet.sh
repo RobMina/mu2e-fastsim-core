@@ -1,13 +1,13 @@
 #!/bin/bash
 # ESnet GPU pod (gpu image): JAX device check, matmul fp32/fp64, CRV response bench with the real v6_0 tables
-# (pod /tmp, deleted on exit), synthetic reco chain, R5/P6 repro (npz < 2 MiB). Outputs in /tmp, small JSON to cwd.
+# (pod tmp, deleted on exit), synthetic reco chain, R5/P6 repro (npz < 2 MiB). Outputs in a temporary dir, small JSON to cwd.
 O=$PWD; NROWS=${NROWS:-1000000}; NSIPMS=${NSIPMS:-200000}; NEV=${NEV:-20000}
 echo "== start $(date -u +%FT%TZ) host $(hostname) job ${JOB_ID:-none}"; cat /opt/mu2e-fastsim/VERSION
 echo "cpus $(nproc) quota $(cat /sys/fs/cgroup/cpu.max 2>/dev/null) mem $(cat /sys/fs/cgroup/memory.max 2>/dev/null)"
 env | grep -E '_VISIBLE_DEVICES|^NVIDIA' | sort
 nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv 2>&1 || ls -l /dev/nvidia*
-L=/tmp/crvfs_lookup_$$; mkdir -p $L; chmod 700 $L
-trap 'rm -rf $L; echo "deleted $L ($(ls $L 2>/dev/null | wc -l) files left)"' EXIT
+L=${TMPDIR:-/tmp}/crvfs_lookup_$$; mkdir -p $L; chmod 700 $L; T=$(mktemp -d)
+trap 'rm -rf $L $T; echo "deleted $L ($(ls $L 2>/dev/null | wc -l) files left)"' EXIT
 trap 'exit 143' TERM INT
 cd /opt/mu2e-fastsim
 python - <<'PY'
@@ -28,8 +28,8 @@ echo "==== photons, real 3200_0 ($NROWS rows)"; $B --table 3200_0 --rows $NROWS 
 echo "==== SiPM, real photon map ($NSIPMS SiPMs)"; $B --stage sipm --photon-map $L/photonMap.root --sipms $NSIPMS --numpy-sipms 0 --seed 20261120 2>&1 | tail -1
 for s in chain pulses coinc; do
   echo "==== reco-bench synthetic --stage $s ($NEV events)"
-  python -m crvfastsim reco-bench synthetic --stage $s --max-events $NEV --outdir /tmp/rb_$s 2>&1 | tail -1; cp /tmp/rb_$s/*.json $O/ 2>/dev/null
+  python -m crvfastsim reco-bench synthetic --stage $s --max-events $NEV --outdir $T/rb_$s 2>&1 | tail -1; cp $T/rb_$s/*.json $O/ 2>/dev/null
 done
 echo "==== R5/P6 reco-repro (1000 events)"
-python -m crvfastsim reco-repro synthetic --max-events 1000 --outdir /tmp/rp 2>&1 | tail -1; cp /tmp/rp/* $O/
-rm -rf /tmp/rb_* /tmp/rp; ls -la $O; echo "== done $(date -u +%FT%TZ)"; echo exit=0
+python -m crvfastsim reco-repro synthetic --max-events 1000 --outdir $T/rp 2>&1 | tail -1; cp $T/rp/* $O/
+rm -rf $T; ls -la $O; echo "== done $(date -u +%FT%TZ)"; echo exit=0

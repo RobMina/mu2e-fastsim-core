@@ -1,6 +1,5 @@
 #!/bin/bash
 #PBS -N m2fs_kpp
-#PBS -A GenesisHackathonOct26
 #PBS -q capacity
 #PBS -l select=1
 #PBS -l place=scatter
@@ -12,10 +11,10 @@
 #   V-R2 (reco-vr2jax: JAX pulse fit vs stock pulses) and V-R3 (reco-vr3 --jax: JAX coincidence finder vs stock
 #   clusters), on one tile, with the same commands on the node CPU as a control.
 # The reference file is Mu2e-internal: it is NOT staged on Flare. The submitter streams it into the job over ssh
-# (the job waits for $INBOX/ready); it lives only in tmpfs /tmp/crvfs_kpp_<pid> on the compute node and is deleted
+# (the job waits for $INBOX/ready); it lives only in node tmpfs (crvfs_kpp_<pid>) on the compute node and is deleted
 # on exit. Submit and stream with core/aurora/kpp_stream.sh (run on a GPVM, through the Aurora ssh master).
-PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
-F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
+# Site settings (site.env.example): submit with qsub -A "$ALCF_PROJECT" -v M2FS_FLARE=<work area on Flare>,...
+F=${M2FS_FLARE:?set M2FS_FLARE (work area on Flare; qsub -v M2FS_FLARE=...)}
 FL=$F; V=$FL/venv/bin/python; CODE=$FL/code; NAME=${NAME:-crvreco_data.124155_000001.root}
 umask 077   # outputs describe Mu2e data: private to the user on the shared project file system
 O=$FL/bench/kpp_$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O; chmod 700 $O
@@ -25,7 +24,7 @@ cd $CODE && git pull -q --ff-only && git submodule update -q --init --recursive
 echo "host=$(hostname) job=${PBS_JOBID:-none} out=$O"; git log -1 --format="umbrella %h %s"; git submodule status
 export LD_LIBRARY_PATH=$FL/venv/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} MU2E_SEARCH_PATH=$FL/offline_data
 export JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false MPLBACKEND=Agg ZE_FLAT_DEVICE_HIERARCHY=FLAT
-L=/tmp/crvfs_kpp_$$; mkdir -p $L; chmod 700 $L
+L=${TMPDIR:-/tmp}/crvfs_kpp_$$; mkdir -p $L; chmod 700 $L
 trap 'rm -rf $L; echo "deleted $L"' EXIT
 trap 'exit 143' TERM INT
 echo "$(hostname) $L $O" > $FL/bench/kpp_inbox_${PBS_JOBID%%.*}   # read by kpp_stream.sh

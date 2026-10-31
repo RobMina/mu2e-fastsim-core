@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import EndpointError, Resources
+from mu2efastsim import site
 from .slurm_ssh import su_estimate
 from . import artifacts
 from .snapshots import prepare_code
@@ -68,7 +69,7 @@ GEN_SETS = {0: ("g4ref_v1_tables/gen.001400_{:08d}.root", tuple(range(1, 21))), 
                 tuple(s for s in range(2001, 2101) if s not in CRYGEN_V1_MISSING)),
             2: ("crygen_run1a_v1_tables/gen.001400_{:08d}.root", tuple(range(3001, 3021))),   # default CRY, Run 1A world
             3: ("crygen_run2_v1_tables/gen.001400_{:08d}.root", tuple(range(4001, 4021)))}    # default CRY, Run 2 world
-# sizes for the input-wait budget (bytes, 2026-10-23 on /exp): per gen file and generated events per file, per set
+# sizes for the input-wait budget (bytes, 2026-10-23, FNAL storage): per gen file and generated events per file, per set
 GEN_FILE = {0: (2.82e6, 50_000), 1: (5.60e7, 1_000_000), 2: (5.67e7, 1_000_000), 3: (5.66e7, 1_000_000)}
 SMALL_BYTES = 3.9e6                                         # CSVs + GDML
 WAIT_FLOOR_S, WAIT_SLACK_S, STREAM_MBPS = 1800, 600, 4.0
@@ -134,11 +135,20 @@ echo '{}' > "$M2FS_OUT/metrics.json"
 
 
 class FnalSource:
-    """Where the Mu2e-internal inputs live: read with `ssh <host> cat`, never copied to the kit host's disk."""
+    """Where the Mu2e-internal inputs live: read with `ssh <host> cat`, never copied to the kit host's disk.
+    ``host`` defaults to $FASTSIMKIT_FNAL_HOST and ``root`` to mu2efastsim.site.crv_data()."""
 
-    def __init__(self, host: str = "mu2egpvm03", root: str = "/exp/mu2e/data/users/ram2aq/crv_fastsim", runner=None):
-        self.host, self.root = host, root.rstrip("/")
+    def __init__(self, host: str | None = None, root: str | None = None, runner=None):
+        self._host, self.root = host, (root or site.crv_data()).rstrip("/")
         self.runner = runner
+
+    @property
+    def host(self) -> str:
+        return self._host or site.fnal_host()
+
+    @host.setter
+    def host(self, value: str) -> None:     # explicit retarget: overrides $FASTSIMKIT_FNAL_HOST for this source
+        self._host = value
 
     def path(self, rel: str) -> str:
         return f"{self.root}/{rel}"
@@ -272,9 +282,8 @@ class ChainPoint:
                  background: bool = True, poll_s: float = 20.0, streams: int = 2):
         import os
         self.kit, self.ep = kit, kit.ep
-        self.source = source or FnalSource(os.environ.get("FASTSIMKIT_FNAL_HOST", "mu2egpvm03"),
-                                           os.environ.get("FASTSIMKIT_FNAL_DATA", "/exp/mu2e/data/users/ram2aq/crv_fastsim"))
-        self.code = code or os.environ.get("FASTSIMKIT_CODE", "/scratch/ram2aq/mu2efastsim/chain_code_kit")
+        self.source = source or FnalSource(site.fnal_host(), site.crv_data())
+        self.code = code or site.setting("FASTSIMKIT_CODE") or site.scratch() + "/chain_code_kit"
         self.code_ref = os.environ.get("FASTSIMKIT_CODE_REF", code_ref)
         self.background, self.poll_s = background, poll_s
         # parallel file streams per sub-job. Each stream is an ssh channel to the FNAL host and one to the endpoint,

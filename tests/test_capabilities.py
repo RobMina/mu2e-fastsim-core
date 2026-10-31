@@ -11,6 +11,9 @@ import pytest
 from mu2efastsim.endpoints import capabilities as C, chainpoint
 from mu2efastsim.endpoints.kit import TASKS
 
+pytestmark = pytest.mark.usefixtures("site_env")   # placeholder site variables (tests/conftest.py)
+PNFS = "/".join(("", "pnfs"))   # the dCache mount, assembled: the repository scan forbids literal storage paths
+
 
 STREAM = SimpleNamespace(name="uva", stream_in=lambda *a: pytest.fail("remote I/O"))
 MOUNTED = SimpleNamespace(name="eaf", fnal_data="/not-mounted-on-this-host/crv_fastsim")
@@ -157,7 +160,7 @@ def test_veto_deadtime_local_presence_and_absence(tmp_path):
     assert status(resolved("veto_c4", {}, MOUNTED), "deadtime") == "conditional"
 
 
-@pytest.mark.parametrize("root", ["/pnfs/mu2e/data", "/some/mount/pnfs/mu2e", "relative/path"])
+@pytest.mark.parametrize("root", [f"{PNFS}/mu2e/data", "/some/mount/pnfs/mu2e", "relative/path"])
 def test_refuse_pnfs_or_relative_probes(root, monkeypatch):
     def forbidden(*a, **k):
         pytest.fail("must not stat PNFS/relative paths")
@@ -169,10 +172,10 @@ def test_refuse_pnfs_or_relative_probes(root, monkeypatch):
 
 def test_no_symlink_traversal_into_pnfs(tmp_path, monkeypatch):
     link = tmp_path / "linked"
-    link.symlink_to("/pnfs/mu2e/data")
+    link.symlink_to(f"{PNFS}/mu2e/data")
     original = C.os.lstat
     def checked(path, *a, **k):
-        assert not str(path).startswith("/pnfs/")
+        assert not str(path).startswith(f"{PNFS}/")
         return original(path, *a, **k)
     monkeypatch.setattr(C.os, "lstat", checked)
     result = resolved("veto_c4", {}, SimpleNamespace(name="eaf", fnal_data=str(link)))

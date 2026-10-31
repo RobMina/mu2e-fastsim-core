@@ -1,17 +1,17 @@
 #!/bin/bash
 #SBATCH -J m2fs_valid
-#SBATCH -A ldmxuva
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH -c 16
 #SBATCH --mem=96G
 #SBATCH -t 01:30:00
-#SBATCH -o /scratch/%u/mu2efastsim/probe/slurm-%j.out
 # UVA: the fastsim inside the SIF on one A100, with the REAL CRVConditions v6_0 tables (copy-compute-delete: CVMFS
-# Stratum-1 -> tmpfs /tmp, deleted on exit, never on /scratch). Image checks, pytest, R5 GPU vs CPU, V4 photons and
+# Stratum-1 -> node tmpfs, deleted on exit, never on the cluster scratch). Image checks, pytest, R5 GPU vs CPU, V4 photons and
 # SiPM (JAX twin and fused device response vs the numpy ports, synthetic muon CrvSteps), real-table response bench.
-# usage: sbatch [--export=ALL,SIF=...,NEV=events] validate_uva.sh
-F=${M2FS_UVA:-/scratch/$USER/mu2efastsim}
+# usage: sbatch -A <account> -o <F>/probe/slurm-%j.out --export=ALL,FASTSIMKIT_SCRATCH=<F>[,SIF=...,NEV=events] validate_uva.sh
+# Site settings come from the environment (site.env.example): FASTSIMKIT_SCRATCH (work area on the cluster), the
+# account at submission (sbatch -A "$FASTSIMKIT_SLURM_ACCOUNT"), and the log path (sbatch -o "$FASTSIMKIT_SCRATCH/probe/slurm-%j.out").
+F=${M2FS_UVA:-${FASTSIMKIT_SCRATCH:?set FASTSIMKIT_SCRATCH (work area on the cluster scratch; sbatch --export=ALL,FASTSIMKIT_SCRATCH=...)}}
 SIF=${SIF:-$F/mu2efastsim.sif}; NEV=${NEV:-20000}
 umask 077
 O=$F/probe/valid_$(date +%Y%m%d_%H%M%S)_${SLURM_JOB_ID:-none}; mkdir -p $O

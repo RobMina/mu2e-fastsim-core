@@ -1,6 +1,5 @@
 #!/bin/bash
 #PBS -N m2fs_chain
-#PBS -A GenesisHackathonOct26
 #PBS -q debug
 #PBS -l select=1
 #PBS -l place=scatter
@@ -13,13 +12,13 @@
 # (--reco-cpu), 8 cores per process (0 and 52 reserved). Inputs: CRY gen tables (one per process, cycled), the tier-1b
 # library, CRVCalib/CRVPhoton CSVs, GDML: all streamed by kpp_stream.sh into tmpfs and deleted on exit (the lookup
 # tables come from CVMFS, also into tmpfs). Never on Flare; per-shard JSONs and the merge go back to the GPVM.
-# usage (from the laptop): EXTRA_V=NPROC=12,RUNS=1 kpp_stream.sh mu2egpvm03 chain_node_aurora.sh <files...>
+# usage (from the laptop): EXTRA_V=NPROC=12,RUNS=1 kpp_stream.sh "$FASTSIMKIT_FNAL_HOST" chain_node_aurora.sh <files...>
 # Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v4 (default; stream library.root, the topology sidecar and
 # templates_v3.npz, each with its .json; T1B=strict_v3 the same files), T1B=strict_v2 (templates_v2.npz instead) or T1B=legacy (stream
 # lib_prod_as_20files.root; runs with --library, the sampling before 2026-10-28).
 # (RUNS: space-separated files-per-process passes; qsub -v cannot carry spaces or commas, so set RUNSFILE instead)
-PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
-F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
+# Site settings (site.env.example): submit with qsub -A "$ALCF_PROJECT" -v M2FS_FLARE=<work area on Flare>,...
+F=${M2FS_FLARE:?set M2FS_FLARE (work area on Flare; qsub -v M2FS_FLARE=...)}
 FL=$F; V=$FL/venv/bin/python; CODE=$FL/code; NP=${NPROC:-12}; MAXEV=${MAXEV:-}
 [ -n "${RUNSFILE:-}" ] && RUNS=$(cat $RUNSFILE)
 umask 077
@@ -37,7 +36,7 @@ echo "host=$(hostname) job=${PBS_JOBID:-none} out=$O nproc=$NP maxev=${MAXEV:-al
 git log -1 --format="umbrella %h"; git -C $CRV log -1 --format="crv %h %s"
 export PYTHONPATH=$CRV:$CODE/core LD_LIBRARY_PATH=$FL/venv/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} MU2E_SEARCH_PATH=$FL/offline_data
 export JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false MPLBACKEND=Agg ZE_FLAT_DEVICE_HIERARCHY=FLAT
-L=/tmp/crvfs_chain_$$; mkdir -p $L; chmod 700 $L
+L=${TMPDIR:-/tmp}/crvfs_chain_$$; mkdir -p $L; chmod 700 $L
 trap 'rm -rf $L; echo "deleted $L"' EXIT
 trap 'exit 143' TERM INT
 echo "$(hostname) $L $O" > $FL/bench/kpp_inbox_${PBS_JOBID%%.*}

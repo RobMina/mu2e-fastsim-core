@@ -11,6 +11,8 @@ from mu2efastsim.endpoints import EndpointError, Resources
 from mu2efastsim.endpoints.eaf import EAFEndpoint, slice_of
 from mu2efastsim.endpoints.kit import FastsimKit
 
+pytestmark = pytest.mark.usefixtures("site_env")   # placeholder site variables (tests/conftest.py)
+
 
 class FakeHub:
     """Server life cycle in memory; `send` runs the typed line in a local bash, as the EAF terminal would.
@@ -166,7 +168,7 @@ def test_kit_renders_venv_runtime_for_eaf(tmp_path):
 
 def test_workdir_must_be_shared(tmp_path):
     with pytest.raises(EndpointError, match="shared"):
-        EAFEndpoint(workdir="/tmp/x", state_dir=tmp_path, hub_client=FakeHub())
+        EAFEndpoint(workdir="/elsewhere/x", state_dir=tmp_path, hub_client=FakeHub())
 
 
 def test_queue_order_keepalive_and_linger_stop(tmp_path):

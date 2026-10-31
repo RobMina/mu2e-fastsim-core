@@ -13,7 +13,7 @@ from crvfastsim import kit_uva as KU
 
 
 @pytest.mark.parametrize('config', [
-    '/tmp/settings.json', None, [], True, '{"schema":1,"schema":2}',
+    '/path/to/settings.json', None, [], True, '{"schema":1,"schema":2}',
     {'schema': 1, 'sipm': {'thermal_rate': 1}}, {'schema': 1, 'sipm': {'p1': 'nan'}},
     {'schema': 1, 'assets': {'calib': '$(INERT_SENTINEL)'}},
     {'schema': 1, 'waveform': {'single_pe_file': '${INERT_SENTINEL}'}},

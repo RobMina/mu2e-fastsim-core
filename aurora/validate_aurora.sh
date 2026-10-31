@@ -1,6 +1,5 @@
 #!/bin/bash
 #PBS -N m2fs_valid
-#PBS -A GenesisHackathonOct26
 #PBS -q capacity
 #PBS -l select=1
 #PBS -l place=scatter
@@ -10,12 +9,12 @@
 #PBS -o m2fs_valid.out
 # Aurora physics validation of the JAX kernels on Intel PVC against the numpy ports (no Offline on Aurora):
 #  V4 photons (JAX twin vs numpy port), V4 SiPM (JAX twin and fused device response vs numpy port), on synthetic muon
-#  CrvSteps (response.synthsteps) with the REAL v6_0 tables (CVMFS -> tmpfs /tmp, deleted on exit);
+#  CrvSteps (response.synthsteps) with the REAL v6_0 tables (CVMFS -> node tmpfs, deleted on exit);
 #  reco pytest (JAX vs numpy pulses, waveforms, coincidences incl. the oneAPI tier skip);
 #  R5/P6 reproducibility: reco-repro twice on PVC (bit-identical per seed) and CPU vs PVC (statistical).
 # usage: qsub [-v M2FS_FLARE=...,NEV=events,ONLY=reco] validate_aurora.sh   (ONLY=reco: skip the V4 response arms)
-PROJ=${PBS_ACCOUNT:-GenesisHackathonOct26}
-F=${M2FS_FLARE:-/lus/flare/projects/$PROJ/$USER/mu2efastsim}
+# Site settings (site.env.example): submit with qsub -A "$ALCF_PROJECT" -v M2FS_FLARE=<work area on Flare>,...
+F=${M2FS_FLARE:?set M2FS_FLARE (work area on Flare; qsub -v M2FS_FLARE=...)}
 FL=$F; V=$FL/venv/bin/python; CODE=$FL/code; NEV=${NEV:-20000}
 O=$FL/bench/valid_$(date +%Y%m%d_%H%M%S)_${PBS_JOBID%%.*}; mkdir -p $O
 exec > >(tee "$O/run.log") 2>&1
@@ -24,7 +23,7 @@ cd $CODE && git pull -q --ff-only && git submodule update -q --init --recursive
 echo "host=$(hostname) job=${PBS_JOBID:-none} out=$O"; git log -1 --format="umbrella %h %s"; git submodule status
 export LD_LIBRARY_PATH=$FL/venv/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} MU2E_SEARCH_PATH=$FL/offline_data
 export JAX_ENABLE_X64=1 XLA_PYTHON_CLIENT_PREALLOCATE=false MPLBACKEND=Agg ZE_FLAT_DEVICE_HIERARCHY=FLAT
-L=/tmp/crvfs_valid_$$; mkdir -p $L; chmod 700 $L
+L=${TMPDIR:-/tmp}/crvfs_valid_$$; mkdir -p $L; chmod 700 $L
 trap 'rm -rf $L; echo "deleted $L"' EXIT
 trap 'exit 143' TERM INT
 for f in LookupTable_6000_0 LookupTable_2370_1 LookupTable_3200_0 photonMap.root; do

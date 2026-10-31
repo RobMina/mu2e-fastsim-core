@@ -5,11 +5,11 @@ echo "== id"; id; echo "HOME=$HOME PWD=$PWD"
 echo "== cpu"; nproc; grep -m1 'model name' /proc/cpuinfo
 cat /sys/fs/cgroup/cpu.max 2>/dev/null
 echo "== memory"; grep -E 'MemTotal|MemAvailable' /proc/meminfo; cat /sys/fs/cgroup/memory.max 2>/dev/null
-echo "== disk"; df -h / /tmp /dev/shm /data/home/* /data/projects/* 2>/dev/null; mount | grep -E ' / | /tmp | /data' | head
+echo "== disk"; df -h 2>/dev/null; mount | grep -E ' / | /tmp | /data' | head
 echo "== gpu"; ls /dev/nvidia* 2>/dev/null || echo "no /dev/nvidia*"
 echo "== fuse/userns"; ls -l /dev/fuse 2>/dev/null || echo "no /dev/fuse"; cat /proc/sys/user/max_user_namespaces 2>/dev/null
 echo "== env (proxy, k8s, IRI)"; env | grep -i -E 'proxy|^KUBERNETES_SERVICE_HOST|_VISIBLE_DEVICES|^IRI|^JOB' | sort
-echo "== tmp write speed"; dd if=/dev/zero of=/tmp/ddtest bs=1M count=512 conv=fdatasync 2>&1 | tail -1; rm -f /tmp/ddtest
+echo "== tmp write speed"; t=${TMPDIR:-/tmp}/ddtest_$$; dd if=/dev/zero of=$t bs=1M count=512 conv=fdatasync 2>&1 | tail -1; rm -f $t
 echo "== efs write speed"; dd if=/dev/zero of="$PWD/ddtest" bs=1M count=64 conv=fdatasync 2>&1 | tail -1; rm -f "$PWD/ddtest"
 echo "== egress"
 python3 - <<'EOF'

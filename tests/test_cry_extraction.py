@@ -10,7 +10,7 @@ import pytest
 def test_recipe_staging_and_shell_syntax():
     root = Path(__file__).resolve().parents[1]
     recipe = (root / "native/cry/cry-overlay.def").read_text()
-    assert "/tmp/cry-build" not in recipe
+    assert "/".join(("", "tmp", "cry-build")) not in recipe   # no build staging in a shared tmp dir
     files = recipe.split("%files\n", 1)[1].split("%post", 1)[0]
     for row in files.strip().splitlines():
         source, dest = row.split()

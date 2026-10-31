@@ -17,8 +17,8 @@ CRV knobs may be omitted or set to the existing empty-string sentinel (nominal).
 time-constant domains, nonnegative scales/noise/yields, and [0,1] crosstalk are input
 sanity bounds, **not validated calibration ranges**. CRV `tables=all` requires an
 explicit positive event target; its current shell task has no default target for
-that set. It remains EAF-only. Beam geometry remains a restricted named file or
-`/exp/mu2e/...` path; this is not content-addressed FileRef support.
+that set. It remains EAF-only. Beam geometry remains a restricted named file or a path under
+`$FASTSIMKIT_GEOMETRY_PREFIX` (absolute paths are refused when it is unset); this is not content-addressed FileRef support.
 
 `describe()` preserves `params`, `metrics`, and `accepts_lists`, and adds
 `parameter_schema_version: 1` and `tasks`. Task descriptors contain parameter
@@ -75,11 +75,11 @@ requests without submissions/task records, the chain budget bypass, finite/count
 enum/cross-field rules, defaulted nominal CRV inputs, integral-float compatibility,
 beam/CRV delegate parity, descriptor coverage and safe shell-token placement.
 
-From the umbrella, with the laptop workspace venv:
+From the umbrella, with a Python environment that has the test dependencies:
 
 ```bash
 PYTHONPATH=core:crv:beam PYTHONDONTWRITEBYTECODE=1 \
-  /Users/rmina/mu2e/.venv/bin/python3 -m pytest -q -p no:cacheprovider --import-mode=importlib \
+  python3 -m pytest -q -p no:cacheprovider --import-mode=importlib \
   core/tests/test_kit_parameters.py core/tests/test_endpoints.py \
   core/tests/test_endpoint_eaf.py core/tests/test_chainpoint.py \
   crv/tests/test_kit_uva.py beam/tests/test_kit_uva.py
@@ -89,7 +89,7 @@ PYTHONPATH=core:crv:beam PYTHONDONTWRITEBYTECODE=1 \
 Result: **199 passed, 3 skipped**. The macOS host lacks `setsid`, so three existing
 local EAF process tests skip. Five existing fork-from-multithreaded-process warnings
 come from the channel-slot concurrency test. The isolated publication worktrees on
-mu2egpvm02 (ana 2.8.0 / Python 3.12), based on current published core/CRV/umbrella
+a Mu2e GPVM (ana 2.8.0 / Python 3.12), based on current published core/CRV/umbrella
 heads rather than the dirty shared checkout, pass **202 tests with no skips**.
 These are mocked/local process tests, not live EAF or Slurm jobs.
 

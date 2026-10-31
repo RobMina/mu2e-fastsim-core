@@ -228,7 +228,7 @@ def test_bad_refs_fail_before_endpoint_use(tmp_path, bad_ref):
     assert ep.calls == []
 
 
-@pytest.mark.parametrize("base", ["relative", "/", "/tmp/../base", "/tmp/base/", "/tmp/a\nb", "//tmp/base"])
+@pytest.mark.parametrize("base", ["relative", "/", "/srv/../base", "/srv/base/", "/srv/a\nb", "//srv/base"])
 def test_bad_paths_fail_before_endpoint_use(base):
     ep = LocalEndpoint()
     with pytest.raises(ValueError):
@@ -276,7 +276,7 @@ def test_bad_acknowledgements_fail_closed(tmp_path, repositories, alter):
 
 def test_guard_rejects_bad_manifest_without_endpoint():
     with pytest.raises(ValueError):
-        snapshots.code_guard({"path": "/tmp/not-a-snapshot"})
+        snapshots.code_guard({"path": "/srv/not-a-snapshot"})
 
 
 @pytest.mark.parametrize("modules", [(), ("beam",), ("core", "core"), "core", ({"core": 1},)])

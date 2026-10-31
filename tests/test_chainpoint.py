@@ -13,6 +13,8 @@ from mu2efastsim.endpoints import chainpoint as CP
 from mu2efastsim.endpoints.kit import FastsimKit
 from mu2efastsim.endpoints.slurm_ssh import SlurmSSHEndpoint
 
+pytestmark = pytest.mark.usefixtures("site_env")   # placeholder site variables (tests/conftest.py)
+
 
 class Site:
     """Fake UVA: sbatch, squeue/sacct, cat of job files, srun --overlap steps, tar of out/."""
@@ -79,12 +81,12 @@ class Site:
         self.state[jid] = "RUNNING"
         lib = f"/dev/shm/crvfs_lib_u_{node}"
         have = "have" if f"{lib}/ready" in self.node_files else "need"
-        self.files[f"{ep_dir}/inbox"] = f"{node} /tmp/crvfs_kit_j{jid}_1 {lib} {have}\n"
+        self.files[f"{ep_dir}/inbox"] = f"{node} /node/tmp/crvfs_kit_j{jid}_1 {lib} {have}\n"
 
 
 class Source(CP.FnalSource):
     def __init__(self):
-        super().__init__("gpvm", "/exp/data")
+        super().__init__("gpvm", "/path/to/fnal/data")
         self.data = {}
 
     def md5(self, rel):
@@ -107,16 +109,16 @@ def make(tmp_path, cap=500.0):
     streamed = []
 
     def stream_runner(src, host, remote, timeout):
-        rel = src[-1].split("/exp/data/", 1)[1].strip("'")
+        rel = src[-1].split("/path/to/fnal/data/", 1)[1].strip("'")
         dest = remote.split("cat > ")[1].split()[0].strip("'\"")
         streamed.append((rel, dest))
         return hashlib.md5(rel.encode()).hexdigest() + " " + dest
 
-    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/scratch/u/kit", max_su_per_job=cap,
+    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/path/to/scratch/kit", max_su_per_job=cap,
                           stream_runner=stream_runner)
     kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
     from mu2efastsim.endpoints.chainpoint import ChainPoint
-    kit._cp = ChainPoint(kit, source=Source(), code="/scratch/u/code", background=False)
+    kit._cp = ChainPoint(kit, source=Source(), code="/path/to/scratch/code", background=False)
     site.kit = kit
     return site, ep, kit, streamed
 
@@ -159,7 +161,7 @@ def test_fanout_stream_merge(tmp_path):
     assert names == sorted(list(CP.TIER1B_SETS["strict_v4"][1]) + ["crvcalib_sim_best_v1_5_run1400.csv",
                      "crvphoton_sim_best_v1_5_run1400.csv", "mu2e_extracted_v04.gdml",
                      "gen.001400_00000019.root", "gen.001400_00000020.root"])
-    assert all(d.startswith(f"/tmp/crvfs_kit_j{jobs[0]}_1/") for r, d in streamed if not r.startswith("tier1b_"))
+    assert all(d.startswith(f"/node/tmp/crvfs_kit_j{jobs[0]}_1/") for r, d in streamed if not r.startswith("tier1b_"))
     assert any("touch" in c and "/ready" in c for c in site.cmds)
     for j, k in zip(jobs[1:], (1, 2)):           # same node: the library is already there
         site.start(j, ep.state.get(f"pt1.j{k}").remote_dir)
@@ -214,7 +216,7 @@ def test_body_is_valid_bash_and_keeps_inputs_off_disk(tmp_path):
     r = subprocess.run(["bash", "-n"], input=script.encode(), capture_output=True)
     assert r.returncode == 0, r.stderr.decode()
     code = "\n".join(line.split("#")[0] for line in body.splitlines())
-    assert "/scratch" not in code.replace("/scratch/u/code", "") and "--seed 1007" in body
+    assert "/path/to/scratch" not in code.replace("/path/to/scratch/code", "") and "--seed 1007" in body
     assert res.gpus == 1 and res.minutes == 45
 
 
@@ -652,7 +654,7 @@ def test_native_ready_cache_corruption_cancels_without_regeneration(tmp_path, mo
     kit.submit("nativecache", {**NATIVE, "shards": 1}, [], [])
     job = ep.state.get("nativecache.j0").job_id
     site.start(job, ep.state.get("nativecache.j0").remote_dir)
-    site.node_files[f"/tmp/crvfs_kit_j{job}_1/ready"] = "ready"
+    site.node_files[f"/node/tmp/crvfs_kit_j{job}_1/ready"] = "ready"
     monkeypatch.setattr(CP.artifacts, "verify_cache", lambda *a: False)
     kit.status("nativecache")
     assert site.state[job] == "CANCELLED" and not streamed

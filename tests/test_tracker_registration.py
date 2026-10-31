@@ -8,6 +8,8 @@ from mu2efastsim.endpoints import chainpoint
 from mu2efastsim.endpoints.kit import FastsimKit, TASKS
 from mu2efastsim.endpoints.parameters import schema, validate
 
+pytestmark = pytest.mark.usefixtures("site_env")   # placeholder site variables (tests/conftest.py)
+
 
 def test_tracker_schema_is_dependency_free():
     names = ("sample", "shard", "seed")
@@ -30,7 +32,7 @@ def test_tracker_routes_labels_and_uncertainty(tmp_path):
     assert desc["metrics"]["digitization_s"]["unit"] == "s"
     assert not desc["metrics"]["fit_event_fraction_se"]["uncertainty"]["gp_observation_noise"]
     params = {"task": "tracker_point", **TASKS["tracker_point"].defaults}
-    for ep, wanted in [(SimpleNamespace(name="eaf", fnal_data="/exp/root/crv_fastsim"), "mounted"),
+    for ep, wanted in [(SimpleNamespace(name="eaf", fnal_data="/path/to/fnal/crv_fastsim"), "mounted"),
                        (SimpleNamespace(name="uva", stream_in=lambda: None), "streaming"),
                        (SimpleNamespace(name="unknown"), "unavailable")]:
         cap = C.resolve("tracker_point", params, ep, TASKS, chainpoint)
