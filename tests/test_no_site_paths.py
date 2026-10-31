@@ -40,6 +40,8 @@ _START = r"(?:(?<=://)|(?<![\w.~}$\-/]))"     # start of a path, including right
 SITE_PATH = re.compile(_START + r"/(?:" + "|".join(_PREFIXES) + r")(?=/|\b)")
 # Named directories under /tmp (a bare /tmp, ${TMPDIR:-/tmp} or tempfile is fine).
 TMP_DIR = re.compile(_START + r"/tmp/[A-Za-z0-9_]")
+# Home-relative paths to ordinary directories (a personal layout); hidden tool state such as ~/.mu2efastsim is fine.
+HOME_DIR = re.compile(r"~/(?!\.)[A-Za-z0-9_]")
 
 SELF = Path(__file__).resolve()
 
@@ -80,7 +82,7 @@ def _violations():
         if text is None:
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
-            for rx in (USER_NAMES, SITE_PATH, TMP_DIR):
+            for rx in (USER_NAMES, SITE_PATH, TMP_DIR, HOME_DIR):
                 m = rx.search(line)
                 if m:
                     bad.append(f"{path.relative_to(ROOT)}:{lineno}: {m.group(0)!r} in {line.strip()[:120]}")
@@ -89,6 +91,7 @@ def _violations():
 
 
 def test_patterns_catch_what_they_should():
+    assert HOME_DIR.search("cd ~/mu2e/x") and not HOME_DIR.search("~/.mu2efastsim/kit")
     for s in ("/exp/mu2e/data/x", "cd /pnfs/mu2e", "'/scratch/abc'", "/lus/eagle/projects/x", "x=/home/u",
               "/Users/someone", "/project/area", "file:///pnfs/x"):
         assert SITE_PATH.search(s), s
