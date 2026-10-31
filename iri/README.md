@@ -1,4 +1,4 @@
-# IRI job drivers (ALCF Polaris, ESnet East)
+# IRI job drivers (ALCF Polaris)
 
 Jobs go to Polaris through the ALCF IRI API (`https://api.alcf.anl.gov`), with the genesis skill `amsc-skills/iri-api`
 scripts ([AI-ModCon/genesis-skills](https://github.com/AI-ModCon/genesis-skills)) and a Python with globus-sdk. Read
@@ -67,64 +67,18 @@ $IRI_PY $IRI/scripts/token_manager.py ensure --facilities alcf --min-ttl 300
 
 # any job: template JSON + local script -> inline JobSpec -> submit, wait, read output
 J=$(mktemp)
-python3 iri/tools/make_inline_job.py iri/jobs/hello_polaris.json iri/scripts/hello_gpu.sh --out $J
+python3 iri/tools/make_inline_job.py iri/jobs/setup_venv_polaris.json iri/scripts/setup_venv.sh --out $J
 iri/tools/iri.sh submit $J                     # prints the PBS job id
-iri/tools/iri.sh wait <jobid> 280
-iri/tools/iri.sh cat $M2FS_EAGLE/hello/hello.out
+iri/tools/iri.sh wait <jobid> 1800
+iri/tools/iri.sh cat $M2FS_EAGLE/hello/setup_venv.out
 ```
 
 | Job | Purpose | Exit check |
 |---|---|---|
 | `jobs/setup_venv_polaris.json` + `scripts/setup_venv.sh` | build the project venv on Eagle | done 2026-10-16 (PBS 7752878, from mu2e-crv-fastsim) |
-| `jobs/hello_polaris.json` + `scripts/hello_gpu.sh` | node/GPU inventory, JAX matmul per A100 | **passed** 2026-10-16 (PBS 7752911, from mu2e-crv-fastsim): 4x A100-SXM4-40GB, driver 580.65.06, JAX sees 4 devices |
-| `jobs/probe_polaris.json` + `scripts/probe_env.sh` | compute-node environment probe | diagnostic |
 | `jobs/mkdir_eagle.json` | create the work area on Eagle | utility |
 | `jobs/crv_reco_bench_polaris.json` + `scripts/crv_reco_bench.sh` | CRV fast pulse reco throughput, one process per A100 (`crvfastsim reco-bench` on synthetic waveforms) after the GPU tests; queue `capacity` (1-4 nodes, no debug wait); `--args N` events per GPU | `events_per_s` per GPU in the job output |
 | `jobs/crv_photon_bench_polaris.json` + `scripts/crv_photon_bench.sh` | CRV photon substep kernel throughput (`crvfastsim.response.bench`, synthetic tables: no Mu2e-internal input), one process per A100; submitted to `preemptable` when `capacity` is full | **290-305 k rows/s per A100** (PBS 7761901, 2026-10-19) |
 | `scripts/stage_r3_eagle.sh` (laptop, not a job) | stream the R3 inputs GPVM -> Eagle `r3_inputs/` (mode 700) over ssh through the laptop: the 20 MDC2025as step tables, CRVCalib/CRVPhoton CSVs; md5-checked, resumable, `MANIFEST.txt`. Needs an ssh master to a Polaris login node; `--dry-run` lists the pairs | every file `streamed`/`present`, manifest written |
 | `jobs/r3_polaris.json` + `scripts/r3_polaris.sh` | R3: `crvfastsim reco-r3 --jax --objective` (objective code from `crvfastsim.objective`) on the staged step tables, one process per A100 (`--args TARGET`, default 1 M per node; extras default `--v05`), lookup tables from CVMFS into `/local/scratch`, then `--merge --wall` (job wall, queue excluded); outputs `$M2FS_EAGLE/r3/<time>_<jobid>/` | `r3_merge.txt`: `minutes_for_1M` (R3 <= 15) |
 | `jobs/git_sync_polaris.json` + `scripts/git_sync.sh` | clone or `--ff-only` pull the public `mu2e-fastsim` umbrella repo with its submodules into `$M2FS_EAGLE/code` over HTTPS through the ALCF proxy; `--args fresh` removes the clone first | prints HEAD of each submodule |
-
-
-## ESnet East (AWS EKS, IRI v2)
-
-`IRI_FACILITY=esnet tools/iri.sh` drives `https://iri-dev.ppg.es.net/api/v2` with curl + jq and an AmSC personal access token (MyAmSC,
-project selected when it is made; 30 days) from `$AMSC_TOKEN` or the mode-600 file `$AMSC_TOKEN_FILE` (default
-`~/.amsc/pat`). No Globus login, no Cloudflare challenge: the laptop can submit. Every job is a Kubernetes pod running a
-**public** OCI image (`container.image`); resources are per pod (`cpu_cores_per_process`, `memory` in bytes,
-`gpu_cores_per_process`). The hackathon project maps every participant to one shared project user with a
-shared EFS home: unique run directories, nothing non-public on EFS, cancel only your own job ids.
-
-| Item | Value |
-|---|---|
-| compute resource | `fb0aafe1-c780-55c0-b635-a7121f1b0ce5` (Low Priority, Kueue) |
-| storage resource | `b6d59ba3-5c2d-57dd-b3b9-108832da0578` (EFS: a home per user and a directory per project) |
-| pod (probe 2026-10-20) | 80 GB overlay root, `/dev/shm` 64 MB, no GPU/FUSE/userns in a CPU pod; open egress (PyPI, GitHub, ghcr, CVMFS S1) |
-| files API | `mkdir`, `upload` (multipart), `ls`, `view`, `download` (base64, **max 2 MiB**), `rm` (recursive, `{path}` only) work |
-| image | public `ghcr.io/robmina/mu2e-fastsim:<umbrella sha7>-cpu\|gpu` (and `latest-*`), built by `.github/workflows/image.yml` of the umbrella from `container/Dockerfile`; `/opt/mu2e-fastsim` is read-only for the pod uid, so every `--outdir` goes to `/tmp` |
-
-```bash
-RUN=$(date -u +%Y%m%dT%H%M%SZ)-$(python3 -c 'import uuid;print(uuid.uuid4().hex[:8])')
-export ESNET_WORK=${ESNET_HOME:?set ESNET_HOME (your EFS home on ESnet)}/mu2efastsim/$RUN   # ESNET_PROJECT: the job account
-export IRI_FACILITY=esnet
-tools/iri.sh mkdir $ESNET_WORK/probe
-J=$(mktemp)
-python3 tools/make_inline_job.py jobs/probe_esnet.json scripts/probe_esnet.sh --out $J
-tools/iri.sh submit $J                     # prints {"id": ...}
-tools/iri.sh wait <id> 400
-tools/iri.sh cat $ESNET_WORK/probe/probe.out
-tools/iri.sh alloc                         # node-hours and bytes used / allocated (counters lag)
-tools/iri.sh rm $ESNET_WORK                # recursive; clean up the shared home when done
-# image jobs: ESNET_IMAGE_TAG=<sha7>-cpu with jobs/bench_esnet.json + scripts/bench_esnet.sh (real tables -> pod tmp,
-# deleted on exit) or jobs/repro_esnet.json + scripts/repro_esnet.sh (R5/P6 npz under the download cap)
-```
-
-### Globus (ESnet collection)
-
-`tools/globus_esnet.py` (a Python with globus-sdk >= 4) moves files
-larger than the 2 MiB IRI download cap. Login once: `login-url` prints a URL, the user logs in and pastes the code to
-`login-code <CODE>`; refresh tokens go to `~/.globus/mu2efastsim_transfer_tokens.json` (mode 600). Then `ls esnet /`,
-`search <text>`, `transfer <src> <path> <dst> <path> [--recursive]`, `task <id> --wait 600`. The ESnet collection
-(`a4d0333d-b9f0-442f-8d14-7d3a32596cb9`, a GCS v5 guest collection) has no `data_access` scope; access needs membership
-in the Globus group "AmSC Genesis Hackathon 2610" (`54b528d9-c94d-11f1-aa50-0efff525aa9b`), otherwise every call answers
-`PermissionDenied: No effective ACL rules`.
