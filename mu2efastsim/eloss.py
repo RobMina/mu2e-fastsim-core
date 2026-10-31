@@ -83,10 +83,17 @@ def sample_loss(rng, mat, p, length, tcut, mass=MMU):
     tkin, beta2, bg2, gam, tmax = kinematics(p, mass)
     cut = np.minimum(tcut, tmax)
     mean = dedx_restricted(mat, p, tcut, mass) * length
+    return fluctuate(rng, mat, mean, length, cut, tmax, beta2, gam)
+
+
+def fluctuate(rng, mat, mean, length, cut, tmax, beta2, gam, gaussian=True):
+    """G4UniversalFluctuation::SampleFluctuations (Urban, SampleGlandz) of a mean loss [MeV] over `length` [mm]:
+    cut = min(production cut, tmax), tmax the model's largest energy transfer, beta2 and gam of the particle;
+    gaussian=False for e-/e+, where Geant4 skips the Gaussian/Gamma regime (heavy particles only)."""
     ne = mat.electron_density_per_mm3
     out = mean.copy()
     # Gaussian/Gamma regime: many collisions, cut close to tmax
-    bohr = (mean >= _BOHR_MIN * cut) & (tmax <= 2 * cut)
+    bohr = (mean >= _BOHR_MIN * cut) & (tmax <= 2 * cut) & gaussian
     siga = np.sqrt(np.clip((tmax / beta2 - 0.5 * cut) * TWOPI_MC2_RCL2 * length * ne, 0, None))
     if bohr.any():
         sn = mean / np.where(siga > 0, siga, 1)
