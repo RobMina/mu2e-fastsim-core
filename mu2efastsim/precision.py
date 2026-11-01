@@ -16,10 +16,12 @@ lookup, no argument binding). Measured pass-through overhead per eager call: 0.2
 jnp.asarray 6.9 vs 6.4 us, jax.random.uniform 7.4 vs 6.9 us); calls inside compiled kernels cost nothing at run
 time. Nothing is replaced in float64 mode.
 
-float64 output is identical on every accelerator model for a given seed; float32 output repeats on one model but its
-discrete results (pulse and cluster counts) can differ slightly between models, so provenance() records the precision
-together with the device model. The test suites pin float64 (mu2efastsim.testing) because they check exact
-device-versus-NumPy parity.
+Reproducibility (GPU): with the determinism setting on (mu2efastsim.determinism, default), output repeats bit for bit
+from process to process on one GPU model at either precision. Without it, XLA's per-process autotuning can change the
+summation order of fused kernels between runs. Across GPU models float64 physics output (pulses, clusters) is
+identical for a given seed, float32 output is not (discrete counts differ slightly), so provenance() records the
+precision, the determinism setting and the device model. The test suites pin float64 (mu2efastsim.testing) because
+they check exact device-versus-NumPy parity.
 """
 import functools
 import os
@@ -82,8 +84,10 @@ def host(tree):
 
 
 def provenance():
-    """Precision and accelerator of this process, for output metadata: device float, JAX backend, device models."""
-    out = {"device_float": NAME}
+    """Precision and accelerator of this process, for output metadata: device float, GPU determinism setting
+    (determinism.state()), JAX backend, device models."""
+    from . import determinism
+    out = {"device_float": NAME, "deterministic": determinism.state()}
     try:
         import jax
         devices = jax.devices()
