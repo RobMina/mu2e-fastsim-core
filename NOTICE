@@ -7,6 +7,12 @@ The energy-loss, fluctuation and material code re-implements published Geant4 11
 G4UniversalFluctuation, G4UrbanFluctuation, G4EmSaturation, G4IonisParamMat, G4DensityEffectData) in Python; Geant4
 is distributed under the Geant4 Software License. Code first written in mu2e-crv-fastsim (commit f451d7b).
 
+mu2efastsim/ebrem.py re-implements G4SeltzerBergerModel and G4Generator2BS (Geant4 11.3.2); mu2efastsim/emsc.py uses the
+screened-Rutherford cross section of G4WentzelOKandVIxSection and mu2efastsim/eannihil.py that of G4eeToTwoGammaModel.
+mu2efastsim/data/brem_sb_G4EMLOW8.6.1.npz holds the Seltzer-Berger tables of G4EMLOW 8.6.1 (brem_SB/br<Z>) for the
+elements of mu2efastsim/materials.py, converted without change of values (SHA-256 of each source file inside); the
+G4EMLOW data are distributed by the Geant4 Collaboration under the Geant4 Software License (geant4.org/license).
+
 Mu2e-internal inputs (conditions, calibration and lookup tables, detector data) and physics results are not part of
 this repository and must not be added to it.
 

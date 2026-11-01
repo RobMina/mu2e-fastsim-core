@@ -1,11 +1,11 @@
 # GPU port of the energy-loss sampler
 
-## Status (2026-10-21)
+## Status
 
 `mu2efastsim/eloss_jax.py` is a jit-able float64 JAX twin of `eloss.dedx_restricted` and `eloss.sample_loss`
 (Geant4 11.3.2 MuBetheBloch + G4UniversalFluctuation/G4UrbanFluctuation). It is validated against the numpy module
-(`tests/test_eloss_jax.py`: 21 tests pass) but **nothing calls it yet**: `eloss.py` stays the default and the reference.
-Full core suite: 71 passed, 3 skipped.
+(`tests/test_eloss_jax.py`) and used by the beam stage (umbrella `beam/`); `eloss.py` stays the reference and the
+CRV/tracker default.
 
 ## What blocked a direct `jax.numpy` swap, and how each was resolved
 

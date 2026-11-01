@@ -12,7 +12,11 @@ dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy"]
 
 [project.optional-dependencies]
 jax = ["jax"]
+kit = ["mcp"]
 test = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["mu2efastsim*"]
+
+[tool.setuptools.package-data]
+mu2efastsim = ["data/*.npz"]
