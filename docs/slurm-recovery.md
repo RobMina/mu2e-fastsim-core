@@ -1,5 +1,9 @@
 # Slurm submission recovery
 
+The implementation now lives in the experiment-neutral hep-endpoints package (`hependpoints.submission`,
+`hependpoints.slurm_ssh`; its docs/slurm-recovery.md); `mu2efastsim.endpoints` configures it (tokens stay
+`m2fs-v1-<uuid>`).
+
 The Slurm-over-SSH adapter uses a durable local intent and per-handle POSIX lock to
 close the scheduler-acceptance/local-record gap. This is **at most one dispatch
 attempt per intent**, not an unconditional exactly-once execution guarantee.

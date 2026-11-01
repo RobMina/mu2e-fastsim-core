@@ -8,7 +8,10 @@ version = "0.1.0"
 description = "Detector-independent core of the Mu2e Geant4-free fast simulation (energy loss, materials, world, crossings, tables)"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
-dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy"]
+# hep-endpoints (import name hependpoints): the experiment-neutral endpoint adapters, needed on the kit host only
+# (jobs do not import it); pinned to a commit of RobMina/hep-endpoints (not on PyPI), the same pin as
+# ci/requirements.txt. For development install a local checkout with pip install -e first.
+dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@0426b38c93ee713e58d8223dcd4f5204af42e252"]
 
 [project.optional-dependencies]
 jax = ["jax"]
