@@ -3,7 +3,7 @@
 - **Electrons: slab physics, field stepping checked against itself only.** Electron and positron modules (`eslab` and
   its parts) are opt-in and validated in slabs against Geant4; field stepping (`ehelix`, `eslab(field=...)`) is checked
   against analytic helices and RK4, not yet against Geant4; no JAX version, no conversion-electron or cosmic-fake chain
-  yet; thin-layer exit angles at 105 MeV and the stopped/reflected fractions in 1 X0 W differ from Geant4
+  yet; thin-layer exit angles at 105 MeV and the reflected fraction in 1 X0 W differ from Geant4
   (`docs/validation.md`). Inside a slab the field is taken at the start of each step.
 - **No magnetic field** in the core muon transport: straight segments with multiple scattering, for the field-free
   extracted configuration. The beam stage has its own field-map stepping (umbrella `beam/`).
