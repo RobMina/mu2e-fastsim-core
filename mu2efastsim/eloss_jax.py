@@ -152,20 +152,25 @@ def _ion_split(a3, w1):
     return alfa, alfa1, namean, p3
 
 
-@partial(jax.jit, static_argnames=("K", "gamma_rounds"))   # shared kernel: dtype of its inputs (dprec.float_of)
-def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUNDS, mean=None):
+@partial(jax.jit, static_argnames=("K", "gamma_rounds", "gaussian"))   # shared kernel: dtype of its inputs
+def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUNDS, mean=None, tmax=None,
+            gaussian=True):
     dt = dprec.float_of(p)
     p = jnp.asarray(p, dt)
     p, length, tcut = jnp.broadcast_arrays(p, jnp.asarray(length, dt), jnp.asarray(tcut, dt))
     c = MatConsts(*(jnp.broadcast_to(jnp.asarray(v, dt), p.shape) for v in c))
     sh = p.shape
     ks = jax.random.split(key, 9)
-    tkin, beta2, bg2, gam, tmax = kinematics(p, mass)
+    tkin, beta2, bg2, gam, tmax_mu = kinematics(p, mass)
+    # tmax: caller's largest transfer (e+-: T/2 Moller, T Bhabha); gaussian=False skips the Gaussian/Gamma regime (e+-)
+    tmax = tmax_mu if tmax is None else jnp.broadcast_to(jnp.asarray(tmax, dt), sh)
     cut = jnp.minimum(tcut, tmax)
     # mean: caller-supplied mean loss (e.g. range-integrated, as G4VEnergyLossProcess for long steps)
     mean = _dedx(c, p, tcut, mass) * length if mean is None else jnp.broadcast_to(jnp.asarray(mean, dt), sh)
     # Gaussian/Gamma regime: many collisions, cut close to tmax
     bohr = (mean >= _BOHR_MIN * cut) & (tmax <= 2 * cut)
+    if not gaussian:
+        bohr = jnp.zeros_like(bohr)
     siga = jnp.sqrt(jnp.clip((tmax / beta2 - 0.5 * cut) * TWOPI_MC2_RCL2 * length * c.ne, 0, None))
     sn = mean / jnp.where(siga > 0, siga, 1)
     gs = bohr & (sn >= 2)
@@ -233,6 +238,17 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
                                                     jnp.where(s23 > 0, s23, 0.0)), 0.0)
     out = jnp.where(gs, x_gs, jnp.where(gm, x_gm, mean))
     return jnp.where(u, loss * scaling, out)
+
+
+def sample_loss_electron(key, mat, T, length, cut, mean, positron=False, K=K_POISSON):
+    """Urban fluctuation of the continuous e-/e+ loss `mean` [MeV] over `length` [mm] at kinetic energy T: the
+    eioni.continuous_loss counterpart (tmax = T/2 or T, cut = min(tcut, tmax), no Gaussian/Gamma regime)."""
+    dt = dprec.float_of(T, mean)
+    T = jnp.asarray(T, dt)
+    p = jnp.sqrt(T * (T + 2 * ME))
+    tmax = T if positron else 0.5 * T
+    return _sample(key, consts(mat), p, length, jnp.minimum(jnp.asarray(cut, dt), tmax), jnp.asarray(ME, dt), K=K,
+                   mean=jnp.asarray(mean, dt), tmax=tmax, gaussian=False)
 
 
 def sample_loss(key, mat, p, length, tcut, mass=MMU, K=K_POISSON, mean=None):
