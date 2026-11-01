@@ -242,11 +242,12 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, help="fast-arm seed (default: the case's)")
     ap.add_argument("--max-step", type=float, help="fast-arm msc step cap [mm] (default: thickness / 10)")
     ap.add_argument("--hard-per-step", type=float, help="fast-arm least hard collisions per msc step cap")
-    ap.add_argument("--no-mott", action="store_true", help="diagnostic: hard collisions without the Mott factor")
+    ap.add_argument("--mott", choices=("table", "mckinley", "none"), help="e- Mott factor on hard collisions "
+                    "(default: emsc.MOTT); mckinley and none are diagnostics")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
-    if a.no_mott:
-        emsc.MOTT = False
+    if a.mott:
+        emsc.MOTT = a.mott
     if a.table:
         print(table([r for c in a.cases for r in (lambda x: x if isinstance(x, list) else [x])(
             json.loads(Path(c).read_text()))]))

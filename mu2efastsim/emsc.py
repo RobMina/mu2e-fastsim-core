@@ -9,9 +9,10 @@ cross section, which this module samples directly instead of through their conde
 
 with the screening s of G4WentzelOKandVIxSection::SetupTarget for light particles, its exponential nuclear form factor
 F_N = 1 / (1 + f_A p^2 u)^2, scattering on atomic electrons up to the angle that transfers the delta cut
-(ComputeMaxElectronScattering, larger transfers are Moller/Bhabha deltas), and the McKinley-Feshbach factor
-R(u) = 1 - beta^2 u / 2 +- (pi alpha Z / 2) beta sqrt(u / 2) (2 - u) of its single-scattering sampler (+ for e-,
-- for e+) as the Mott correction.
+(ComputeMaxElectronScattering, larger transfers are Moller/Bhabha deltas), and a Mott factor R(u) on hard
+collisions: for e- the fitted Mott/Rutherford ratio of G4ScreeningMottCrossSection (G4MottData coefficients, bundled
+in data/mott_G4MottData_11.3.2.npz), for e+ the McKinley-Feshbach form R(u) = 1 - beta^2 u / 2 - (pi alpha Z / 2)
+beta sqrt(u / 2) (2 - u) of its single-scattering sampler.
 
 Mixed scheme (as PENELOPE): collisions with u > u_c are hard and sampled one by one; u_c is chosen so that the hard mean
 free path is C1 times the first transport mean free path lambda_1. The soft collisions of a step of length L add up
@@ -19,6 +20,12 @@ to one deflection with <u> = 1 - exp(-L Sigma_1,soft), u drawn from an exponenti
 the small-angle limit); the slab stepper applies it at a uniformly random point of the step (random hinge).
 Energies in MeV, lengths in mm.
 """
+import argparse
+import hashlib
+import re
+from functools import lru_cache
+from pathlib import Path
+
 import numpy as np
 
 from . import ebrem
@@ -33,7 +40,9 @@ MF_MAX = 0.7698003589195010                      # max of sqrt(u/2)(2 - u) on [0
 C1 = 0.05                                        # hard mean free path / lambda_1
 STEP_LAMBDA1 = 0.1                               # step limit in units of lambda_1
 U_MAX = 2.0
-MOTT = True                                      # False: pure screened Rutherford on hard collisions (diagnostic)
+MOTT = "table"         # e- hard collisions: "table" (G4ScreeningMottCrossSection fit), "mckinley", "none" (diagnostic)
+MOTT_DATA = Path(__file__).resolve().parent / "data" / "mott_G4MottData_11.3.2.npz"
+MOTT_BETA_SHIFT = 0.7181228                       # G4ScreeningMottCrossSection::RatioMottRutherfordCosT
 U_FLOOR = 1e-14                                  # u_c when every elastic collision is hard
 _TGRID = np.geomspace(1e-3, 1e3, 241)
 _LNRATE = np.linspace(-12.0, 20.0, 257)          # ln(hard collisions per mm) grid of the u_c table
@@ -119,6 +128,58 @@ def transport_xsec(mat, T, uc, tcut, positron=False):
     return (k * (nuc + ele)).sum(axis=0)
 
 
+_LNU = np.linspace(np.log(1e-18), np.log(U_MAX), 1201)
+
+
+def _soft_mott_table(z, positron):
+    """(ln u grid, cumulative ratio[T, u]) of int_0^u v R(v) / (v + s)^2 dv over the same without R, on _TGRID."""
+    key = ("softmott", int(z), bool(positron), MOTT)
+    if key in _CACHE:
+        return _CACHE[key]
+    u = np.exp(_LNU)
+    s = screening([z], _TGRID)[0][:, None]
+    _, invb2, _ = kinematics(_TGRID)
+    w = u * u / (u + s) ** 2                                    # v dsigma/dv times v (d ln v)
+    r = mott_factor(np.full(w.shape, float(z)), np.broadcast_to(u, w.shape), invb2[:, None], positron)
+    dl = np.diff(_LNU)
+    num = np.concatenate([np.zeros((w.shape[0], 1)), np.cumsum(0.5 * dl * (w * r)[:, 1:] + 0.5 * dl * (w * r)[:, :-1],
+                                                                axis=1)], axis=1)
+    den = np.concatenate([np.zeros((w.shape[0], 1)), np.cumsum(0.5 * dl * w[:, 1:] + 0.5 * dl * w[:, :-1], axis=1)],
+                         axis=1)
+    ratio = np.where(den > 0, num / np.where(den > 0, den, 1.0), 1.0)
+    _CACHE[key] = ratio
+    return ratio
+
+
+def soft_mott_factor(z, T, uc, positron=False):
+    """Mott correction of the soft transport cross section below uc for element z: its ratio to Rutherford
+    (bilinear in ln T and ln uc)."""
+    tab = _soft_mott_table(z, positron)
+    lt = np.log(np.clip(np.asarray(T, float), _TGRID[0], _TGRID[-1]))
+    lu = np.log(np.clip(np.asarray(uc, float), np.exp(_LNU[0]), U_MAX))
+    lg = np.log(_TGRID)
+    fi = (lt - lg[0]) / (lg[1] - lg[0])
+    fj = (lu - _LNU[0]) / (_LNU[1] - _LNU[0])
+    i = np.clip(fi.astype(int), 0, lg.size - 2)
+    j = np.clip(fj.astype(int), 0, _LNU.size - 2)
+    x, y = fi - i, fj - j
+    return ((1 - x) * ((1 - y) * tab[i, j] + y * tab[i, j + 1]) + x * ((1 - y) * tab[i + 1, j] + y * tab[i + 1, j + 1]))
+
+
+def soft_transport_xsec(mat, T, uc, tcut, positron=False):
+    """Sigma_1 [mm-1] of the soft collisions (u < uc) including the Mott factor (transport_xsec is Rutherford)."""
+    T = np.atleast_1d(np.asarray(T, float))
+    z, a, s, k, ue = _parts(mat, T, tcut, positron)
+    uc = np.minimum(np.broadcast_to(uc, T.shape), U_MAX)
+    ucel = np.minimum(uc, ue)
+    out = np.zeros_like(T)
+    for i, zz in enumerate(z):
+        nuc = zz * _g(uc / s[i]) * soft_mott_factor(zz, T, uc, positron)
+        ele = _g(ucel / s[i]) * soft_mott_factor(zz, T, ucel, positron)
+        out += k[i] * (nuc + ele)
+    return out
+
+
 def _hard_rates(mat, T, uc, tcut, positron):
     """Envelope rates [mm-1] of hard collisions (u > uc) on nuclei and on electrons, per element: (nuc, ele, s, ue)."""
     z, a, s, k, ue = _parts(mat, T, tcut, positron)
@@ -137,20 +198,68 @@ def hard_xsec(mat, T, uc, tcut, positron=False):
     return (nuc + ele).sum(axis=0)
 
 
+def convert_mott(header, out):
+    """Write the npz of the electron Mott/Rutherford fit coefficients fMottCoef[93][5][6] from a Geant4
+    G4MottData.hh (values unchanged; SHA-256 of the header inside)."""
+    text = Path(header).read_text()
+    block = text[text.index("fMottCoef[93][5][6]"):]
+    block = block[block.index("{"):block.index("};") + 1]
+    vals = np.array([float(v) for v in re.findall(r"[-+]?\d+\.?\d*(?:[eE][-+]?\d+)?", block)])
+    if vals.size != 93 * 5 * 6:
+        raise ValueError(f"{header}: {vals.size} numbers in fMottCoef, expected {93 * 5 * 6}")
+    np.savez_compressed(out, coef=vals.reshape(93, 5, 6), sha256=np.array(hashlib.sha256(text.encode()).hexdigest()),
+                        source=np.array("Geant4 11.3.2 G4MottData.hh fMottCoef"))
+
+
+@lru_cache(maxsize=None)
+def mott_coefficients(path=MOTT_DATA):
+    """fMottCoef[Z][j][k] (Z = 0..92) of the bundled npz."""
+    return np.load(path)["coef"]
+
+
+def mott_ratio_table(z, u, beta):
+    """Mott/Rutherford ratio of electrons, sum_j sqrt(u)^j sum_k a[Z, j, k] (beta - 0.7181228)^k
+    (G4ScreeningMottCrossSection::RatioMottRutherfordCosT, Boschini et al. / Lijian et al. fit)."""
+    a = mott_coefficients()[np.asarray(z, int)]                 # (..., 5, 6)
+    b0 = np.asarray(beta, float) - MOTT_BETA_SHIFT
+    bk = np.stack([b0 ** k for k in range(6)], axis=-1)        # (..., 6)
+    aj = (a * bk[..., None, :]).sum(axis=-1)                   # (..., 5)
+    su = np.sqrt(np.asarray(u, float))
+    return sum(aj[..., j] * su ** j for j in range(5))
+
+
+_BETA_GRID = np.linspace(0.0, 1.0, 1001)
+
+
+@lru_cache(maxsize=None)
+def _mott_env_table(z):
+    """Max over u in [0, 2] of the tabulated ratio for element z on _BETA_GRID (each bin's max with its neighbours)."""
+    su = np.linspace(0.0, np.sqrt(U_MAX), 129)
+    r = mott_ratio_table(np.full((_BETA_GRID.size, su.size), z), (su ** 2)[None, :], _BETA_GRID[:, None])
+    m = r.max(axis=1)
+    return np.maximum(np.maximum(m, np.roll(m, 1)), np.roll(m, -1))
+
+
 def mott_envelope(z, T, positron=False):
-    """Upper bound of the McKinley-Feshbach factor R(u) per element and energy (1 for e+)."""
+    """Upper bound of the Mott factor R(u) per element and energy (rows, columns)."""
     _, invb2, _ = kinematics(T)
     z = np.asarray(z, float)[:, None]
-    if positron or not MOTT:
-        return np.ones((z.shape[0], np.size(T)))
-    return 1.0 + 0.5 * np.pi * ALPHA * z * np.sqrt(1 / invb2) * MF_MAX
+    if MOTT == "none" or positron:
+        return np.ones((z.shape[0], np.size(T)))       # e+: the McKinley-Feshbach factor is below 1
+    if MOTT == "mckinley":
+        return 1.0 + 0.5 * np.pi * ALPHA * z * np.sqrt(1 / invb2) * MF_MAX
+    beta = np.sqrt(1 / np.atleast_1d(invb2))
+    return 1.02 * np.array([np.interp(beta, _BETA_GRID, _mott_env_table(int(zz))) for zz in z[:, 0]])
 
 
 def mott_factor(z, u, invb2, positron=False):
-    """McKinley-Feshbach ratio to Rutherford, as in G4WentzelOKandVIxSection::SampleSingleScattering."""
-    if not MOTT:
+    """Ratio to Rutherford of hard collisions: the tabulated electron fit (MOTT = "table"), or the McKinley-Feshbach
+    form of G4WentzelOKandVIxSection::SampleSingleScattering (e+ always; sign of the alpha Z term by charge)."""
+    if MOTT == "none":
         return np.ones_like(np.asarray(u, float))
     b2 = 1 / invb2
+    if MOTT == "table" and not positron:
+        return np.maximum(mott_ratio_table(z, u, np.sqrt(b2)), 0.0)
     sign = -1.0 if positron else 1.0
     return 1 - 0.5 * b2 * u + sign * 0.5 * np.pi * ALPHA * z * np.sqrt(0.5 * b2 * u) * (2 - u)
 
@@ -203,9 +312,10 @@ def lambda1(mat, T, tcut, positron=False):
 
 
 def sample_soft(rng, mat, T, length, uc, tcut, positron=False):
-    """u = 1 - cos(theta) of the summed soft collisions over `length` (exponential with mean 1 - exp(-L Sigma_1s))."""
+    """u = 1 - cos(theta) of the summed soft collisions over `length` (exponential with mean 1 - exp(-L Sigma_1s),
+    Sigma_1s with the Mott factor)."""
     T = np.atleast_1d(np.asarray(T, float))
-    m1 = -np.expm1(-np.asarray(length, float) * transport_xsec(mat, T, uc, tcut, positron))
+    m1 = -np.expm1(-np.asarray(length, float) * soft_transport_xsec(mat, T, uc, tcut, positron))
     return np.minimum(rng.exponential(1.0, T.size) * m1, U_MAX)
 
 
@@ -243,3 +353,18 @@ def deflect(rng, d, u):
     phi = 2 * np.pi * rng.random(np.shape(u)[0])
     out = ebrem.rotate_uz(d, np.stack([sint * np.cos(phi), sint * np.sin(phi), cost], axis=1))
     return out / np.linalg.norm(out, axis=1, keepdims=True)
+
+
+def _main(argv=None):
+    ap = argparse.ArgumentParser(prog="python3 -m mu2efastsim.emsc")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("convert-mott", help="rebuild the bundled Mott npz from a Geant4 G4MottData.hh")
+    c.add_argument("header")
+    c.add_argument("out")
+    a = ap.parse_args(argv)
+    if a.cmd == "convert-mott":
+        convert_mott(a.header, a.out)
+
+
+if __name__ == "__main__":
+    _main()
