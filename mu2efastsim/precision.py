@@ -9,6 +9,13 @@ a dprec.jit kernel runs (traces) and when called from a module that declared its
 register(__name__); everywhere else (other stages, host code) they are unchanged and float64. Kernels shared with
 such code compute in the dtype of their inputs (float_of, tiny_of).
 
+Mechanism: in float32 mode the jnp creators (zeros, ones, empty, full, eye, identity, linspace, array, asarray,
+arange) and jax.random samplers are replaced process-wide by wrappers, but a wrapper acts only inside a dprec.jit
+call or for a registered caller; elsewhere it passes the call through unchanged (a thread-local read and a frame
+lookup, no argument binding). Measured pass-through overhead per eager call: 0.2-0.5 us (jnp.zeros(3) 16.9 vs 16.7 us,
+jnp.asarray 6.9 vs 6.4 us, jax.random.uniform 7.4 vs 6.9 us); calls inside compiled kernels cost nothing at run
+time. Nothing is replaced in float64 mode.
+
 float64 output is identical on every accelerator model for a given seed; float32 output repeats on one model but its
 discrete results (pulse and cluster counts) can differ slightly between models, so provenance() records the precision
 together with the device model. The test suites pin float64 (mu2efastsim.testing) because they check exact
@@ -150,12 +157,15 @@ _SAMPLERS = ("uniform", "normal", "exponential", "gamma", "truncated_normal", "g
 
 def _float_default(fn, sampler):
     import inspect
-    sig = inspect.signature(fn)
+    params = list(inspect.signature(fn).parameters)
+    pos = params.index("dtype") if "dtype" in params else len(params)   # positional slot of dtype
 
     @functools.wraps(fn)
     def wrapped(*args, **kwargs):
-        if ((not scoped() and sys._getframe(1).f_globals.get("__name__") not in _AWARE)
-                or sig.bind_partial(*args, **kwargs).arguments.get("dtype") is not None):
+        # pass-through first (the common case: code outside precision-aware kernels and modules), no binding
+        if not getattr(_SCOPE, "depth", 0) and (not _AWARE or sys._getframe(1).f_globals.get("__name__") not in _AWARE):
+            return fn(*args, **kwargs)
+        if kwargs.get("dtype") is not None or (len(args) > pos and args[pos] is not None):
             return fn(*args, **kwargs)
         if sampler:                          # draw in the device float, never draw float64 and round
             return fn(*args, dtype=FLOAT, **kwargs)
