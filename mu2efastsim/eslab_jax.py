@@ -3,7 +3,8 @@
 Same physics and step logic as eslab; how the NumPy constructs map to JAX:
   * every cross section, stopping power, range, soft/hard msc rate and u_c is a host table on a uniform ln T grid
     (build_tables, float64 from the NumPy models), interpolated linearly in ln T in the kernel;
-  * the Seltzer-Berger photon energy comes from an inverse-CDF table in x = ln(k / kcut) / ln(T / kcut) per ln T node
+  * the Seltzer-Berger photon energy comes from an inverse-CDF table in x = ln(k / kcut) / ln(T / kcut) per ln T node,
+    its nodes crowded towards the hard end
     (the node picked with the linear-interpolation weight) instead of rejection sampling;
   * rejection samplers (Moller/Bhabha transfer, 2BS photon angle) run a fixed number of rounds;
   * the step loop is a lax.while_loop over all tracks, finished tracks masked; photons, deltas and annihilation photons
@@ -29,6 +30,8 @@ from .eloss import ME
 NT = 513                      # ln T nodes from eslab.T_STOP to 1 GeV
 NX = 257                      # inverse-CDF nodes of the brem photon energy
 REJECT_ROUNDS = 24            # fixed rounds of the rejection samplers
+C_POWER = 3.0                 # brem CDF nodes C = 1 - (1 - u)^C_POWER, u uniform on [0, 1]
+C_NODES = 1.0 - (1.0 - np.linspace(0.0, 1.0, NX)) ** C_POWER
 _CACHE = {}
 
 
@@ -50,7 +53,7 @@ class Tables(NamedTuple):
     ue: object        # (NT,) largest u on atomic electrons
     env: object       # (nel, NT) Mott envelope
     brem_cum: object  # (nel, NT) cumulative element fractions of brem
-    brem_x: object    # (NT, NX) inverse CDF: x at equally spaced CDF values
+    brem_x: object    # (NT, NX) inverse CDF: x at the CDF values C_NODES
     z: object         # (nel,)
     ffa: object       # (nel,) nuclear form factor constant FORM_FACTOR A^0.54 [MeV-2]
     mott: object      # (nel, 5, 6) Mott fit coefficients
@@ -96,22 +99,22 @@ def build_tables(mat, tcut, kcut, positron=False, max_hard_path=np.inf):
 
 
 def _brem_inverse_cdf(mat, T, kcut, positron):
-    """x(c) on equally spaced CDF values c for each T node: photon density in x = ln(k / kcut) / ln(T / kcut) is
-    proportional to k dsigma/dk with the Ter-Mikaelian factor (ebrem._kdsdk_material)."""
-    out = np.tile(np.linspace(0.0, 1.0, NX), (T.size, 1))
+    """x at the CDF values C_NODES for each T node: photon density in x = ln(k / kcut) / ln(T / kcut) is proportional
+    to k dsigma/dk with the Ter-Mikaelian factor (ebrem._kdsdk_material). C_NODES crowd towards 1, where the
+    Seltzer-Berger density falls steeply at k -> T."""
+    out = np.tile(C_NODES, (T.size, 1))
     on = np.flatnonzero(T > kcut * 1.0001)
     if on.size == 0:
         return out
-    xf = np.linspace(0.0, 1.0, 4 * NX)
+    xf = 1.0 - (1.0 - np.linspace(0.0, 1.0, 8 * NX)) ** 3
     Tj = T[on][:, None]
     k = kcut * (Tj / kcut) ** xf[None, :]
     dens = ebrem._kdsdk_material(mat, k.ravel(), np.broadcast_to(Tj, k.shape).ravel(), positron).reshape(k.shape)
     cdf = np.concatenate([np.zeros((on.size, 1)), np.cumsum(0.5 * (dens[:, 1:] + dens[:, :-1]) * np.diff(xf),
                                                               axis=1)], axis=1)
     cdf /= np.where(cdf[:, -1:] > 0, cdf[:, -1:], 1.0)
-    c = np.linspace(0.0, 1.0, NX)
     for r, j in enumerate(on):
-        out[j] = np.interp(c, cdf[r], xf)
+        out[j] = np.interp(C_NODES, cdf[r], xf)
     return out
 
 
@@ -358,7 +361,8 @@ def _run(key, tab, mc, T0, d0, L, tcut, kcut, dsmax, positron, msc, annihilation
         f = jnp.clip((jnp.log(Tp) - tab.lnt0) / tab.dlnt, 0.0, NT - 1.000001)
         j0 = f.astype(jnp.int32)
         jj = j0 + (jax.random.uniform(ks[8], (n,), dt) < f - j0)
-        c = jax.random.uniform(ks[9], (n,), dt) * (NX - 1)
+        uc_ = jax.random.uniform(ks[9], (n,), dt)
+        c = (1.0 - (1.0 - uc_) ** (1.0 / C_POWER)) * (NX - 1)          # node coordinate of the CDF value
         ci = jnp.minimum(c.astype(jnp.int32), NX - 2)
         xb = tab.brem_x[jj, ci] * (1 - (c - ci)) + tab.brem_x[jj, ci + 1] * (c - ci)
         kph = jnp.where(brem, kcut * jnp.exp(xb * jnp.log(jnp.maximum(Tp, kcut) / kcut)), 0.0)
