@@ -128,6 +128,58 @@ def transport_xsec(mat, T, uc, tcut, positron=False):
     return (k * (nuc + ele)).sum(axis=0)
 
 
+_LNU = np.linspace(np.log(1e-18), np.log(U_MAX), 1201)
+
+
+def _soft_mott_table(z, positron):
+    """(ln u grid, cumulative ratio[T, u]) of int_0^u v R(v) / (v + s)^2 dv over the same without R, on _TGRID."""
+    key = ("softmott", int(z), bool(positron), MOTT)
+    if key in _CACHE:
+        return _CACHE[key]
+    u = np.exp(_LNU)
+    s = screening([z], _TGRID)[0][:, None]
+    _, invb2, _ = kinematics(_TGRID)
+    w = u * u / (u + s) ** 2                                    # v dsigma/dv times v (d ln v)
+    r = mott_factor(np.full(w.shape, float(z)), np.broadcast_to(u, w.shape), invb2[:, None], positron)
+    dl = np.diff(_LNU)
+    num = np.concatenate([np.zeros((w.shape[0], 1)), np.cumsum(0.5 * dl * (w * r)[:, 1:] + 0.5 * dl * (w * r)[:, :-1],
+                                                                axis=1)], axis=1)
+    den = np.concatenate([np.zeros((w.shape[0], 1)), np.cumsum(0.5 * dl * w[:, 1:] + 0.5 * dl * w[:, :-1], axis=1)],
+                         axis=1)
+    ratio = np.where(den > 0, num / np.where(den > 0, den, 1.0), 1.0)
+    _CACHE[key] = ratio
+    return ratio
+
+
+def soft_mott_factor(z, T, uc, positron=False):
+    """Mott correction of the soft transport cross section below uc for element z: its ratio to Rutherford
+    (bilinear in ln T and ln uc)."""
+    tab = _soft_mott_table(z, positron)
+    lt = np.log(np.clip(np.asarray(T, float), _TGRID[0], _TGRID[-1]))
+    lu = np.log(np.clip(np.asarray(uc, float), np.exp(_LNU[0]), U_MAX))
+    lg = np.log(_TGRID)
+    fi = (lt - lg[0]) / (lg[1] - lg[0])
+    fj = (lu - _LNU[0]) / (_LNU[1] - _LNU[0])
+    i = np.clip(fi.astype(int), 0, lg.size - 2)
+    j = np.clip(fj.astype(int), 0, _LNU.size - 2)
+    x, y = fi - i, fj - j
+    return ((1 - x) * ((1 - y) * tab[i, j] + y * tab[i, j + 1]) + x * ((1 - y) * tab[i + 1, j] + y * tab[i + 1, j + 1]))
+
+
+def soft_transport_xsec(mat, T, uc, tcut, positron=False):
+    """Sigma_1 [mm-1] of the soft collisions (u < uc) including the Mott factor (transport_xsec is Rutherford)."""
+    T = np.atleast_1d(np.asarray(T, float))
+    z, a, s, k, ue = _parts(mat, T, tcut, positron)
+    uc = np.minimum(np.broadcast_to(uc, T.shape), U_MAX)
+    ucel = np.minimum(uc, ue)
+    out = np.zeros_like(T)
+    for i, zz in enumerate(z):
+        nuc = zz * _g(uc / s[i]) * soft_mott_factor(zz, T, uc, positron)
+        ele = _g(ucel / s[i]) * soft_mott_factor(zz, T, ucel, positron)
+        out += k[i] * (nuc + ele)
+    return out
+
+
 def _hard_rates(mat, T, uc, tcut, positron):
     """Envelope rates [mm-1] of hard collisions (u > uc) on nuclei and on electrons, per element: (nuc, ele, s, ue)."""
     z, a, s, k, ue = _parts(mat, T, tcut, positron)
@@ -260,9 +312,10 @@ def lambda1(mat, T, tcut, positron=False):
 
 
 def sample_soft(rng, mat, T, length, uc, tcut, positron=False):
-    """u = 1 - cos(theta) of the summed soft collisions over `length` (exponential with mean 1 - exp(-L Sigma_1s))."""
+    """u = 1 - cos(theta) of the summed soft collisions over `length` (exponential with mean 1 - exp(-L Sigma_1s),
+    Sigma_1s with the Mott factor)."""
     T = np.atleast_1d(np.asarray(T, float))
-    m1 = -np.expm1(-np.asarray(length, float) * transport_xsec(mat, T, uc, tcut, positron))
+    m1 = -np.expm1(-np.asarray(length, float) * soft_transport_xsec(mat, T, uc, tcut, positron))
     return np.minimum(rng.exponential(1.0, T.size) * m1, U_MAX)
 
 
