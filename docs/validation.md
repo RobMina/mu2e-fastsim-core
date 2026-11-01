@@ -16,7 +16,7 @@ This page lists the checks of core components on their own. "Commit" is the core
 | device-generated CRV chain | table-driven chain | 50 k events, GPU response and reco | clusters per live second per sector type | EX 1.032 +- 0.032, T1 0.998 +- 0.072, T2 0.970 +- 0.061, M 1.008 +- 0.100 | descriptive | consistent | 2026-10-30 | `e7c56f6` |
 | endpoint admission, Slurm recovery, artifact bindings | fake Slurm site and mocks | unit tests | refusal paths, at-most-once dispatch, retained code | pass | tests | pass (no live rollout implied) | 2026-10-25 | main |
 
-## Electrons (not on `main`)
+## Electrons
 
 Electron and positron physics (Seltzer-Berger bremsstrahlung, Moller/Bhabha ionisation, mixed screened-Rutherford
 multiple scattering, two-photon annihilation, slab stepping; NumPy, opt-in, `eslab`). Geant4 reference: electron-gun
@@ -33,6 +33,11 @@ slabs with EM option 4, 1M events per case (200k for 1 X0 W); merged 2026-11-01:
 | exit angle, 20 and 50 MeV in 1 mm Al | Geant4 | chi2/ndf 0.9 / 2.0 | pass |
 | exit angle, 105 MeV in thin layers | Geant4 | chi2/ndf 7.6-88 (Geant4 WentzelVI condensed stepping vs exact sampling of the same cross section) | open |
 | stopped / reflected fraction, 1 X0 W | Geant4 | 18.41 vs 17.90 +- 0.09 % / 0.35 vs 0.24 % | open |
+| helix step in a uniform field | analytic circle and pitch; composition of steps; zero field | exact to 1e-9 mm | pass |
+| RK4 in a uniform field | the exact helix | fourth-order convergence | pass |
+| path to a plane along the helix | analytic arcsin solution, re-entry, unreachable planes | 1e-9 relative | pass |
+| slab in a transverse field (10 MeV e-, 20 mm air, 1 T) | path R asin(L/R), bend R(1 - cos), loss per mm as without field | within 0.3 % / 1 % / 2 % | pass |
+| Mu2e DS field map, 105 MeV e- from the stopping target to z = 8410 mm | RK4 with 1 mm steps | helix with 10 mm steps: 18 um median, 46 um max after 3.7 m; 25 mm steps: 0.11 / 0.29 mm | pass |
 
 ## Device precision
 
