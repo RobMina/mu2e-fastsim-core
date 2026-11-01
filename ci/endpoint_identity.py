@@ -2,19 +2,22 @@
 
     python ci/endpoint_identity.py OUT.json            # render with the mu2efastsim on PYTHONPATH
     python ci/endpoint_identity.py --compare A.json B.json [--known]   # --known: A is core main (KNOWN_TEXT)
+    python ci/endpoint_identity.py --digests MAIN.json OUT.json      # per-case SHA-256 of a main rendering
 
 Each case submits through the real endpoint classes against the fakes of the test suites (no ssh, no hub, no grid)
 and records what reaches the site (every remote command and its stdin: job scripts, headers, sbatch arguments), the
 shaped resources, the GPU choice, budget estimates and refusals, and every file the endpoints and the kit leave in
 their state directories (records, intents, kit task records). Temporary paths, submission tokens and wall-clock
 timestamps are normalized. Streamed tasks (chain_point, crv_response, beam_point) need crv and the umbrella's beam
-on PYTHONPATH; their cases are left out when those packages are missing. tests/test_endpoint_identity.py compares a
-fresh rendering with tests/data/endpoint_identity_main.json, rendered on core main before the move to hep-endpoints.
+on PYTHONPATH; their cases are left out when those packages are missing. Renderings are written to a scratch area,
+never committed: tests/test_endpoint_identity.py renders in-process and compares per-case SHA-256 digests with
+tests/data/endpoint_identity_main.sha256.json, the digests of core main's rendering (with KNOWN_TEXT applied).
 """
 from __future__ import annotations
 
 import dataclasses
 import difflib
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -294,6 +297,24 @@ def apply_known(case: dict) -> dict:
             "files": {k: mask(fix(v)) for k, v in case["files"].items()}, "changed": changed}
 
 
+def masked(case: dict) -> dict:
+    """The case with the digests of job bodies masked (for cases whose bodies carry KNOWN_TEXT)."""
+    return {"data": {n: DIGEST.sub(r"\1<SHA>", v) for n, v in case["data"].items()},
+            "traffic": [DIGEST.sub(r"\1<SHA>", v) for v in case["traffic"]],
+            "files": {n: DIGEST.sub(r"\1<SHA>", v) for n, v in case["files"].items()}}
+
+
+def case_digest(case: dict) -> str:
+    return hashlib.sha256(json.dumps(case, sort_keys=True).encode()).hexdigest()
+
+
+def main_digests(main: dict) -> dict:
+    """Per-case digests of a rendering of core main with KNOWN_TEXT applied, and the cases where it applied."""
+    known = {k: apply_known(v) for k, v in main.items()}
+    changed = sorted(k for k, v in known.items() if v.pop("changed"))
+    return {"changed": changed, "cases": {k: case_digest(v) for k, v in sorted(known.items())}}
+
+
 def compare(a: dict, b: dict, known: bool = False) -> list:
     """Unified diffs of the cases present in both renderings, and the names present in only one. With known, the
     first rendering is core main's: KNOWN_TEXT is applied to it and digests are masked on both sides where it applied."""
@@ -304,9 +325,7 @@ def compare(a: dict, b: dict, known: bool = False) -> list:
         if known:
             x = apply_known(x)
             if x.pop("changed"):
-                y = {"data": {n: DIGEST.sub(r"\1<SHA>", v) for n, v in y["data"].items()},
-                     "traffic": [DIGEST.sub(r"\1<SHA>", v) for v in y["traffic"]],
-                     "files": {n: DIGEST.sub(r"\1<SHA>", v) for n, v in y["files"].items()}}
+                y = masked(y)
         if x != y:
             xs = json.dumps(x, indent=1, sort_keys=True).splitlines()
             ys = json.dumps(y, indent=1, sort_keys=True).splitlines()
@@ -321,6 +340,9 @@ def main(argv):
         diffs = compare(a, b, known)
         print("\n".join(diffs) if diffs else f"identical: {len(set(a) & set(b))} cases")
         return 1 if diffs else 0
+    if argv[:1] == ["--digests"]:
+        Path(argv[2]).write_text(json.dumps(main_digests(json.loads(Path(argv[1]).read_text())), indent=1) + "\n")
+        return 0
     Path(argv[0]).write_text(json.dumps(render(), indent=1, sort_keys=True) + "\n")
     return 0
 

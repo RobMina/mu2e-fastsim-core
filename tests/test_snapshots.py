@@ -401,18 +401,25 @@ def test_guard_rejects_symlink_replacing_canonical_ancestry(tmp_path, repositori
 
 
 def main_guard(snapshot):
-    """The guard of core main before the move to hep-endpoints: its program taken verbatim from a job body of the
-    identity rendering (tests/data/endpoint_identity_main.json), with main's request (no branch_modules)."""
-    import re
+    """The guard of core main before the move to hep-endpoints: hependpoints' program with the listed KNOWN_TEXT
+    changes (ci/endpoint_identity.py) undone, checked against the digest of main's program, with main's request."""
+    import hashlib
+    import importlib.util
     import shlex
-    golden = json.loads((Path(__file__).parent / "data" / "endpoint_identity_main.json").read_text())
-    body = json.loads(golden["streamed/crv_response"]["traffic"][0])["stdin"]
-    for m in re.finditer(r"python3 -I -c '", body):
-        program = shlex.split(body[m.start():body.index(" || exit $?", m.start())])[3]
-        if 'request["action"] == "verify"' in program:
-            request = json.dumps({"action": "verify", "snapshot": snapshot})
-            return "python3 -I -c " + shlex.quote(program) + " " + shlex.quote(request) + " || exit $?\n"
-    raise AssertionError("no verify guard in the rendering of main")
+    from hependpoints import snapshots as hep_snapshots
+    spec = importlib.util.spec_from_file_location("endpoint_identity",
+                                                  Path(__file__).resolve().parent.parent / "ci" / "endpoint_identity.py")
+    ei = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ei)
+    program = hep_snapshots._REMOTE
+    for old, new in ei.KNOWN_TEXT:
+        program = program.replace(new, old)
+    assert hashlib.sha256(program.encode()).hexdigest() == MAIN_GUARD_SHA256
+    request = json.dumps({"action": "verify", "snapshot": snapshot})
+    return "python3 -I -c " + shlex.quote(program) + " " + shlex.quote(request) + " || exit $?\n"
+
+
+MAIN_GUARD_SHA256 = "cfecdcca50acadfd67ad2d0b3eb69e84883bc11652208b8031479f44ba002c95"   # core main b752681 _REMOTE
 
 
 @pytest.mark.parametrize("case", ["good", "branch-override", "tracked", "submodule-file", "wrong-commit",
