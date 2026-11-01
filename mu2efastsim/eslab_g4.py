@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import eslab, materials
+from . import emsc, eslab, materials
 
 ME = 0.51099895
 CODE = {"annihil": 2, "eBrem": 16, "eIoni": 17, "primary": 56}
@@ -170,6 +170,9 @@ def compare_samples(case, g, f, tcut, kcut):
     out["loss_chi2_ndf_quantile"] = chi2(gl, fl, quantile_edges(gl, 50, 0.0, T0))
     for lab, thr in (("gt1", 1.0), ("gt5", 5.0), ("gt20", 20.0)):
         out[f"frac_loss_{lab}"] = [float((gl > thr).mean()), float((fl > thr).mean())]
+    # transmitted primaries leaving with little energy, per generated primary
+    low = lambda s, t: float((s["trans"] & (s["T"] < t)).mean())
+    out["frac_trans_T_below"] = {str(t): [low(g, t), low(f, t)] for t in (0.1, 0.3, 1.0, 3.0, 10.0)}
     for k in ("theta", "r"):
         a, b = g[k][g["trans"]], f[k][f["trans"]]
         out[f"{k}_g4"], out[f"{k}_fast"] = summary(a), summary(b)
@@ -239,8 +242,11 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, help="fast-arm seed (default: the case's)")
     ap.add_argument("--max-step", type=float, help="fast-arm msc step cap [mm] (default: thickness / 10)")
     ap.add_argument("--hard-per-step", type=float, help="fast-arm least hard collisions per msc step cap")
+    ap.add_argument("--no-mott", action="store_true", help="diagnostic: hard collisions without the Mott factor")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
+    if a.no_mott:
+        emsc.MOTT = False
     if a.table:
         print(table([r for c in a.cases for r in (lambda x: x if isinstance(x, list) else [x])(
             json.loads(Path(c).read_text()))]))

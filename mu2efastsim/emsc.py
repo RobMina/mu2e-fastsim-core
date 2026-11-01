@@ -33,6 +33,7 @@ MF_MAX = 0.7698003589195010                      # max of sqrt(u/2)(2 - u) on [0
 C1 = 0.05                                        # hard mean free path / lambda_1
 STEP_LAMBDA1 = 0.1                               # step limit in units of lambda_1
 U_MAX = 2.0
+MOTT = True                                      # False: pure screened Rutherford on hard collisions (diagnostic)
 U_FLOOR = 1e-14                                  # u_c when every elastic collision is hard
 _TGRID = np.geomspace(1e-3, 1e3, 241)
 _LNRATE = np.linspace(-12.0, 20.0, 257)          # ln(hard collisions per mm) grid of the u_c table
@@ -140,13 +141,15 @@ def mott_envelope(z, T, positron=False):
     """Upper bound of the McKinley-Feshbach factor R(u) per element and energy (1 for e+)."""
     _, invb2, _ = kinematics(T)
     z = np.asarray(z, float)[:, None]
-    if positron:
+    if positron or not MOTT:
         return np.ones((z.shape[0], np.size(T)))
     return 1.0 + 0.5 * np.pi * ALPHA * z * np.sqrt(1 / invb2) * MF_MAX
 
 
 def mott_factor(z, u, invb2, positron=False):
     """McKinley-Feshbach ratio to Rutherford, as in G4WentzelOKandVIxSection::SampleSingleScattering."""
+    if not MOTT:
+        return np.ones_like(np.asarray(u, float))
     b2 = 1 / invb2
     sign = -1.0 if positron else 1.0
     return 1 - 0.5 * b2 * u + sign * 0.5 * np.pi * ALPHA * z * np.sqrt(0.5 * b2 * u) * (2 - u)
