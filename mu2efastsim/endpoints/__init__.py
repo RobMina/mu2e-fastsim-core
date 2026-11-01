@@ -52,6 +52,7 @@ class JobRecord:
     submitted_at: float
     resources: Dict = field(default_factory=dict)
     final: Optional[Dict] = None
+    gpu_choice: Optional[Dict] = None   # Slurm endpoint: GPU type chosen for the request, and why
 
 
 class Endpoint(Protocol):

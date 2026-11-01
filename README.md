@@ -1,104 +1,89 @@
 # mu2e-fastsim-core
 
-## Portable input verification
+Detector-independent core of the Mu2e Geant4-free fast simulation: muon energy loss and fluctuations matched to
+Geant4 11.3.2, materials, the passive world from a GDML export, straight-line crossings, multiple scattering and slab
+transport, the flat-table interchange format, statistics, the CRY cosmic generator backends, the compute-endpoint
+adapters with the Mu2eBO kit (`fastsimkit`), and the site configuration and test tooling of all four repositories.
 
-`python3 -m mu2efastsim.inputs check-inputs --manifest release.json --root /path/to/inputs`
-verifies an explicit versioned input manifest. `fetch-inputs` is dry-run by default,
-requires an explicit approved source, and never overwrites corrupt existing files.
-See the umbrella [collaborator setup](https://github.com/RobMina/mu2e-fastsim/blob/main/setup/README.md)
-for schema, approval boundary and site configuration. No Mu2e-internal manifests
-or data are bundled.
+A submodule of the umbrella [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim), next to
+[`mu2e-crv-fastsim`](https://github.com/RobMina/mu2e-crv-fastsim) and
+[`mu2e-tracker-fastsim`](https://github.com/RobMina/mu2e-tracker-fastsim); work from a clone of the umbrella. This
+repository holds code only: no Mu2e-internal conditions, tables, data or results.
+
+## Status
+
+| Part | State |
+|---|---|
+| muon energy loss, Urban fluctuations, Birks, deltas (`eloss`) | reference implementation; validated through CRV V1 and tracker T-V1 against Geant4 |
+| JAX twin of the loss sampler (`eloss_jax`) | validated against NumPy; used by the beam stage |
+| world, crossings, scattering, slab transport | validated through the CRV and tracker comparisons |
+| CRY backends (`cry_native`, `cry_device`) | opt-in; device generator consistent with stock CRY (accepted rate 0.9998 +- 0.0016) |
+| endpoints and `fastsimkit` | UVA (Slurm), Fermilab EAF, ALCF Polaris (IRI) and Aurora (PBS) job paths; admission and recovery unit-tested |
+| electrons (`ebrem`, `eioni`, `emsc`, `eannihil`, `eslab`) | opt-in; brem, ionisation, multiple scattering and e+ annihilation in a slab agree with Geant4 option 4 (loss chi2/ndf 0.5-1.4 in nine cases); thin-layer exit angles at 105 MeV differ (Geant4 WentzelVI stepping); no field, no JAX yet |
+| device precision (`precision`) | float32 by default in the CRV device kernels (`MU2EFS_DEVICE_FLOAT`; float64 one variable away, bit-identical across GPU models); beam, tracker and host code stay float64 |
+
+Details: [`docs/validation.md`](docs/validation.md), [`docs/limitations.md`](docs/limitations.md).
+
+## Quickstart
+
+```bash
+git clone --recurse-submodules https://github.com/RobMina/mu2e-fastsim.git && cd mu2e-fastsim
+export PYTHONPATH=$PWD/core
+python3 -m pytest -q -p no:cacheprovider core/tests       # no inputs needed; JAX tests skip without JAX
+```
+
+```python
+import numpy as np
+from mu2efastsim import eloss, materials
+loss = eloss.sample_loss(np.random.default_rng(1), materials.POLYSTYRENE, p_MeV, length_mm, tcut_MeV)
+```
+
+More: [`docs/running.md`](docs/running.md) (install, input verification, the kit and its tasks, endpoint scripts).
+
+## Map
+
+| Path | Content |
+|---|---|
+| `mu2efastsim/eloss.py`, `eloss_jax.py`, `materials.py`, `transport.py` | energy loss, fluctuations, materials, multiple scattering and slab loss |
+| `mu2efastsim/ebrem.py`, `eioni.py`, `emsc.py`, `eannihil.py`, `eslab.py`, `eslab_g4.py`, `data/` | electrons and positrons: bremsstrahlung (Seltzer-Berger tables), ionisation, multiple scattering, annihilation, slab crossing, Geant4 comparison |
+| `mu2efastsim/world.py`, `worldcensus.py`, `crossings.py` | GDML world, its census, ray-box crossings (NumPy or JAX) |
+| `mu2efastsim/tables.py`, `match.py`, `stats.py`, `plots.py` | table I/O in the art dumper layout, key joins, statistics, plots |
+| `mu2efastsim/cry_*.py`, `cosmic_cry.py`, `native/cry/` | CRY 1.7 native adapter and container recipe, device sampler, validation |
+| `mu2efastsim/endpoints/` | endpoint adapters (Slurm over ssh with automatic GPU type: MIG slice for one-GPU jobs up to 32 GB; EAF) and the Mu2eBO kit |
+| `mu2efastsim/precision.py` | device float of the JAX kernels (`MU2EFS_DEVICE_FLOAT`), scoped to registered modules and `precision.jit` kernels |
+| `mu2efastsim/site.py`, `inputs.py` | site configuration from the environment; input manifest check and fetch |
+| `mu2efastsim/testing.py`, `testselect.py`, `ci/` | shared pytest hooks, the site-path checker, test selection, CI pins and helpers |
+| `uva/`, `aurora/`, `iri/`, `eaf/` | endpoint job scripts (UVA Slurm, ALCF Aurora, ALCF Polaris IRI, Fermilab EAF) |
+| `tests/` | pytest suite |
+
+Docs: [`architecture.md`](docs/architecture.md), [`running.md`](docs/running.md), [`validation.md`](docs/validation.md),
+[`limitations.md`](docs/limitations.md), [`gpu_port.md`](docs/gpu_port.md) (JAX loss sampler),
+[`native-cry.md`](docs/native-cry.md), [`device-cry.md`](docs/device-cry.md), and the endpoint contracts
+[`endpoint-admission.md`](docs/endpoint-admission.md), [`slurm-recovery.md`](docs/slurm-recovery.md),
+[`artifact-bindings.md`](docs/artifact-bindings.md), [`geometry-capabilities.md`](docs/geometry-capabilities.md),
+[`tracker-point.md`](docs/tracker-point.md).
 
 ## Site configuration
 
 No site, user or storage path is built into the package. Every path, host and account comes from the environment
-(`mu2efastsim/site.py`; copy [`site.env.example`](site.env.example) to a private `site.env` outside the repository,
-fill it in and `source` it). Code that needs an unset variable raises `mu2efastsim.site.SiteConfigError` naming it;
-shell scripts stop with `${VAR:?...}`. `tests/test_no_site_paths.py` keeps user names and site paths out of the tree.
+(`mu2efastsim/site.py`; the template is the umbrella's
+[`site.env.example`](https://github.com/RobMina/mu2e-fastsim/blob/main/site.env.example)). Code that needs an unset
+variable raises `mu2efastsim.site.SiteConfigError` naming it; shell scripts stop with `${VAR:?...}`.
+`mu2efastsim.testing.check_site_paths`, run by every repository's `tests/test_no_site_paths.py`, keeps user names and
+site paths out of the four repositories.
 
-Detector-independent core of the Mu2e Geant4-free fast simulation for the extracted (KPP, no-field) cosmic
-configuration: muon energy loss and fluctuations matched to Geant4 11.3.2, material constants, the passive world
-from a GDML export, straight-line crossings, transport helpers, the flat-table interchange format and shared
-statistics.
+## Tests and CI
 
-It is a submodule of the umbrella repository [`mu2e-fastsim`](https://github.com/RobMina/mu2e-fastsim), next to the
-detector stages [`mu2e-crv-fastsim`](https://github.com/RobMina/mu2e-crv-fastsim) and
-[`mu2e-tracker-fastsim`](https://github.com/RobMina/mu2e-tracker-fastsim).
+CI (`.github/workflows/tests.yml`) runs the suite on every pull request twice: with the pinned packages of
+`ci/requirements.txt` (CPU JAX) and without JAX, where JAX tests must skip. Sibling repositories are checked out at
+the same-named branch when it exists (`ci/checkout_siblings.sh`). Rules: the umbrella's `CONTRIBUTING.md`.
 
-This repository holds technical software only: no physics results, no Mu2e-internal conditions, tables or data.
+## Studies kept off main
 
-## Contents
-
-| Module | What it holds |
+| Branch | Contents |
 |---|---|
-| `mu2efastsim/eloss.py` | restricted Bethe mean loss (`G4MuBetheBlochModel`), Urban fluctuation sampler (`G4UniversalFluctuation` + `G4UrbanFluctuation`), Birks saturation, delta-ray rate and sampling, radiation length, Highland angle |
-| `mu2efastsim/eloss_jax.py` | jit-able float64 JAX twin of `eloss.dedx_restricted` and `eloss.sample_loss` (same G4 Urban branches, fixed-shape sampling, explicit keys; validated against the numpy module, `docs/gpu_port.md`); used by the beam stage (`beam/` in the umbrella) |
-| `mu2efastsim/cvmfsget.py` | fetch single files from a CVMFS repository over HTTP from a Stratum-1, without a CVMFS mount |
-| `mu2efastsim/worldcensus.py` | census of the GDML world's solids and how `world.py` represents them |
-| `mu2efastsim/materials.py` | `Material` with composition, density, I, Sternheimer parameters, Birks constant, fluctuation-model parameters; the materials of the extracted world and the tracker (support alloys, electronics, Mylar, W and Au of the sense wire) |
-| `mu2efastsim/world.py` | GDML world -> global convex pieces; per-material path column of straight segments |
-| `mu2efastsim/crossings.py` | vectorised ray-box crossings (JAX on CPU/GPU, numpy fallback) |
-| `mu2efastsim/transport.py` | correlated multiple scattering to a plane (uniform or banded material, per-band \|p\|), sliced slab loss with range-out; scattering pieces for detector packages: Highland per layer with the log term on the cumulative x/X0 (`highland_var_increment`), the single-scattering tail (`chi_c2`, `chi_c2_electron`, `theta_nuclear`, `tail_threshold`, `single_scatter_tail`: screened Rutherford on nuclei with an exponential form factor, atomic electrons up to m_e/m_mu, optional in `msc_to_plane`/`world_loss`) |
-| `mu2efastsim/tables.py` | flat-table I/O in the art dumper layout (`dump/` directory, `(run, subrun, event)` keys) |
-| `mu2efastsim/stats.py`, `plots.py` | robust statistics (core sigma, binned-ratio band, MPV by Moyal fit `mpv_fit` and by histogram peak `mpv`) and plotting/stats-JSON helpers shared by every comparison |
-| `mu2efastsim/testing.py`, `testselect.py` | test-process hooks shared by every repository's `tests/conftest.py` (JAX caches released per test module; `@pytest.mark.slow` large-sample validations skipped unless `--runslow`) and the selector of the test files a change affects (`python -m mu2efastsim.testselect --why`, `--run --isolate` for one pytest process per file); see the umbrella README |
-| `mu2efastsim/match.py` | joins and lookups on multi-column integer keys, two-sample KS test (fast-vs-stock comparisons) |
-| `iri/` | ALCF Polaris job drivers through the IRI API (inline job shipping, venv setup, GPU smoke test, git sync) |
-| `mu2efastsim/endpoints/` | compute endpoints behind one interface (`submit`/`status`/`fetch`/`cancel`): `slurm_ssh` (any Slurm site over `ssh`; UVA today), `eaf` (Fermilab EAF: jobs in the user's JupyterHub server on an A100 MIG slice, driven with a hub token from the Fermilab network; one slice with a queue, auto-stop, keepalive), and `kit` = `fastsimkit`, the Mu2eBO evaluator-contract MCP server (one point = one job; tasks that read Fermilab-resident inputs in place run only on `eaf`). `chainpoint.py` runs a CRV chain point as N one-GPU jobs with streamed inputs. Tasks: `reco_bench`, `response_bench`, `v4_response`, `chain_point`, `chain`, `regression`, `veto_c4`, and `beam_point` when the umbrella's `beam/` is importable |
-| `eaf/` | Fermilab EAF tools: `eafhub.py` (start, run, wait, stop a session from a GPVM), live tests of the kit and its queue, read-only probes of slice usage and server lifetime |
-| `aurora/` | ALCF Aurora (Intel PVC) job scripts over SSH + PBS |
-| `uva/` | UVA Rivanna/Afton Slurm jobs: step-0 probe, in-image validation with the real tables, KPP V-R2/V-R3 with a streamed reference; see `uva/README.md` |
-
-## Evaluator admission
-
-The endpoint boundary uses shared typed parameter admission for plain
-and streamed tasks, matching `check`/`submit` refusal paths and additive parameter
-descriptors. See [endpoint admission](docs/endpoint-admission.md) for compatibility,
-local tests and the remaining manifest/idempotency/geometry work. These descriptors
-are input domains, not physics-validation certificates.
-
-## Backends
-
-`crossings` runs on JAX (CPU or GPU) when JAX is installed and on numpy otherwise. `eloss`, `world` and
-`transport` are numpy; `eloss_jax` is the JAX twin of the energy-loss sampler (delta-ray sampling not ported yet;
-`docs/gpu_port.md`).
-
-## Use
-
-```bash
-.venv/bin/python3 -m pip install -e path/to/mu2e-fastsim-core     # or put the umbrella repo root on PYTHONPATH
-.venv/bin/python3 -m pytest path/to/mu2e-fastsim-core/tests
-```
-
-On a Mu2e GPVM no install is needed: `source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh && pyenv ana`, then
-`source site.env` in the umbrella clone (it puts `core/` on `PYTHONPATH`) and
-`python3 -m pytest -q -p no:cacheprovider core/tests`. The umbrella README and the tracker README describe the full
-setup and the validation runs.
-
-```python
-from mu2efastsim import eloss, materials
-loss = eloss.sample_loss(rng, materials.POLYSTYRENE, p_MeV, length_mm, tcut_MeV)
-```
-
-## Native CRY backend (opt-in)
-
-An original C ABI and ctypes adapter can be bundled with public CRY 1.7 in a
-separate container extension; see [native CRY](docs/native-cry.md) for the
-user-run build recipe, licensing and smoke checks. `cry_native` returns raw
-showers and live time; `cosmic_cry` adds the extracted stock-style projection,
-selection, accepted-event grouping and CosmicTimeOffset convention. The
-CRV chain can use this wrapper in-process without gen tables; `chain_point`
-admits extracted-only `gen_set=4` with explicit `gen_events`. Emitted summaries
-retain native exposure and reject mixed/duplicate generator contracts on merge.
-The [JAX device sampler](docs/device-cry.md) generates correlated showers and
-performs Mu2e selection on the GPU (`--gen device`, endpoint `gen_set=5`); it
-does not upload host-generated showers. Table defaults are unchanged.
-
-## History
-
-The modules were first written in `mu2e-crv-fastsim` and moved here from its commit `f451d7b` (2026-10-16); the CRV
-repository removed its copies and imports this package since 2026-10-16. `match.py` (multi-column key joins, lookups,
-KS test) came from the CRV fast reco the same day; `tables.write(as_ttree=True)` from the CRV path-A work.
+| `park/endpoint-esnet` | ESnet IRI v2 jobs and scripts, Globus helper, Polaris hello/env probes |
+| `park/beam-loss-studies` | `eloss_split_jax` (slab-split loss study for the beam stage) |
 
 ## License
 
