@@ -33,6 +33,9 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 |---|---|
 | `mu2efastsim/eloss.py` | restricted Bethe mean loss (`G4MuBetheBlochModel`), Urban fluctuation sampler (`G4UniversalFluctuation` + `G4UrbanFluctuation`), Birks saturation, delta-ray rate and sampling, radiation length, Highland angle |
 | `mu2efastsim/eloss_jax.py` | jit-able float64 JAX twin of `eloss.dedx_restricted` and `eloss.sample_loss` (same G4 Urban branches, fixed-shape sampling, explicit keys; validated against the numpy module, `docs/gpu_port.md`); used by the beam stage (`beam/` in the umbrella) |
+| `mu2efastsim/ebrem.py` | e-/e+ bremsstrahlung below 1 GeV (`G4SeltzerBergerModel` as in EM option 4 / `ShieldingM_EMZ`): restricted radiative loss, cross section above a photon cut, photon-energy sampling, 2BS photon angle and parent recoil, sequential emission along a path; Seltzer-Berger tables bundled in `mu2efastsim/data/` (G4EMLOW 8.6.1) |
+| `mu2efastsim/eioni.py` | e-/e+ ionisation (`G4MollerBhabhaModel`): restricted collision dE/dx, delta-ray cross section above a cut and sampler, delta angle, continuous loss with Urban fluctuations |
+| `mu2efastsim/eslab.py` | e-/e+ crossing of a uniform slab: discrete brem and delta emission, continuous loss, range-out (opt-in; not used by any default path) |
 | `mu2efastsim/cvmfsget.py` | fetch single files from a CVMFS repository over HTTP from a Stratum-1, without a CVMFS mount |
 | `mu2efastsim/worldcensus.py` | census of the GDML world's solids and how `world.py` represents them |
 | `mu2efastsim/materials.py` | `Material` with composition, density, I, Sternheimer parameters, Birks constant, fluctuation-model parameters; the materials of the extracted world and the tracker (support alloys, electronics, Mylar, W and Au of the sense wire) |
