@@ -27,7 +27,8 @@ def test_invalid_config_refused_before_plain_or_streaming_submit(tmp_path, confi
     assert str(exc.value) == kit.check('point', params, [], [])['message']
 
 
-def test_complete_kit_config_is_one_shell_argument(tmp_path):
+def test_complete_kit_config_is_one_shell_argument(tmp_path, monkeypatch):
+    monkeypatch.setenv('FASTSIMKIT_SCRATCH', str(tmp_path / 'scratch'))  # the render names the Slurm work area
     kit = FastsimKit(endpoint=Endpoint(), state_dir=tmp_path)
     params = dict(task='crv_response', seed=1, response_config={'schema': 1, 'sipm': {'overvoltage': 2.5}},
                   time_constant=14)
