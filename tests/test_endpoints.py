@@ -183,22 +183,41 @@ def test_integral_floats_render_as_ints(site_ep, tmp_path):
     assert "--max-events 200000 " in body and "--seed 20261021 " in body and "200000.0" not in body
 
 
-def test_gpu_type_picks_card_partition_and_shape(tmp_path):
+def test_gpu_type_auto_slice_only_when_the_request_fits(tmp_path):
     def ep(**kw):
         return SlurmSSHEndpoint(runner=lambda *a: None, state_dir=tmp_path / "s", workdir="/path/to/scratch/kit", **kw)
+    fits = Resources(cores=8, mem_gb=32, gpus=1, gpu_type="a100", minutes=60)       # at the slice's 32 GB limit
+    over = Resources(cores=8, mem_gb=33, gpus=1, gpu_type="a100", minutes=60)       # one GB above it
     big = Resources(cores=16, mem_gb=110, gpus=1, gpu_type="a100", minutes=60)
-    mig = ep().shape(big)                                  # default: the free MIG slice, capped at 4 cores / 32 GB
+    mig, why = ep().gpu_choice(fits)                                  # default "auto": the free slice
     assert (mig.gpu_type, mig.cores, mig.mem_gb, mig.minutes) == ("1g.24gb", 4, 32, 60)
-    h = ep().header("p", mig)
+    assert why["policy"] == "auto" and why["chosen"] == "1g.24gb" and why["requested"]["cores"] == 8
+    h = ep().header("p", mig, why)
     assert "#SBATCH -p gpu-mig" in h and "#SBATCH --gres=gpu:1g.24gb:1" in h and "#SBATCH -c 4" in h
-    a40 = ep(gpu_type="a40").shape(big)
-    assert (a40.gpu_type, a40.cores, a40.mem_gb) == ("a40", 16, 110)
-    assert "#SBATCH -p gpu\n" in ep(gpu_type="a40").header("p", a40)
-    assert ep(gpu_type=None).shape(big) == big
+    assert "# m2fs gpu_choice " in h and '"policy": "auto"' in h
+    for r in (over, big, Resources(cores=4, mem_gb=16, gpus=2, gpu_type="a100", minutes=60)):
+        kept, why = ep().gpu_choice(r)                                # never shrinks a request: the task's card
+        assert kept == r and why["chosen"] == "a100" and "do not fit" in why["why"]
+    assert "#SBATCH -p gpu\n" in ep().header("p", over) and "--mem=33G" in ep().header("p", over)
+    assert ep(gpu_type="1g.24gb").shape(big) == Resources(cores=4, mem_gb=32, gpus=1, gpu_type="1g.24gb", minutes=60)
+    a40, why = ep(gpu_type="a40").gpu_choice(big)                     # an explicit type wins
+    assert (a40.gpu_type, a40.cores, a40.mem_gb) == ("a40", 16, 110) and why["policy"] == "explicit"
+    assert ep(gpu_type=None).gpu_choice(big) == (big, None)
     cpu = Resources(cores=2, mem_gb=8, gpus=0, gpu_type="", minutes=15)
     assert ep().shape(cpu) == cpu and "#SBATCH -p standard" in ep().header("p", cpu)
     with pytest.raises(EndpointError, match="unknown gpu_type"):
         ep(gpu_type="h100")
+
+
+def test_submit_records_gpu_choice(tmp_path):
+    site = FakeSite()
+    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/path/to/scratch/kit", max_su_per_job=100)
+    rec = ep.submit("small", "echo hi\n", Resources(cores=8, mem_gb=24, gpus=1, gpu_type="a100", minutes=10))
+    assert rec.gpu_choice["chosen"] == "1g.24gb" and rec.resources["gpu_type"] == "1g.24gb"
+    assert ep._load_record("small").gpu_choice == rec.gpu_choice
+    rec = ep.submit("large", "echo hi\n", Resources(cores=8, mem_gb=64, gpus=1, gpu_type="a100", minutes=10))
+    assert rec.gpu_choice["chosen"] == "a100" and rec.resources["mem_gb"] == 64
+    assert ep.submit("large", "echo hi\n", Resources(cores=8, mem_gb=64, gpus=1, gpu_type="a100", minutes=10)).job_id == rec.job_id
 
 
 def test_su_estimate_uses_uva_rates_per_type():

@@ -8,9 +8,11 @@ Every remote action is one ssh command through ``runner`` (injectable for tests)
 ``<workdir>/<handle>/{job.sh, out/, slurm.out}``; the job script writes its results under ``out/``. The job id is kept
 in a local state dir, so a restarted caller finds its jobs. ``status`` asks ``squeue`` first and ``sacct`` once the job
 has left the queue; a final state is cached locally. Budget guard: a submit whose estimated charge exceeds
-``max_su_per_job`` is refused (UVA's published per-type SU rates, GPU_TYPES). ``gpu_type`` picks the card for every
-GPU job whatever the task asks for: default the free RTX PRO 6000 MIG slice (``1g.24gb`` on ``gpu-mig``, at most 4
-cores and 32 GB), or e.g. ``a40`` / ``a100``; the CRV chain gives the same pulses and clusters on all of them.
+``max_su_per_job`` is refused (UVA's published per-type SU rates, GPU_TYPES). ``gpu_type`` picks the card of GPU jobs:
+"auto" (default) puts a one-GPU job whose memory request fits the free RTX PRO 6000 MIG slice (``1g.24gb`` on
+``gpu-mig``, at most 32 GB and 4 cores) on the slice and leaves any larger request on the card the task asked for; an
+explicit type (``a40``, ``a100``, ``1g.24gb``, ...) applies to every GPU job; None keeps every task's own request. The
+choice and the original request go into the job script header and the job record (``gpu_choice``).
 Durable intents and per-handle locks fence each dispatch attempt; an unrecorded intent is reconciled by exact
 scheduler comment, never blindly resubmitted. See docs/slurm-recovery.md for storage and single-cluster limits.
 """
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import json
 import re
 import shlex
 import subprocess
@@ -57,6 +60,7 @@ GPU_TYPES = {
     "1g.24gb": ("gpu-mig", 0.0, 0.0, 0.0, (4, 32)),
 }
 CPU_RATES = (0.177, 0.0143)   # standard (Rivanna) per core-hour, per GB-hour
+AUTO, SLICE = "auto", "1g.24gb"   # default gpu_type: the slice for requests that fit it, else the task's card
 
 
 def su_estimate(r: Resources, su_per_gpu_h: Optional[float] = None, su_per_core_h: Optional[float] = None) -> float:
@@ -87,9 +91,9 @@ class SlurmSSHEndpoint:
                  workdir: str | None = None, state_dir: str | Path = "~/.mu2efastsim/uva",
                  max_su_per_job: float = 500.0, runner: Optional[Runner] = None, name: str = "uva",
                  su_per_gpu_h: Optional[float] = None, su_per_core_h: Optional[float] = None, timeout_s: float = 120.0,
-                 stream_runner=None, gpu_type: Optional[str] = "1g.24gb"):
-        if gpu_type is not None and gpu_type not in GPU_TYPES:
-            raise EndpointError(f"unknown gpu_type {gpu_type!r}; known: {sorted(GPU_TYPES)}")
+                 stream_runner=None, gpu_type: Optional[str] = AUTO):
+        if gpu_type not in (None, AUTO) and gpu_type not in GPU_TYPES:
+            raise EndpointError(f"unknown gpu_type {gpu_type!r}; known: {AUTO!r}, None, {sorted(GPU_TYPES)}")
         self.name, self._host, self._account, self.partition = name, host, account, partition
         self.gpu_type = gpu_type
         self.workdir = (workdir or site.setting("FASTSIMKIT_WORKDIR") or site.scratch() + "/kit").rstrip("/")
@@ -133,26 +137,44 @@ class SlurmSSHEndpoint:
     def _dir(self, handle: str) -> str:
         return f"{self.workdir}/{handle}"
 
-    def shape(self, r: Resources) -> Resources:
-        """The job actually submitted: a GPU job on the endpoint's gpu_type, cores and memory capped for it."""
+    def gpu_choice(self, r: Resources):
+        """(the job actually submitted, why) for request r; why is None when r passes unchanged by policy None."""
         if not r.gpus or self.gpu_type is None:
-            return r
+            return r, None
+        requested = dict(r.__dict__)
+        if self.gpu_type == AUTO:
+            cores, mem = GPU_TYPES[SLICE][4]
+            if r.gpus == 1 and r.mem_gb <= mem:
+                out = Resources(cores=min(r.cores, cores), mem_gb=r.mem_gb, gpus=1, gpu_type=SLICE, minutes=r.minutes)
+                why = f"{r.mem_gb} GB fits the {SLICE} slice (<= {mem} GB, cores capped at {cores})"
+            else:
+                out = r
+                why = f"{r.gpus} GPU(s), {r.mem_gb} GB do not fit one {SLICE} slice ({mem} GB): the task's card"
+            return out, {"policy": AUTO, "chosen": out.gpu_type, "requested": requested, "why": why}
         cap = GPU_TYPES[self.gpu_type][4]
         cores, mem = (min(r.cores, cap[0]), min(r.mem_gb, cap[1])) if cap else (r.cores, r.mem_gb)
-        return Resources(cores=cores, mem_gb=mem, gpus=r.gpus, gpu_type=self.gpu_type, minutes=r.minutes)
+        out = Resources(cores=cores, mem_gb=mem, gpus=r.gpus, gpu_type=self.gpu_type, minutes=r.minutes)
+        return out, {"policy": "explicit", "chosen": self.gpu_type, "requested": requested,
+                     "why": f"gpu_type={self.gpu_type} set on the endpoint"}
+
+    def shape(self, r: Resources) -> Resources:
+        """The job actually submitted for request r (gpu_choice without the reason)."""
+        return self.gpu_choice(r)[0]
 
     def _partition(self, r: Resources) -> str:
         if not r.gpus:
             return "standard"
         return GPU_TYPES[r.gpu_type][0] if r.gpu_type in GPU_TYPES and self.partition == "gpu" else self.partition
 
-    def header(self, handle: str, r: Resources) -> str:
+    def header(self, handle: str, r: Resources, choice: Optional[dict] = None) -> str:
         gres = f"gpu:{r.gpu_type}:{r.gpus}" if r.gpu_type else f"gpu:{r.gpus}"
         lines = ["#!/bin/bash", f"#SBATCH -J m2fs_{handle}"[:60], f"#SBATCH -A {self.account}",
                  f"#SBATCH -p {self._partition(r)}", f"#SBATCH -c {r.cores}",
                  f"#SBATCH --mem={r.mem_gb}G", f"#SBATCH -t {r.minutes}", f"#SBATCH -o {self._dir(handle)}/slurm.out"]
         if r.gpus:
             lines.insert(4, f"#SBATCH --gres={gres}")
+        if choice:
+            lines.append("# m2fs gpu_choice " + json.dumps(choice, sort_keys=True))
         return "\n".join(lines) + f"\nexport M2FS_JOB_DIR={self._dir(handle)} M2FS_OUT={self._dir(handle)}/out\n"
 
     def admit_resources(self, resources: Resources) -> None:
@@ -238,9 +260,9 @@ class SlurmSSHEndpoint:
             if ((old is not None and old.spec_sha == spec_sha(script, resources))
                     or (intent is not None and intent["resources"] == resources.__dict__)):
                 return self._submit_locked(handle, script, resources)   # recorded as requested, before gpu_type
-            return self._submit_locked(handle, script, self.shape(resources))
+            return self._submit_locked(handle, script, *self.gpu_choice(resources))
 
-    def _submit_locked(self, handle, script, resources):
+    def _submit_locked(self, handle, script, resources, choice=None):
         sha = spec_sha(script, resources)
         old = self._load_record(handle)
         if old is not None:
@@ -249,7 +271,7 @@ class SlurmSSHEndpoint:
             return old
         target = self._target(resources)
         d = self._dir(handle)
-        body = self.header(handle, resources) + "umask 077\nmkdir -p \"$M2FS_OUT\"\n" + script
+        body = self.header(handle, resources, choice) + "umask 077\nmkdir -p \"$M2FS_OUT\"\n" + script
         request = request_digest(body, resources.__dict__, target)
         intents = IntentStore(self.state.root)
         intent = intents.get(handle)
@@ -270,7 +292,11 @@ class SlurmSSHEndpoint:
                 durable_json(intents._path(handle), intent)
             if not re.fullmatch(r"[1-9][0-9]*", job_id):
                 raise EndpointError(f"unsupported or missing local sbatch job ID: {out!r}")
-            return self._adopt(intent, job_id)
+            rec = self._adopt(intent, job_id)
+            if choice:
+                rec.gpu_choice = choice
+                self._save_record(rec)
+            return rec
         except (EndpointError, OSError) as exc:
             raise EndpointError(f"{handle!r}: submission outcome uncertain; intent retained; retry the same request "
                                 f"to reconcile only (no automatic resubmission): {exc}") from exc
