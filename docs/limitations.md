@@ -2,9 +2,11 @@
 
 - **Electrons: slab physics, field stepping checked against itself only.** Electron and positron modules (`eslab` and
   its parts) are opt-in and validated in slabs against Geant4; field stepping (`ehelix`, `eslab(field=...)`) is checked
-  against analytic helices and RK4, not yet against Geant4; no JAX version, no conversion-electron or cosmic-fake chain
-  yet; thin-layer exit angles at 105 MeV and the reflected fraction in 1 X0 W differ from Geant4
-  (`docs/validation.md`). Inside a slab the field is taken at the start of each step.
+  against analytic helices and RK4, not yet against Geant4; the device stepper `eslab_jax` has no field, returns
+  secondaries as per-track counts and energy sums, and keeps finished lanes in the loop (no compaction: the thick-W
+  case runs ~3500 iterations); no conversion-electron or cosmic-fake chain yet. Open differences from Geant4: the
+  reflected fraction in 1 X0 W, and in 0.1 mm Al at 95 MeV the transmitted-loss chi2/ndf of 5.1 (quantiles q10-q90
+  within 0.3 %, yields within 1 sigma; not understood). Inside a slab the field is taken at the start of each step.
 - **No magnetic field** in the core muon transport: straight segments with multiple scattering, for the field-free
   extracted configuration. The beam stage has its own field-map stepping (umbrella `beam/`).
 - `eloss_jax` does not port delta-ray sampling (`sample_deltas`); the CRV transport has its own device sampler for it.
