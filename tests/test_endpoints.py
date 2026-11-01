@@ -60,7 +60,8 @@ class FakeSite:
 @pytest.fixture
 def site_ep(tmp_path):
     site = FakeSite()
-    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/path/to/scratch/kit", max_su_per_job=100)
+    ep = SlurmSSHEndpoint(runner=site, state_dir=tmp_path / "jobs", workdir="/path/to/scratch/kit", max_su_per_job=100,
+                          gpu_type="a100")
     return site, ep
 
 
@@ -180,3 +181,29 @@ def test_integral_floats_render_as_ints(site_ep, tmp_path):
     kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit", sif="/x/m.sif")
     body, _ = kit.render({"task": "reco_bench", "events": 200000.0, "seed": 20261021.0})   # as Mu2eBO sends them
     assert "--max-events 200000 " in body and "--seed 20261021 " in body and "200000.0" not in body
+
+
+def test_gpu_type_picks_card_partition_and_shape(tmp_path):
+    def ep(**kw):
+        return SlurmSSHEndpoint(runner=lambda *a: None, state_dir=tmp_path / "s", workdir="/path/to/scratch/kit", **kw)
+    big = Resources(cores=16, mem_gb=110, gpus=1, gpu_type="a100", minutes=60)
+    mig = ep().shape(big)                                  # default: the free MIG slice, capped at 4 cores / 32 GB
+    assert (mig.gpu_type, mig.cores, mig.mem_gb, mig.minutes) == ("1g.24gb", 4, 32, 60)
+    h = ep().header("p", mig)
+    assert "#SBATCH -p gpu-mig" in h and "#SBATCH --gres=gpu:1g.24gb:1" in h and "#SBATCH -c 4" in h
+    a40 = ep(gpu_type="a40").shape(big)
+    assert (a40.gpu_type, a40.cores, a40.mem_gb) == ("a40", 16, 110)
+    assert "#SBATCH -p gpu\n" in ep(gpu_type="a40").header("p", a40)
+    assert ep(gpu_type=None).shape(big) == big
+    cpu = Resources(cores=2, mem_gb=8, gpus=0, gpu_type="", minutes=15)
+    assert ep().shape(cpu) == cpu and "#SBATCH -p standard" in ep().header("p", cpu)
+    with pytest.raises(EndpointError, match="unknown gpu_type"):
+        ep(gpu_type="h100")
+
+
+def test_su_estimate_uses_uva_rates_per_type():
+    assert su_estimate(Resources(cores=4, mem_gb=32, gpus=1, gpu_type="1g.24gb", minutes=60)) == 0.0
+    a40 = su_estimate(Resources(cores=8, mem_gb=48, gpus=1, gpu_type="a40", minutes=60))
+    a100 = su_estimate(Resources(cores=8, mem_gb=48, gpus=1, gpu_type="a100", minutes=60))
+    assert a40 == pytest.approx(22.3, abs=0.1) and a100 == pytest.approx(56.2, abs=0.1)   # sweep jobs: billing 223 / 561
+    assert su_estimate(Resources(cores=8, gpus=1, minutes=60), 53.0, 0.5) == pytest.approx(57.0)

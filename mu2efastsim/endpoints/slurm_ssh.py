@@ -8,7 +8,9 @@ Every remote action is one ssh command through ``runner`` (injectable for tests)
 ``<workdir>/<handle>/{job.sh, out/, slurm.out}``; the job script writes its results under ``out/``. The job id is kept
 in a local state dir, so a restarted caller finds its jobs. ``status`` asks ``squeue`` first and ``sacct`` once the job
 has left the queue; a final state is cached locally. Budget guard: a submit whose estimated charge exceeds
-``max_su_per_job`` is refused (UVA measured ~60 SU per A100-hour, ~0.5 SU per core-hour).
+``max_su_per_job`` is refused (UVA's published per-type SU rates, GPU_TYPES). ``gpu_type`` picks the card for every
+GPU job whatever the task asks for: default the free RTX PRO 6000 MIG slice (``1g.24gb`` on ``gpu-mig``, at most 4
+cores and 32 GB), or e.g. ``a40`` / ``a100``; the CRV chain gives the same pulses and clusters on all of them.
 Durable intents and per-handle locks fence each dispatch attempt; an unrecorded intent is reconciled by exact
 scheduler comment, never blindly resubmitted. See docs/slurm-recovery.md for storage and single-cluster limits.
 """
@@ -43,8 +45,28 @@ def ssh_runner(host: str, connect_timeout: int = 15) -> Runner:
     return run
 
 
-def su_estimate(r: Resources, su_per_gpu_h: float = 53.0, su_per_core_h: float = 0.5) -> float:
-    return r.minutes / 60.0 * (r.gpus * su_per_gpu_h + r.cores * su_per_core_h)
+# UVA GPU types: partition, SU per GPU-hour / core-hour / GB-hour (rc-website data/service.yaml and the Slurm billing
+# weights / 10, read 2026-10-30), and the largest (cores, GB) a job of that type may ask for
+GPU_TYPES = {
+    "a100": ("gpu", 50.89, 0.403, 0.043, None),
+    "a40": ("gpu", 18.669, 0.34, 0.02, None),
+    "a6000": ("gpu", 14.273, 0.383, 0.062, None),
+    "v100": ("gpu", 2.096, 0.058, 0.005, None),
+    "b200": ("gpu", 127.42, 0.437, 0.044, None),
+    "rtx_pro_6000": ("gpu", 33.43, 0.427, 0.049, None),
+    "1g.24gb": ("gpu-mig", 0.0, 0.0, 0.0, (4, 32)),
+}
+CPU_RATES = (0.177, 0.0143)   # standard (Rivanna) per core-hour, per GB-hour
+
+
+def su_estimate(r: Resources, su_per_gpu_h: Optional[float] = None, su_per_core_h: Optional[float] = None) -> float:
+    """Charge estimate: explicit flat rates when given, else UVA's rates for r.gpu_type (A100 when unknown)."""
+    if su_per_gpu_h is not None or su_per_core_h is not None:
+        return r.minutes / 60.0 * (r.gpus * (su_per_gpu_h or 0.0) + r.cores * (su_per_core_h or 0.0))
+    if not r.gpus:
+        return r.minutes / 60.0 * (r.cores * CPU_RATES[0] + r.mem_gb * CPU_RATES[1])
+    _, gpu, core, gb, _ = GPU_TYPES.get(r.gpu_type, GPU_TYPES["a100"])
+    return r.minutes / 60.0 * (r.gpus * gpu + r.cores * core + r.mem_gb * gb)
 
 
 def map_state(site_state: str, exit_code: str = "0:0") -> str:
@@ -64,9 +86,12 @@ class SlurmSSHEndpoint:
     def __init__(self, host: str | None = None, account: str | None = None, partition: str = "gpu",
                  workdir: str | None = None, state_dir: str | Path = "~/.mu2efastsim/uva",
                  max_su_per_job: float = 500.0, runner: Optional[Runner] = None, name: str = "uva",
-                 su_per_gpu_h: float = 53.0, su_per_core_h: float = 0.5, timeout_s: float = 120.0,
-                 stream_runner=None):
+                 su_per_gpu_h: Optional[float] = None, su_per_core_h: Optional[float] = None, timeout_s: float = 120.0,
+                 stream_runner=None, gpu_type: Optional[str] = "1g.24gb"):
+        if gpu_type is not None and gpu_type not in GPU_TYPES:
+            raise EndpointError(f"unknown gpu_type {gpu_type!r}; known: {sorted(GPU_TYPES)}")
         self.name, self._host, self._account, self.partition = name, host, account, partition
+        self.gpu_type = gpu_type
         self.workdir = (workdir or site.setting("FASTSIMKIT_WORKDIR") or site.scratch() + "/kit").rstrip("/")
         self.state = StateDir(Path(state_dir).expanduser())
         self.max_su_per_job = max_su_per_job
@@ -108,10 +133,23 @@ class SlurmSSHEndpoint:
     def _dir(self, handle: str) -> str:
         return f"{self.workdir}/{handle}"
 
+    def shape(self, r: Resources) -> Resources:
+        """The job actually submitted: a GPU job on the endpoint's gpu_type, cores and memory capped for it."""
+        if not r.gpus or self.gpu_type is None:
+            return r
+        cap = GPU_TYPES[self.gpu_type][4]
+        cores, mem = (min(r.cores, cap[0]), min(r.mem_gb, cap[1])) if cap else (r.cores, r.mem_gb)
+        return Resources(cores=cores, mem_gb=mem, gpus=r.gpus, gpu_type=self.gpu_type, minutes=r.minutes)
+
+    def _partition(self, r: Resources) -> str:
+        if not r.gpus:
+            return "standard"
+        return GPU_TYPES[r.gpu_type][0] if r.gpu_type in GPU_TYPES and self.partition == "gpu" else self.partition
+
     def header(self, handle: str, r: Resources) -> str:
         gres = f"gpu:{r.gpu_type}:{r.gpus}" if r.gpu_type else f"gpu:{r.gpus}"
         lines = ["#!/bin/bash", f"#SBATCH -J m2fs_{handle}"[:60], f"#SBATCH -A {self.account}",
-                 f"#SBATCH -p {self.partition if r.gpus else 'standard'}", f"#SBATCH -c {r.cores}",
+                 f"#SBATCH -p {self._partition(r)}", f"#SBATCH -c {r.cores}",
                  f"#SBATCH --mem={r.mem_gb}G", f"#SBATCH -t {r.minutes}", f"#SBATCH -o {self._dir(handle)}/slurm.out"]
         if r.gpus:
             lines.insert(4, f"#SBATCH --gres={gres}")
@@ -119,13 +157,13 @@ class SlurmSSHEndpoint:
 
     def admit_resources(self, resources: Resources) -> None:
         """Apply the configured per-job budget without contacting Slurm."""
-        su = su_estimate(resources, *self.su_rates)
+        su = su_estimate(self.shape(resources), *self.su_rates)
         if su > self.max_su_per_job:
             raise EndpointError(f"estimated {su:.0f} SU exceeds max_su_per_job {self.max_su_per_job:.0f}")
 
     def _target(self, resources):
         return {"host": self.host, "account": self.account, "workdir": self.workdir,
-                "partition": self.partition if resources.gpus else "standard"}
+                "partition": self._partition(resources)}
 
     def _load_record(self, handle):
         handle_key(handle)
@@ -195,7 +233,12 @@ class SlurmSSHEndpoint:
     # -- interface -----------------------------------------------------------------------------------------------
     def submit(self, handle: str, script: str, resources: Resources) -> JobRecord:
         with submission_lock(self.state.root, handle):
-            return self._submit_locked(handle, script, resources)
+            old = self._load_record(handle)
+            intent = IntentStore(self.state.root).get(handle)
+            if ((old is not None and old.spec_sha == spec_sha(script, resources))
+                    or (intent is not None and intent["resources"] == resources.__dict__)):
+                return self._submit_locked(handle, script, resources)   # recorded as requested, before gpu_type
+            return self._submit_locked(handle, script, self.shape(resources))
 
     def _submit_locked(self, handle, script, resources):
         sha = spec_sha(script, resources)
