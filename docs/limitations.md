@@ -15,9 +15,12 @@
 - Device CRY: rare species (kaons) are not observed, so not validated; multiplicity and multimuon fractions are about
   two standard errors high in the one comparison made. Native CRY needs a separately built, licensed CRY 1.7 container
   extension ([native-cry.md](native-cry.md)).
-- Device precision is float32 by default in the CRV kernels: results repeat on one GPU model but not bit for bit across
-  models; a 0.1 % pulse-PE offset is bounded (<= 0.3 %), not removed. `MU2EFS_DEVICE_FLOAT=float64` restores
-  cross-model bit identity.
+- Device precision is float32 by default in the CRV kernels; a 0.1 % pulse-PE offset is bounded (<= 0.3 %), not removed.
+  Device results repeat run to run on one GPU kind only with XLA autotuning off (the default
+  `MU2EFS_DEVICE_DETERMINISTIC`), and are not bit-identical across GPU kinds (float32 discrete counts can differ
+  slightly; `MU2EFS_DEVICE_FLOAT=float64` keeps the discrete results, with float values differing in the last bits). The
+  setting is applied when `mu2efastsim` is imported; a process that creates a JAX backend before that runs with
+  autotuning (`late` in the provenance).
 - Endpoints: `chain_point` (streamed inputs) runs on Slurm sites only; on EAF the CRV task is `chain` (inputs read in
   place). The ESnet adapter is on branch `park/endpoint-esnet`. Admission and recovery are unit-tested; no endpoint
   rollout is implied by the tests. The kit host must reach the Slurm login host by ssh.
