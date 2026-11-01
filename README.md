@@ -33,7 +33,6 @@ This repository holds technical software only: no physics results, no Mu2e-inter
 |---|---|
 | `mu2efastsim/eloss.py` | restricted Bethe mean loss (`G4MuBetheBlochModel`), Urban fluctuation sampler (`G4UniversalFluctuation` + `G4UrbanFluctuation`), Birks saturation, delta-ray rate and sampling, radiation length, Highland angle |
 | `mu2efastsim/eloss_jax.py` | jit-able float64 JAX twin of `eloss.dedx_restricted` and `eloss.sample_loss` (same G4 Urban branches, fixed-shape sampling, explicit keys; validated against the numpy module, `docs/gpu_port.md`); used by the beam stage (`beam/` in the umbrella) |
-| `mu2efastsim/dedxtable.py` | PDG Bethe and radiative-loss tables for cross-checks |
 | `mu2efastsim/cvmfsget.py` | fetch single files from a CVMFS repository over HTTP from a Stratum-1, without a CVMFS mount |
 | `mu2efastsim/worldcensus.py` | census of the GDML world's solids and how `world.py` represents them |
 | `mu2efastsim/materials.py` | `Material` with composition, density, I, Sternheimer parameters, Birks constant, fluctuation-model parameters; the materials of the extracted world and the tracker (support alloys, electronics, Mylar, W and Au of the sense wire) |
@@ -104,22 +103,3 @@ KS test) came from the CRV fast reco the same day; `tables.write(as_ttree=True)`
 ## License
 
 Apache-2.0 (`LICENSE`, `NOTICE`).
-
-## Opt-in restricted-soft / explicit-hard loss requests
-
-`mu2efastsim.eloss_split_jax.sample_loss_split(soft_key, hard_key, material, p,
-length, tcut, restricted_mean=...)` returns requested soft energy, summed hard
-energy and integer hard count, with no kinetic clipping or secondary transport.
-The supplied mean is a **restricted step energy** at the same cut, never an
-inclusive mean. Hard rate and first/second cumulant helpers expose the analytic
-spin-1/2 compound-Poisson law for tests; keys are explicit and no hard-count cap is
-used. Momentum and rates freeze over the supplied step; callers own subdivision,
-input validation, table/cut/material binding, clipping and endpoint classification.
-
-The legacy Urban sampler remains unchanged. Its overlapping-hard Bohr regime is
-not admitted by the split API: it returns NaN soft energy for positive length,
-cut < Tmax, mean >= 10*cut and Tmax <= 2*cut. Callers must retain that as an
-unresolved numerical result and apply neither channel. Other admitted branches
-still need independent distribution validation; matching analytic hard moments
-alone is not joint soft/hard physics closure. Existing numpy and JAX loss APIs
-and production defaults are unaffected.
