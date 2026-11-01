@@ -220,7 +220,7 @@ def test_body_is_valid_bash_and_keeps_inputs_off_disk(tmp_path):
     assert res.gpus == 1 and res.minutes == 45
 
 
-@pytest.mark.parametrize("tier1b,lib", [(0, "tier1b_strict_v2/library.root"), (1, "tier1b_v7/lib_prod_as_20files.root")])
+@pytest.mark.parametrize("tier1b,lib", [(0, "tier1b_strict_v2/library.root")])
 def test_library_streamed_once_per_node(tmp_path, tier1b, lib):
     site, ep, kit, streamed = make(tmp_path)
     kit.submit("pt4", {**P, "shards": 3, "files_per_job": 1, "tier1b": tier1b}, [], [])
@@ -240,28 +240,19 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
     assert "/dev/shm/crvfs_lib_${USER}_" in body and "flock 9" in body and "lib_release" in body
     assert body.count("trap '") >= 1 and "deleted node library" in body
     assert '--tier1b strict_v4 --tier1b-dir "$S"' in body and "--library" not in body
-    v3, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 3}), 0)
-    assert '--tier1b strict_v3 --tier1b-dir "$S"' in v3
-    old, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 2}), 0)
-    assert '--tier1b strict_v2 --tier1b-dir "$S"' in old
-    legacy, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 1}), 0)
-    assert '--library "$S/lib_prod_as_20files.root"' in legacy and "--tier1b" not in legacy
-    named, _ = kit.chain_point.render(CP.validate({**P, "gen_set": 3, "run_config": 3, "shard_offset": 0}), 0)
-    assert '--library "$S/lib_prod_as_20files.root"' in named          # named configurations: legacy only
+    with pytest.raises(ValueError, match="no tier-1b library"):        # named configurations: no library
+        kit.chain_point.render(CP.validate({**P, "gen_set": 3, "run_config": 3, "shard_offset": 0}), 0)
 
 
 def test_tier1b_sets():
-    assert CP.tier1b_set(CP.validate(P)) == "strict_v4" and CP.tier1b_set(CP.validate({**P, "tier1b": 1})) == "legacy"
-    assert CP.tier1b_set(CP.validate({**P, "tier1b": 3})) == "strict_v3"
-    assert CP.TIER1B_SETS["strict_v4"][1] == CP.TIER1B_SETS["strict_v3"][1]
-    assert CP.tier1b_set(CP.validate({**P, "tier1b": 2})) == "strict_v2"
+    assert CP.tier1b_set(CP.validate(P)) == "strict_v4" and list(CP.TIER1B_SETS) == ["strict_v4"]
     assert CP.library_files(CP.validate(P))[3] == "tier1b_strict_v2/templates_v3.npz"
-    assert CP.library_files(CP.validate({**P, "tier1b": 2}))[3] == "tier1b_strict_v2/templates_v2.npz"
-    assert CP.tier1b_set({k: v for k, v in CP.validate(P).items() if k != "tier1b"}) == "legacy"   # older records
-    assert CP.library_files(CP.validate({**P, "tier1b": 1})) == [CP.LIBRARY]
     assert CP.library_files(CP.validate(P))[0] == "tier1b_strict_v2/library.root"
-    with pytest.raises(ValueError):
-        CP.validate({**P, "tier1b": 4})
+    with pytest.raises(ValueError, match="no tier-1b asset set"):                                # older records
+        CP.tier1b_set({k: v for k, v in CP.validate(P).items() if k != "tier1b"})
+    for retired in (1, 2, 3, 4):                                    # legacy, strict_v2, strict_v3: retired
+        with pytest.raises(ValueError):
+            CP.validate({**P, "tier1b": retired})
 
 
 def test_gen_sets():
@@ -287,8 +278,6 @@ def test_wait_budget_scales_with_bytes(tmp_path):
     cg03 = CP.validate({**P, "gen_set": 1, "shards": 4, "files_per_job": 4, "shard_offset": 0})
     cg02 = CP.validate({**cg03, "files_per_job": 20})
     assert CP.wait_budget_s(cg03, mbps=4.0) == pytest.approx(600 + 4 * (1.1699e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
-    assert CP.wait_budget_s({**cg03, "tier1b": 2}, mbps=4.0) == pytest.approx(600 + 4 * (1.0834e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
-    assert CP.wait_budget_s({**cg03, "tier1b": 1}, mbps=4.0) == pytest.approx(600 + 4 * (1.007e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
     assert CP.wait_budget_s(cg02, mbps=4.0) > 2700 > CP.wait_budget_s(cg03, mbps=4.0) > CP.WAIT_FLOOR_S
     _, _, kit, _ = make(tmp_path)
     body, _ = kit.chain_point.render(cg02, 0)
@@ -301,9 +290,8 @@ def test_check_refuses_wall_too_short_for_wait_and_chain(tmp_path):
     _, _, kit, _ = make(tmp_path)
     cg = {**P, "gen_set": 1, "shards": 4, "shard_offset": 0}
     assert kit.check("a", {**cg, "files_per_job": 4, "wall_minutes": 50}, [], [])["ok"]      # kitcg03
-    # the strict_v3 set (v3 templates, +86 MB) needs ~46.3 min of wait + chain for this point; strict_v2 ~44.9
+    # the strict_v4 set needs ~46.3 min of wait + chain for this point
     assert not kit.check("a2", {**cg, "files_per_job": 4, "wall_minutes": 45}, [], [])["ok"]
-    assert kit.check("a3", {**cg, "files_per_job": 4, "wall_minutes": 45, "tier1b": 2}, [], [])["ok"]
     r = kit.check("b", {**cg, "files_per_job": 20, "wall_minutes": 45}, [], [])             # kitcg02 at 45 min
     assert not r["ok"] and "wall_minutes" in r["message"] and "GB streamed" in r["message"]
     assert kit.check("c", {**cg, "files_per_job": 20, "wall_minutes": 120}, [], [])["ok"]
@@ -323,11 +311,10 @@ def test_run_configs(tmp_path):
     p = CP.validate({**P, "gen_set": 3, "run_config": 3, "shard_offset": 0})
     assert CP.gen_files(p, 0)[0] == "crygen_run2_v1_tables/gen.001400_00004001.root"
     assert CP.small_inputs(p) == ["geometry/mu2e_run2_v10.gdml"]
-    body, _ = kit.chain_point.render(p, 0)
-    assert "--run-config run2_v10" in body and "--calib nominal" in body and "mu2e_run2_v10.gdml" in body
-    assert "LookupTable_4550_0" in body and "LookupTable_1550_1" in body and "crvcalib" not in body
-    r = subprocess.run(["bash", "-n"], input=(ep.header("t", _) + body).encode(), capture_output=True)
-    assert r.returncode == 0, r.stderr.decode()
+    with pytest.raises(ValueError, match="no tier-1b library"):     # no tier-1b library on the named geometries
+        kit.chain_point.render(p, 0)
+    r = kit.check("named", {**P, "gen_set": 3, "run_config": 3, "shard_offset": 0}, [], [])
+    assert not r["ok"] and "no tier-1b library" in r["message"]
     b0, _ = kit.chain_point.render(CP.validate(P), 0)
     assert "--run-config" not in b0 and "crvcalib_sim_best_v1_5_run1400.csv" in b0 and "LookupTable_4550_0" not in b0
     p1 = CP.validate({**P, "gen_set": 2, "run_config": 2, "shard_offset": 0})
@@ -514,7 +501,7 @@ def test_native_admission_bytes_budget_and_descriptor(tmp_path):
     _, _, kit, _ = make(tmp_path)
     p = CP.validate(NATIVE)
     assert CP.gen_files(p, 0) == CP.gen_files(p, 31) == []
-    assert CP.point_bytes(p) == p["shards"] * (CP.TIER1B_SETS["strict_v3"][2] + CP.SMALL_BYTES)
+    assert CP.point_bytes(p) == p["shards"] * (CP.TIER1B_SETS["strict_v4"][2] + CP.SMALL_BYTES)
     assert CP.chain_estimate_s(p) == 60 + (180 + 900) * .05
     assert kit.check("native", {"task": "chain_point", **p}, [], [])["ok"]
     assert "gen_events" not in CP.validate(P)
