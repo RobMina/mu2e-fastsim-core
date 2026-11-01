@@ -258,9 +258,16 @@ class SlurmSSHEndpoint:
             old = self._load_record(handle)
             intent = IntentStore(self.state.root).get(handle)
             if ((old is not None and old.spec_sha == spec_sha(script, resources))
-                    or (intent is not None and intent["resources"] == resources.__dict__)):
+                    or (intent is not None and intent["resources"] == resources.__dict__
+                        and intent["request_sha"] == self._request(handle, script, resources)[2])):
                 return self._submit_locked(handle, script, resources)   # recorded as requested, before gpu_type
             return self._submit_locked(handle, script, *self.gpu_choice(resources))
+
+    def _request(self, handle, script, resources, choice=None):
+        """(job script body, target, request digest) of one submission."""
+        target = self._target(resources)
+        body = self.header(handle, resources, choice) + "umask 077\nmkdir -p \"$M2FS_OUT\"\n" + script
+        return body, target, request_digest(body, resources.__dict__, target)
 
     def _submit_locked(self, handle, script, resources, choice=None):
         sha = spec_sha(script, resources)
@@ -269,10 +276,8 @@ class SlurmSSHEndpoint:
             if old.spec_sha != sha:
                 raise EndpointError(f"{handle!r} was already submitted with a different script or resources")
             return old
-        target = self._target(resources)
         d = self._dir(handle)
-        body = self.header(handle, resources, choice) + "umask 077\nmkdir -p \"$M2FS_OUT\"\n" + script
-        request = request_digest(body, resources.__dict__, target)
+        body, target, request = self._request(handle, script, resources, choice)
         intents = IntentStore(self.state.root)
         intent = intents.get(handle)
         if intent is not None:
