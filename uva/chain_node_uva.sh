@@ -18,6 +18,8 @@
 # Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v4 (default; stream library.root, the topology sidecar and
 # templates_v3.npz, each with its .json; T1B=strict_v3 the same files), T1B=strict_v2 (templates_v2.npz instead) or T1B=legacy (stream
 # lib_prod_as_20files.root; runs with --library, the sampling before 2026-10-28).
+# Device float: MU2EFS_DEVICE_FLOAT (float32 default, float64); JAX compilation cache: FASTSIMKIT_JAX_CACHE (default
+# $FASTSIMKIT_SCRATCH/jaxcache, "" = off), shared by all jobs (entries are keyed by card, JAX version and program).
 # Site settings come from the environment (site.env.example): FASTSIMKIT_SCRATCH (work area on the cluster), the
 # account at submission (sbatch -A "$FASTSIMKIT_SLURM_ACCOUNT"), and the log path (sbatch -o "$FASTSIMKIT_SCRATCH/kpp/slurm-%j.out").
 F=${M2FS_UVA:-${FASTSIMKIT_SCRATCH:?set FASTSIMKIT_SCRATCH (work area on the cluster scratch; sbatch --export=ALL,FASTSIMKIT_SCRATCH=...)}}
@@ -38,9 +40,12 @@ if [ "${CODE_READY:-0}" != 1 ]; then   # array runs prepare one checkout on the 
   git -C $CODE submodule update -q --init --recursive
 fi
 CR=$(readlink -f $CODE)
-A() { apptainer exec --nv --cleanenv --env "PYTHONPATH=$CR/crv:$CR/core:$CR/tracker,CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,$1" \
-      -B $L -B $OR -B $CR --pwd $CR "$SIF" "${@:2}"; }
-echo "host=$(hostname) job=${SLURM_JOB_ID:-none} out=$O nproc=$NP maxev=${MAXEV:-all} sif=$SIF"
+JC=${FASTSIMKIT_JAX_CACHE-$F/jaxcache}; DF=${MU2EFS_DEVICE_FLOAT:-float32}   # JAX compilation cache ("" = off), device float
+JENV="MU2EFS_DEVICE_FLOAT=$DF"; JB=()
+[ -n "$JC" ] && { mkdir -p "$JC"; JC=$(readlink -f "$JC"); JENV="$JENV,JAX_COMPILATION_CACHE_DIR=$JC,JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0"; JB=(-B "$JC"); }
+A() { apptainer exec --nv --cleanenv --env "PYTHONPATH=$CR/crv:$CR/core:$CR/tracker,CRVFS_LOOKUP_DIR=$L,CRVFS_DATA=$L,$JENV,$1" \
+      -B $L -B $OR -B $CR "${JB[@]}" --pwd $CR "$SIF" "${@:2}"; }
+echo "host=$(hostname) job=${SLURM_JOB_ID:-none} out=$O nproc=$NP maxev=${MAXEV:-all} sif=$SIF device_float=$DF jax_cache=${JC:-off}"
 git -C $CODE log -1 --format="umbrella %h %s" | cut -c1-120; git -C $CODE submodule status | cut -c1-60
 nvidia-smi -L | head -8
 A CUDA_VISIBLE_DEVICES=0 python -c "import jax, sys, crvfastsim, os; print(jax.devices(), os.path.dirname(crvfastsim.__file__)); sys.exit(jax.default_backend() != 'gpu')" \

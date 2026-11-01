@@ -159,7 +159,7 @@ def test_slurm_budget_rejected_before_code_or_records(tmp_path, task, params):
     from mu2efastsim.endpoints.slurm_ssh import SlurmSSHEndpoint
     if task not in TASKS:
         pytest.skip(f"{task} package not importable")
-    ep = SlurmSSHEndpoint(state_dir=tmp_path / "jobs", max_su_per_job=1,
+    ep = SlurmSSHEndpoint(state_dir=tmp_path / "jobs", max_su_per_job=1, gpu_type="a100",
                           runner=lambda *args: pytest.fail("no remote work on refused point"))
     ep.submissions = []
     kit = FastsimKit(endpoint=ep, state_dir=tmp_path / "kit")

@@ -7,6 +7,9 @@ Each repository's ``tests/conftest.py`` imports these hooks, so one test process
 - ``@pytest.mark.slow`` marks statistical validations with large samples (GB-scale or tens of seconds). They are
   skipped unless ``--runslow`` is given (or selected explicitly with ``-m slow``).
 - ``XLA_PYTHON_CLIENT_PREALLOCATE`` defaults to false, so a test run on a GPU host does not reserve most of the card.
+- ``MU2EFS_DEVICE_FLOAT`` defaults to float64: the suites check exact device-versus-NumPy parity, which holds in float64
+  only. The float32 production default has its own tests (float32 subprocesses); ``MU2EFS_DEVICE_FLOAT=float32`` runs a
+  whole suite in float32 mode.
 
 Selecting the tests a change affects is ``python -m mu2efastsim.testselect`` (see that module).
 
@@ -24,6 +27,9 @@ from pathlib import Path
 import pytest
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+os.environ.setdefault("MU2EFS_DEVICE_FLOAT", "float64")
+if "mu2efastsim.precision" in sys.modules and sys.modules["mu2efastsim.precision"].NAME != os.environ["MU2EFS_DEVICE_FLOAT"]:
+    raise RuntimeError("mu2efastsim.precision was imported before the test hooks; import mu2efastsim.testing first")
 
 
 def pytest_addoption(parser):

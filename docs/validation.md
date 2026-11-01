@@ -34,7 +34,11 @@ slabs with EM option 4, 1M events per case (200k for 1 X0 W); merged 2026-11-01:
 | exit angle, 105 MeV in thin layers | Geant4 | chi2/ndf 7.6-88 (Geant4 WentzelVI condensed stepping vs exact sampling of the same cross section) | open |
 | stopped / reflected fraction, 1 X0 W | Geant4 | 18.41 vs 17.90 +- 0.09 % / 0.35 vs 0.24 % | open |
 
-## Device precision (pending change)
+## Device precision
 
-A float32 device mode is validated on 100 CRV shards (within the float64 seed-to-seed spread) but not on `main`;
-every result above is float64.
+The CRV device kernels run in float32 by default (`MU2EFS_DEVICE_FLOAT`, 2026-11-01). Validated on 100 CRV shards on
+V100 and MIG A100 slices: every aggregate within the float64 seed-to-seed spread; seq-0 pulse PE float32 - float64 =
+-0.03 to -0.14 %, bounded at <= 0.3 % (2 sigma) per sector group (crv `docs/device-precision.md`); device tier-1b
+sampler passes the deck rule at float32 (0 of 21 shapes flagged). Beam and tracker JAX outputs are bit-identical to
+float64 (every jitted call hashed); float64 mode is bit-identical to the previous default. float32 results repeat on
+one GPU model but discrete counts differ slightly between models, so provenance records the model.
