@@ -107,3 +107,19 @@ def test_annihilation_photons_conserve_four_momentum():
     assert np.linalg.norm(u, axis=2) == pytest.approx(1.0)
     e0, u0 = A.at_rest(rng, 3)
     assert e0 == pytest.approx(A.ME) and (u0[:, 0] + u0[:, 1]) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_tabulated_mott_ratio_limits_and_envelope():
+    rng = np.random.default_rng(9)
+    c = E.mott_coefficients()
+    assert c.shape == (93, 5, 6) and c[1, 0, 0] == 1.0
+    # forward limit is Rutherford; the electron enhancement at intermediate angles grows with Z
+    b = np.sqrt(1 - (E.ME / (105.0 + E.ME)) ** 2)
+    assert E.mott_ratio_table(74, 1e-8, b) == pytest.approx(1.0, abs=5e-3)
+    assert E.mott_ratio_table(74, 0.5, b) > E.mott_ratio_table(13, 0.5, b) + 0.5
+    for z in (1, 6, 8, 13, 26, 74, 82):
+        T = np.geomspace(1e-3, 1e3, 400)
+        env = E.mott_envelope([z], T)[0]
+        u = rng.uniform(0, 2, (2000, T.size))
+        r = E.mott_factor(np.full(u.shape, z), u, (T + E.ME) ** 2 / (T * (T + 2 * E.ME)))
+        assert (r <= env[None, :] + 1e-12).all() and (r >= 0).all()
