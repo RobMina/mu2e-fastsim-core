@@ -8,7 +8,12 @@ version = "0.1.0"
 description = "Detector-independent core of the Mu2e Geant4-free fast simulation (energy loss, materials, world, crossings, tables)"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
-dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy"]
+# PLACEHOLDER (hep-endpoints): the endpoint adapters come from the experiment-neutral hep-endpoints package
+# (import name hependpoints). It is not on PyPI and RobMina/hep-endpoints is not published yet: install it first,
+#   python -m pip install -e <path to a hep-endpoints checkout>
+# and, once the repository exists, replace the requirement below with
+#   "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@<tag>"
+dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy", "hep-endpoints>=0.1.0"]
 
 [project.optional-dependencies]
 jax = ["jax"]

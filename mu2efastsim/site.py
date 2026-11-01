@@ -11,27 +11,17 @@ Variables (documented with examples in the umbrella repository's site.env.exampl
   FASTSIMKIT_EAF_SHARED_PREFIX   storage prefix mounted by both EAF and the FNAL host (EAF work areas live below it)
   FASTSIMKIT_GEOMETRY_PREFIX     storage prefix under which an absolute beam geometry path may point
 A missing variable raises SiteConfigError naming it; nothing falls back to a user name or a built-in path.
+The mechanism (setting, require, SiteConfigError) is hependpoints.site; this module holds the Mu2e variable names.
 """
-import os
+from hependpoints import site as _site
+from hependpoints.site import SiteConfigError, setting  # noqa: F401  (one error class for Mu2e and hep-endpoints)
 
-
-class SiteConfigError(RuntimeError):
-    """A site variable needed by this call is not set."""
-
-
-def setting(name, default=None):
-    """Value of a site variable, or default when it is unset or empty."""
-    return os.environ.get(name) or default
+HINT = "see site.env.example in the mu2e-fastsim repository"
 
 
 def require(name, *alternatives):
     """Value of the first set variable among name and alternatives; SiteConfigError when none is set."""
-    for n in (name, *alternatives):
-        value = os.environ.get(n)
-        if value:
-            return value
-    names = " or ".join((name, *alternatives))
-    raise SiteConfigError(f"set {names} (see site.env.example in the mu2e-fastsim repository)")
+    return _site.require(name, *alternatives, hint=HINT)
 
 
 def output_root():
