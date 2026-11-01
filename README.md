@@ -19,7 +19,7 @@ repository holds code only: no Mu2e-internal conditions, tables, data or results
 | world, crossings, scattering, slab transport | validated through the CRV and tracker comparisons |
 | CRY backends (`cry_native`, `cry_device`) | opt-in; device generator consistent with stock CRY (accepted rate 0.9998 +- 0.0016) |
 | endpoints and `fastsimkit` | UVA (Slurm), Fermilab EAF, ALCF Polaris (IRI) and Aurora (PBS) job paths; admission and recovery unit-tested |
-| electrons | on an unmerged branch (thin layers agree with Geant4; no multiple scattering yet) |
+| electrons (`ebrem`, `eioni`, `emsc`, `eannihil`, `eslab`) | opt-in; brem, ionisation, multiple scattering and e+ annihilation in a slab agree with Geant4 option 4 (loss chi2/ndf 0.5-1.4 in nine cases); thin-layer exit angles at 105 MeV differ (Geant4 WentzelVI stepping); no field, no JAX yet |
 | device precision | float64 (float32 validated on a branch) |
 
 Details: [`docs/validation.md`](docs/validation.md), [`docs/limitations.md`](docs/limitations.md).
@@ -45,6 +45,7 @@ More: [`docs/running.md`](docs/running.md) (install, input verification, the kit
 | Path | Content |
 |---|---|
 | `mu2efastsim/eloss.py`, `eloss_jax.py`, `materials.py`, `transport.py` | energy loss, fluctuations, materials, multiple scattering and slab loss |
+| `mu2efastsim/ebrem.py`, `eioni.py`, `emsc.py`, `eannihil.py`, `eslab.py`, `eslab_g4.py`, `data/` | electrons and positrons: bremsstrahlung (Seltzer-Berger tables), ionisation, multiple scattering, annihilation, slab crossing, Geant4 comparison |
 | `mu2efastsim/world.py`, `worldcensus.py`, `crossings.py` | GDML world, its census, ray-box crossings (NumPy or JAX) |
 | `mu2efastsim/tables.py`, `match.py`, `stats.py`, `plots.py` | table I/O in the art dumper layout, key joins, statistics, plots |
 | `mu2efastsim/cry_*.py`, `cosmic_cry.py`, `native/cry/` | CRY 1.7 native adapter and container recipe, device sampler, validation |

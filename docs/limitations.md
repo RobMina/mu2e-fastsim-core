@@ -1,7 +1,8 @@
 # Core: limitations
 
-- **Muons only on `main`.** Electron and positron physics is on an unmerged branch and has no multiple scattering,
-  no positron annihilation, no JAX port and no field stepping yet (see [validation.md](validation.md)).
+- **Electrons: slab physics only.** Electron and positron modules (`eslab` and its parts) are opt-in and validated in
+  slabs; no field stepping, no JAX version, no conversion-electron or cosmic-fake chain yet; thin-layer exit angles at
+  105 MeV and the stopped/reflected fractions in 1 X0 W differ from Geant4 (`docs/validation.md`).
 - **No magnetic field** in the core transport: straight segments with multiple scattering, for the field-free
   extracted configuration. The beam stage has its own field-map stepping (umbrella `beam/`).
 - `eloss_jax` does not port delta-ray sampling (`sample_deltas`); the CRV transport has its own device sampler for it.

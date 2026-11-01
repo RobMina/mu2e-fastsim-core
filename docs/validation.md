@@ -18,16 +18,21 @@ This page lists the checks of core components on their own. "Commit" is the core
 
 ## Electrons (not on `main`)
 
-Electron and positron energy loss (Seltzer-Berger bremsstrahlung, Moller/Bhabha ionisation, straight slab step, NumPy)
-is on an unmerged branch:
+Electron and positron physics (Seltzer-Berger bremsstrahlung, Moller/Bhabha ionisation, mixed screened-Rutherford
+multiple scattering, two-photon annihilation, slab stepping; NumPy, opt-in, `eslab`). Geant4 reference: electron-gun
+slabs with EM option 4, 1M events per case (200k for 1 X0 W); merged 2026-11-01:
 
 | Check | Reference | Result | Verdict |
 |---|---|---|---|
 | radiative stopping power | NIST ESTAR, 1-500 MeV, Al, W, Mylar, polystyrene | within 0.6 % | pass |
 | collision stopping power | NIST ESTAR, 0.1-500 MeV | within 1 % | pass |
-| thin layers (<= 0.1 X0), 105 MeV electrons | Geant4 electron gun | loss chi2/ndf 0.6-1.6; fractions losing > 1 / 5 MeV within 1 % | pass |
-| 1 X0 of tungsten | Geant4 | loss chi2/ndf 16 (no multiple scattering in the model) | **fail** |
-| positrons, 1 mm Al | Geant4 | loss chi2/ndf 8.4 (no annihilation in the model) | **fail** |
+| loss of transmitted primaries, nine slab cases (Al, Mylar, W; e- and e+; 20-105 MeV) | Geant4 | chi2/ndf 0.5-1.4 | pass |
+| 1 X0 of tungsten, 105 MeV e- | Geant4 | loss chi2/ndf 0.8, mean 61.94 vs 62.10 +- 0.06 MeV; exit angle 1.3, displacement 1.5 | pass |
+| photon and delta yields | Geant4 | within 0.3-0.5 % | pass |
+| e+ annihilation in flight, 1 mm Al | Geant4 | 4.86 +- 0.22 vs 4.93 per 10^4 | pass |
+| exit angle, 20 and 50 MeV in 1 mm Al | Geant4 | chi2/ndf 0.9 / 2.0 | pass |
+| exit angle, 105 MeV in thin layers | Geant4 | chi2/ndf 7.6-88 (Geant4 WentzelVI condensed stepping vs exact sampling of the same cross section) | open |
+| stopped / reflected fraction, 1 X0 W | Geant4 | 18.41 vs 17.90 +- 0.09 % / 0.35 vs 0.24 % | open |
 
 ## Device precision (pending change)
 
