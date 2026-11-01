@@ -9,3 +9,5 @@ matplotlib==3.11.0
 pyarrow==25.0.0
 PyYAML==6.0.3
 pytest==9.1.1
+# hep-endpoints: the endpoint adapters under mu2efastsim.endpoints (kit host only); same pin as pyproject.toml
+hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@4f2a724beb0f14aa8ac5eb1a3f10c0eeff610e14

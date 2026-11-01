@@ -18,7 +18,8 @@ Mu2e-internal inputs). The job scripts carry no account or log path: submit them
 ## Mu2eBO kit (`mu2efastsim.endpoints`)
 
 `endpoints/slurm_ssh.py` is the endpoint adapter (submit / status / fetch / cancel over `ssh` + Slurm, local job records,
-per-job SU cap); `endpoints/kit.py` is `fastsimkit`, an MCP server speaking the Mu2eBO evaluator contract on top of it
+per-job SU cap; the implementation is the experiment-neutral `hependpoints.slurm_ssh` from hep-endpoints, configured
+for Mu2e in `endpoints/mu2e_config.py`); `endpoints/kit.py` is `fastsimkit`, an MCP server speaking the Mu2eBO evaluator contract on top of it
 (one BO point = one job; tasks in `TASKS`, each writing `out/metrics.json`: `reco_bench`, `response_bench`,
 `v4_response`, and `beam_point` from the umbrella's `beam/` (muon table streamed in, see `beam/beamfastsim/kit_uva.py`); `response_bench` and `v4_response` stage the real tables copy-compute-delete and must leave `out/cleanup.txt`).
 `chain_point` (`endpoints/chainpoint.py`) is one BO point of the whole fast chain as N one-GPU sub-jobs (`<name>.j<k>`):

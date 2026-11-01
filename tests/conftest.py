@@ -2,7 +2,29 @@
 from mu2efastsim.testing import (_release_jax_caches, pytest_addoption,  # noqa: F401
                                  pytest_collection_modifyitems, pytest_configure)
 
+import importlib.util
+import re
+from pathlib import Path
+
 import pytest
+
+# hep-endpoints is needed on the kit host only: without it (core on PYTHONPATH, no pip install) the endpoint tests
+# are not collected (module-level imports) or skip (imports inside a test); every other test runs.
+HAVE_HEPENDPOINTS = importlib.util.find_spec("hependpoints") is not None
+_ENDPOINT_IMPORT = re.compile(r"^(?:from|import) mu2efastsim\.endpoints", re.M)
+collect_ignore = [] if HAVE_HEPENDPOINTS else sorted(
+    p.name for p in Path(__file__).parent.glob("test_*.py") if _ENDPOINT_IMPORT.search(p.read_text()))
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    try:
+        return (yield)
+    except ModuleNotFoundError as exc:
+        if not HAVE_HEPENDPOINTS and (exc.name or "").split(".")[0] == "hependpoints":
+            pytest.skip("hep-endpoints is not installed (kit host only)")
+        raise
+
 
 # Placeholder site configuration for tests of the endpoints and the kit (mu2efastsim.site): nothing here names a real
 # site, user or storage area. Tests that check fail-closed behaviour delete the variables themselves.

@@ -50,7 +50,7 @@ More: [`docs/running.md`](docs/running.md) (install, input verification, the kit
 | `mu2efastsim/world.py`, `worldcensus.py`, `crossings.py` | GDML world, its census, ray-box crossings (NumPy or JAX) |
 | `mu2efastsim/tables.py`, `match.py`, `stats.py`, `plots.py` | table I/O in the art dumper layout, key joins, statistics, plots |
 | `mu2efastsim/cry_*.py`, `cosmic_cry.py`, `native/cry/` | CRY 1.7 native adapter and container recipe, device sampler, validation |
-| `mu2efastsim/endpoints/` | endpoint adapters (Slurm over ssh with automatic GPU type: MIG slice for one-GPU jobs up to 32 GB; EAF) and the Mu2eBO kit |
+| `mu2efastsim/endpoints/` | Mu2e configuration of the [hep-endpoints](https://github.com/RobMina/hep-endpoints) adapters (Slurm over ssh with automatic GPU type: MIG slice for one-GPU jobs up to 32 GB; EAF; kit host only) and the Mu2eBO kit |
 | `mu2efastsim/precision.py` | device float of the JAX kernels (`MU2EFS_DEVICE_FLOAT`), scoped to registered modules and `precision.jit` kernels |
 | `mu2efastsim/site.py`, `inputs.py` | site configuration from the environment; input manifest check and fetch |
 | `mu2efastsim/testing.py`, `testselect.py`, `ci/` | shared pytest hooks, the site-path checker, test selection, CI pins and helpers |
