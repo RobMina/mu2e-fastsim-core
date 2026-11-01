@@ -11,7 +11,7 @@ from .materials import ELEMENTS as ELEMENT_ZA
 ME = 0.51099895          # MeV
 MMU = 105.6583755        # MeV
 TWOPI_MC2_RCL2 = 2 * np.pi * ME * (2.8179403262e-12) ** 2   # MeV mm2
-TWOLN10 = 2 * np.log(10.0)
+TWOLN10 = float(2 * np.log(10.0))   # a Python float: weak-typed in float32 device kernels
 
 
 P_FLOOR = 1e-3  # MeV/c: momenta below this are clamped (stopped particles carried through array code)

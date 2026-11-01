@@ -6,7 +6,8 @@
 # when it starts (srun --overlap), never stored on UVA; outputs (stats only) go back to the GPVM and are removed.
 # Then throughput_uva.py: accepted events per GPU-hour, per SU, and per hour of campaign wall time.
 # usage: [N=8] [FPP=4] [GRES=gpu:a100:1] [CONSTRAINT=a100] [CPUS=16] [MEM=110G] [WALL=00:45:00] [REF=main] \
-#        [T1B=strict_v4|strict_v3|strict_v2|legacy] chain_array_uva.sh [gpvm]      (T1B: tier-1b asset set, crvfastsim.tier1b_assets)
+#        [T1B=strict_v4|strict_v3|strict_v2|legacy] [MU2EFS_DEVICE_FLOAT=float32|float64] chain_array_uva.sh [gpvm]
+#        (T1B: tier-1b asset set, crvfastsim.tier1b_assets; device float of the jobs, default float32)
 # Site settings (site.env.example): FASTSIMKIT_FNAL_HOST, FASTSIMKIT_SLURM_HOST, FASTSIMKIT_SLURM_ACCOUNT, FASTSIMKIT_SCRATCH,
 # the FNAL input dir (FASTSIMKIT_FNAL_DATA) and M2FS_CODE (umbrella checkout on the FNAL host, for throughput_uva.py).
 set -uo pipefail
@@ -46,7 +47,7 @@ ssh "$U" "set -e; if [ -d $CODE/.git ]; then git -C $CODE fetch -q origin; git -
 JIDS=()
 for k in $(seq 0 $((N-1))); do
   J=$(ssh "$U" "cd $JD && sbatch --parsable -A $ACCT -o $F/kpp/slurm-%j.out -J m2fs_arr$k --gres=$GRES -C $CONSTRAINT -c $CPUS --mem=$MEM -t $WALL \
-      --export='ALL,FASTSIMKIT_SCRATCH=$F,NPROC=1,RUNS=$FPP,SEED_BASE=$((20261021 + 1000*k)),CODE_DIR=$CODE,CODE_READY=1,T1B=$T1B${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
+      --export='ALL,FASTSIMKIT_SCRATCH=$F,MU2EFS_DEVICE_FLOAT=${MU2EFS_DEVICE_FLOAT:-float32},NPROC=1,RUNS=$FPP,SEED_BASE=$((20261021 + 1000*k)),CODE_DIR=$CODE,CODE_READY=1,T1B=$T1B${MAXEV:+,MAXEV=$MAXEV}' chain_node_uva.sh" </dev/null)
   JIDS+=("${J%%;*}"); echo "job $k -> ${J%%;*}"
 done
 printf "%s\n" "${JIDS[@]}" > "$LOG/jobids.txt"

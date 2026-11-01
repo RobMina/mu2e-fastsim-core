@@ -15,6 +15,7 @@ import pandas as pd
 
 from . import cry_tables
 from .cosmic_cry import CosmicSource, MASS
+from . import precision as dprec
 
 jax.config.update("jax_enable_x64", True)
 
@@ -80,11 +81,11 @@ def device_tables(path=None):
 
 
 def uniform(key, tag, shape):
-    return jax.random.uniform(jax.random.fold_in(key, tag), shape, dtype=jnp.float64,
+    return jax.random.uniform(jax.random.fold_in(key, tag), shape, dtype=dprec.FLOAT,
                               minval=2.0**-53, maxval=1.0)
 
 
-@partial(jax.jit, static_argnames=("showers", "capacity"))
+@partial(dprec.jit, static_argnames=("showers", "capacity"))
 def raw(t, key, before, *, showers, capacity):
     """All raw-shower sampling on device; pool overflow/undefined PDF is returned, never truncated silently."""
     primary, good = draw(t["primary"], jnp.zeros(showers, jnp.int32), uniform(key, 0, (showers,)),
@@ -138,7 +139,7 @@ def intersection(position, direction, lower, upper):
     return result, jnp.isfinite(highest)
 
 
-@partial(jax.jit, static_argnames=("showers", "selected_capacity"))
+@partial(dprec.jit, static_argnames=("showers", "selected_capacity"))
 def select(r, cfg, key, pending, pending_count, *, showers, selected_capacity):
     """Stock selection/grouping of a device raw batch; exposed separately for deterministic parity tests."""
     mass_index = jnp.searchsorted(cfg["mass_pdg"], jnp.abs(r["pdg"]))
@@ -169,7 +170,7 @@ def select(r, cfg, key, pending, pending_count, *, showers, selected_capacity):
     ranks = jnp.cumsum(event)-1
     slot = ranks[jnp.minimum(targets, showers-1)]
     offsets = (cfg["offset_lo"] + uniform(key, 15, (showers,))*(cfg["offset_hi"]-cfg["offset_lo"])).astype(jnp.float32)
-    timed = rows.at[:, -1].add(offsets[jnp.minimum(targets, showers-1)].astype(jnp.float64))
+    timed = rows.at[:, -1].add(offsets[jnp.minimum(targets, showers-1)].astype(dprec.FLOAT))
     output_index = jnp.nonzero(complete, size=selected_capacity, fill_value=0)[0]
     pending_mask = valid & (targets == showers)
     pending_index = jnp.nonzero(pending_mask, size=selected_capacity, fill_value=0)[0]
@@ -185,7 +186,7 @@ def select(r, cfg, key, pending, pending_count, *, showers, selected_capacity):
             "carried": jnp.sum(keep & (terminal[r["shower"]] != r["shower"]))}
 
 
-@partial(jax.jit, static_argnames=("showers", "capacity", "selected_capacity"))
+@partial(dprec.jit, static_argnames=("showers", "capacity", "selected_capacity"))
 def accepted(t, cfg, key, before, pending, pending_count, *, showers, capacity, selected_capacity):
     """Sampling and stock selection execute on the same device; no host shower inputs."""
     r = raw(t, key, before, showers=showers, capacity=capacity)

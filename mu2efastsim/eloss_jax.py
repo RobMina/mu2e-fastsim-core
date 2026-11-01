@@ -24,6 +24,7 @@ from jax import lax
 from jax.scipy.special import ndtr, ndtri
 
 from .eloss import ME, MMU, P_FLOOR, TWOLN10, TWOPI_MC2_RCL2, _A0, _BOHR_MIN, _FW, _MINLOSS, _NMAXCONT, _RATE
+from . import precision as dprec
 
 jax.config.update("jax_enable_x64", True)
 
@@ -49,12 +50,12 @@ class MatConsts(NamedTuple):
 
 
 def consts(mat):
-    """Material -> MatConsts (float64 numpy scalars); MatConsts pass through."""
+    """Material -> MatConsts (Python floats, weak-typed in the device kernels); MatConsts pass through."""
     if isinstance(mat, MatConsts):
         return mat
     C, X0, X1, a, m, d0 = mat.density_params()
     f = mat.fluct_params()
-    return MatConsts(*(np.float64(v) for v in (mat.I_eV * 1e-6, mat.electron_density_per_mm3, C, X0, X1, a, m, d0,
+    return MatConsts(*(float(v) for v in (mat.I_eV * 1e-6, mat.electron_density_per_mm3, C, X0, X1, a, m, d0,
                                                  f["f1"], f["f2"], f["e1"], f["e2"], f["e0"])))
 
 
@@ -66,7 +67,7 @@ def stack_consts(mats, index):
 
 def kinematics(p, mass=MMU):
     """|p| [MeV/c] -> (kinetic energy, beta^2, beta*gamma squared, gamma, Tmax); p is clamped at P_FLOOR."""
-    p = jnp.maximum(jnp.asarray(p, jnp.float64), P_FLOOR)
+    p = jnp.maximum(jnp.asarray(p, dprec.float_of(p)), P_FLOOR)
     e = jnp.sqrt(p * p + mass * mass)
     gam = e / mass
     bg2 = (p / mass) ** 2
@@ -92,13 +93,13 @@ def _dedx(c, p, tcut, mass):
     return jnp.maximum(d * TWOPI_MC2_RCL2 * c.ne / beta2, 0.0)
 
 
-_dedx_jit = jax.jit(_dedx)
+_dedx_jit = jax.jit(_dedx)   # shared kernel: computes in the dtype of its inputs (dprec.float_of)
 
 
 def dedx_restricted(mat, p, tcut, mass=MMU):
     """Restricted mean energy loss [MeV/mm] for delta electrons below tcut [MeV] (jit-able; jnp array out)."""
-    return _dedx_jit(consts(mat), jnp.asarray(p, jnp.float64), jnp.asarray(tcut, jnp.float64),
-                     jnp.asarray(mass, jnp.float64))
+    dt = dprec.float_of(p)
+    return _dedx_jit(consts(mat), jnp.asarray(p, dt), jnp.asarray(tcut, dt), jnp.asarray(mass, dt))
 
 
 def _gauss_clipped(u, eav, sig2):
@@ -122,15 +123,15 @@ def _gamma_fixed(key, alpha, rounds):
     def body(i, carry):
         val, done = carry
         kn, ku = jax.random.split(jax.random.fold_in(kr, i))
-        x = jax.random.normal(kn, alpha.shape, jnp.float64)
+        x = jax.random.normal(kn, alpha.shape, alpha.dtype)
         v = (1 + cc * x) ** 3
-        lu = jnp.log(jax.random.uniform(ku, alpha.shape, jnp.float64, minval=1e-300))
+        lu = jnp.log(jax.random.uniform(ku, alpha.shape, alpha.dtype, minval=dprec.tiny_of(alpha.dtype)))
         ok = (v > 0) & (lu < 0.5 * x * x + d - d * v + d * jnp.log(jnp.where(v > 0, v, 1.0)))
         take = ok & ~done
         return jnp.where(take, d * v, val), done | ok
 
     val, _ = lax.fori_loop(0, rounds, body, (d, jnp.zeros(alpha.shape, bool)))
-    ub = jax.random.uniform(kb, alpha.shape, jnp.float64, minval=1e-300)
+    ub = jax.random.uniform(kb, alpha.shape, alpha.dtype, minval=dprec.tiny_of(alpha.dtype))
     return jnp.where(alpha < 1, val * ub ** (1 / jnp.where(alpha > 0, alpha, 1.0)), val)
 
 
@@ -151,24 +152,25 @@ def _ion_split(a3, w1):
     return alfa, alfa1, namean, p3
 
 
-@partial(jax.jit, static_argnames=("K", "gamma_rounds"))
+@partial(jax.jit, static_argnames=("K", "gamma_rounds"))   # shared kernel: dtype of its inputs (dprec.float_of)
 def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUNDS, mean=None):
-    p = jnp.asarray(p, jnp.float64)
-    p, length, tcut = jnp.broadcast_arrays(p, jnp.asarray(length, jnp.float64), jnp.asarray(tcut, jnp.float64))
-    c = MatConsts(*(jnp.broadcast_to(jnp.asarray(v, jnp.float64), p.shape) for v in c))
+    dt = dprec.float_of(p)
+    p = jnp.asarray(p, dt)
+    p, length, tcut = jnp.broadcast_arrays(p, jnp.asarray(length, dt), jnp.asarray(tcut, dt))
+    c = MatConsts(*(jnp.broadcast_to(jnp.asarray(v, dt), p.shape) for v in c))
     sh = p.shape
     ks = jax.random.split(key, 9)
     tkin, beta2, bg2, gam, tmax = kinematics(p, mass)
     cut = jnp.minimum(tcut, tmax)
     # mean: caller-supplied mean loss (e.g. range-integrated, as G4VEnergyLossProcess for long steps)
-    mean = _dedx(c, p, tcut, mass) * length if mean is None else jnp.broadcast_to(jnp.asarray(mean, jnp.float64), sh)
+    mean = _dedx(c, p, tcut, mass) * length if mean is None else jnp.broadcast_to(jnp.asarray(mean, dt), sh)
     # Gaussian/Gamma regime: many collisions, cut close to tmax
     bohr = (mean >= _BOHR_MIN * cut) & (tmax <= 2 * cut)
     siga = jnp.sqrt(jnp.clip((tmax / beta2 - 0.5 * cut) * TWOPI_MC2_RCL2 * length * c.ne, 0, None))
     sn = mean / jnp.where(siga > 0, siga, 1)
     gs = bohr & (sn >= 2)
     gm = bohr & (sn < 2)
-    x_gs = _gauss_clipped(jax.random.uniform(ks[0], sh, jnp.float64), mean, siga ** 2)
+    x_gs = _gauss_clipped(jax.random.uniform(ks[0], sh, dt), mean, siga ** 2)
     neff = jnp.where(gm, sn * sn, 1.0)
     x_gm = mean * _gamma_fixed(ks[1], neff, gamma_rounds) / neff
     # Urban model for the rest (inputs made safe outside u so every lane stays finite)
@@ -208,26 +210,26 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
     w = jnp.where(has, (tc - w3) / tc, 0.0)
     lam3 = jnp.where(has, jnp.clip(p3, 0, None), 0.0)
     # one fixed-trip loop: inverse-CDF Poisson counts for lam1, lam2, lam3 and the sum of the first n3 ionisation terms
-    uu = jax.random.uniform(ks[2], (3,) + sh, jnp.float64)
+    uu = jax.random.uniform(ks[2], (3,) + sh, dt)
     kr = ks[3]
     lams = jnp.stack([lam1, lam2, lam3])
 
     def body(j, carry):
         pmf, cdf, k, ion = carry
         above = uu > cdf
-        r = jax.random.uniform(jax.random.fold_in(kr, j), sh, jnp.float64)
+        r = jax.random.uniform(jax.random.fold_in(kr, j), sh, dt)
         ion = ion + jnp.where(above[2], w3 / (1 - w * r), 0.0)
         pmf = pmf * lams / (j + 1)
         return pmf, cdf + pmf, k + above, ion
 
     pmf0 = jnp.exp(-lams)
     _, _, kk, ion = lax.fori_loop(0, K, body, (pmf0, pmf0, jnp.zeros((3,) + sh, jnp.int32), jnp.zeros(sh)))
-    rx = jax.random.uniform(ks[4], (2,) + sh, jnp.float64)
+    rx = jax.random.uniform(ks[4], (2,) + sh, dt)
     loss = jnp.where(kk[0] > 0, ((kk[0] + 1) - 2 * rx[0]) * e1, 0.0)
     loss = loss + jnp.where(kk[1] > 0, ((kk[1] + 1) - 2 * rx[1]) * e2, 0.0)
-    loss = loss + jnp.where(s2 > 0, _gauss_clipped(jax.random.uniform(ks[5], sh, jnp.float64), eav, s2), 0.0)
+    loss = loss + jnp.where(s2 > 0, _gauss_clipped(jax.random.uniform(ks[5], sh, dt), eav, s2), 0.0)
     loss = loss + ion
-    loss = loss + jnp.where(s23 > 0, _gauss_clipped(jax.random.uniform(ks[6], sh, jnp.float64), eav3,
+    loss = loss + jnp.where(s23 > 0, _gauss_clipped(jax.random.uniform(ks[6], sh, dt), eav3,
                                                     jnp.where(s23 > 0, s23, 0.0)), 0.0)
     out = jnp.where(gs, x_gs, jnp.where(gm, x_gm, mean))
     return jnp.where(u, loss * scaling, out)
@@ -239,7 +241,7 @@ def sample_loss(key, mat, p, length, tcut, mass=MMU, K=K_POISSON, mean=None):
     key: jax.random key; mat: Material or MatConsts. jit-able (close over a Material, or pass MatConsts as arrays).
     mean: optional mean loss [MeV] replacing dE/dx(p) * length (the fluctuation width still uses p, length, tcut).
     """
-    return _sample(key, consts(mat), p, length, tcut, jnp.asarray(mass, jnp.float64), K=K, mean=mean)
+    return _sample(key, consts(mat), p, length, tcut, jnp.asarray(mass, dprec.float_of(p)), K=K, mean=mean)
 
 
 def _bench(n, reps=3):
