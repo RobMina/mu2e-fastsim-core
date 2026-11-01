@@ -1,4 +1,4 @@
-"""e-/e+ crossing of a uniform slab with Geant4 EM option 4 physics (no field).
+"""e-/e+ crossing of a uniform slab with Geant4 EM option 4 physics, optionally in a magnetic field.
 
 The slab is 0 <= z <= length, unbounded in x and y; tracks start at the origin with directions d (d_z > 0). Each step
 is the shortest of the free path to the next discrete interaction (Seltzer-Berger photon above kcut or Moller / Bhabha
@@ -20,7 +20,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from . import eannihil, ebrem, eioni, emsc
+from . import eannihil, ebrem, ehelix, eioni, emsc
 
 STEP_FRACTION = 0.2      # G4EmStandardPhysics_option4 SetStepFunction(0.2, 10 um) for e+-
 FINAL_RANGE = 0.01       # mm
@@ -110,11 +110,12 @@ def csda_range(mat, T, tcut, kcut, positron=False):
 
 
 def electron_slab(rng, mat, T, d, length, tcut, kcut, positron=False, msc=False, annihilation=True, max_step=None,
-                  hard_per_step=HARD_PER_STEP):
+                  hard_per_step=HARD_PER_STEP, field=None):
     """Cross a slab of thickness `length` [mm] of `mat` from z = 0 along directions d (n, 3) from kinetic energies
     T [MeV]; msc=True adds multiple scattering (emsc), annihilation=False switches off e+ annihilation, max_step [mm]
     caps the msc step (default length / MSC_SLAB_STEPS: a hinge beyond the face would leave the track unscattered) and
-    hard_per_step sets the least number of hard elastic collisions per max_step."""
+    hard_per_step sets the least number of hard elastic collisions per max_step; field (a 3-vector [T] or a callable
+    B(x)) bends every step on the helix of the field at its start (ehelix), the faces found along the helix."""
     T = np.array(np.atleast_1d(T), float)
     n = T.size
     d = np.array(d, float).reshape(n, 3)
@@ -128,6 +129,7 @@ def electron_slab(rng, mat, T, d, length, tcut, kcut, positron=False, msc=False,
     annihilated = np.zeros(n, bool)
     anni = positron and annihilation
     dsmax = L / MSC_SLAB_STEPS if max_step is None else float(max_step)
+    charge = 1.0 if positron else -1.0
     photons, deltas, gammas = [], [], []
 
     def stop_at_rest(idx):
@@ -169,31 +171,45 @@ def electron_slab(rng, mat, T, d, length, tcut, kcut, positron=False, msc=False,
         limit = np.minimum(rem, mcap)
         plan = np.minimum(np.minimum(free, limit), np.minimum(free_a, free_h))
         dl = d[live]
-        z = pos[live, 2]
+        xl = pos[live]
+        if field is not None:
+            pmom = np.sqrt(Tl * (Tl + 2 * eioni.ME))
+
+        def face(x, u, smax):
+            if field is None:
+                return _to_face(x[:, 2], u[:, 2], L)
+            B = ehelix.field_at(field, x)
+            return np.minimum(ehelix.to_plane(x, u, pmom, charge, B, L, smax),
+                              ehelix.to_plane(x, u, pmom, charge, B, 0.0, smax))
+
+        def move(x, u, s):
+            if field is None:
+                return x + s[:, None] * u, u
+            return ehelix.helix(x, u, pmom, charge, ehelix.field_at(field, x), s)
+
         if msc:
             tau = rng.random(live.size)
             leg1 = tau * plan
-            g1 = _to_face(z, dl[:, 2], L)
+            g1 = face(xl, dl, leg1)
             out1 = leg1 >= g1
-            p1 = pos[live] + np.where(out1, g1, leg1)[:, None] * dl
+            p1, d1 = move(xl, dl, np.where(out1, g1, leg1))
             tmid = np.maximum(Tl - dedx * (pl + 0.5 * plan), 0.5 * Tl)
             u = emsc.sample_soft(rng, mat, tmid, plan, uc, tcut, positron)
-            dn = np.where(out1[:, None], dl, emsc.deflect(rng, dl, u))
+            dn = np.where(out1[:, None], d1, emsc.deflect(rng, d1, u))
             leg2 = plan - leg1
-            g2 = _to_face(p1[:, 2], dn[:, 2], L)
+            g2 = face(p1, dn, leg2)
             out2 = (~out1) & (leg2 >= g2)
             step = np.where(out1, g1, np.where(out2, leg1 + g2, plan))
-            pos[live] = p1 + np.where(out1, 0.0, np.where(out2, g2, leg2))[:, None] * dn
-            d[live] = dn
+            pos[live], d[live] = move(p1, dn, np.where(out1, 0.0, np.where(out2, g2, leg2)))
             left = out1 | out2
             other = np.minimum(np.minimum(free, rem), free_a)
             sub = (free_h < np.minimum(np.minimum(free, limit), free_a)) | (mcap < np.minimum(other, free_h))
             apply = left | ~sub
         else:
-            g = _to_face(z, dl[:, 2], L)
+            g = face(xl, dl, plan)
             left = g <= plan
             step = np.where(left, g, plan)
-            pos[live] += step[:, None] * dl
+            pos[live], d[live] = move(xl, dl, step)
             apply = np.ones(live.size, bool)
         pend[live] += step
         path[live] += step
