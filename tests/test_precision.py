@@ -50,6 +50,9 @@ np.save(OUT, np.concatenate([np.asarray(d64), np.asarray(s64)]))
 assert dprec.dev({"a": np.ones(2), "b": np.arange(2)})["a"].dtype == np.float32
 h = dprec.host({"a": jnp.ones(2, jnp.float32), "b": jnp.arange(2)})
 assert type(h["a"]) is np.ndarray and h["a"].dtype == np.float64 and h["b"].dtype == np.int64
+dprec.register(__name__)                                   # a precision-aware module: its eager calls follow too
+assert jnp.zeros(2).dtype == np.float32 and jnp.asarray(np.ones(2)).dtype == np.float32
+assert jax.random.normal(jax.random.key(0), (2,)).dtype == np.float32 and jnp.arange(2).dtype == np.int64
 print("ok")
 '''
 

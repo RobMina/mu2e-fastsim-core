@@ -17,6 +17,8 @@ from . import cry_tables
 from .cosmic_cry import CosmicSource, MASS
 from . import precision as dprec
 
+dprec.register(__name__)
+
 jax.config.update("jax_enable_x64", True)
 
 

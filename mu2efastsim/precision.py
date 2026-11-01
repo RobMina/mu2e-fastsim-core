@@ -4,9 +4,10 @@ x64 stays enabled in both modes, so integers, keys, indices and sentinels are 64
 Host NumPy code is float64 in both modes. Device modules use FLOAT for every floating dtype, TINY for the smallest
 positive uniform draw and divide guards, dev() for host arrays they move to the device, host() for device results they
 hand to host code, and jit in place of jax.jit: in float64 mode it is jax.jit itself, in float32 mode it also casts
-float64 array arguments and, while it runs (traces), makes JAX array creators and samplers called without a dtype
-give float32. Outside those kernels nothing changes: JAX code that does not use jit (other stages, host code) stays
-float64 in both modes. Kernels shared with such code compute in the dtype of their inputs (float_of, tiny_of).
+float64 array arguments. In float32 mode, JAX array creators and samplers called without a dtype give float32 while
+a dprec.jit kernel runs (traces) and when called from a module that declared itself precision-aware with
+register(__name__); everywhere else (other stages, host code) they are unchanged and float64. Kernels shared with
+such code compute in the dtype of their inputs (float_of, tiny_of).
 
 float64 output is identical on every accelerator model for a given seed; float32 output repeats on one model but its
 discrete results (pulse and cluster counts) can differ slightly between models, so provenance() records the precision
@@ -15,6 +16,7 @@ device-versus-NumPy parity.
 """
 import functools
 import os
+import sys
 import threading
 
 import numpy as np
@@ -29,6 +31,13 @@ SINGLE = FLOAT == np.float32
 
 
 _SCOPE = threading.local()      # depth of precision-aware (dprec.jit) calls running in this thread
+_AWARE = set()                  # modules whose own JAX creator/sampler calls follow the device float
+
+
+def register(module_name):
+    """Declare a module precision-aware: its jnp creators and jax.random samplers called without a dtype give the
+    device float (eager calls included, e.g. tables built on the host and closed over by its kernels)."""
+    _AWARE.add(module_name)
 
 
 def scoped():
@@ -145,7 +154,8 @@ def _float_default(fn, sampler):
 
     @functools.wraps(fn)
     def wrapped(*args, **kwargs):
-        if not scoped() or sig.bind_partial(*args, **kwargs).arguments.get("dtype") is not None:
+        if ((not scoped() and sys._getframe(1).f_globals.get("__name__") not in _AWARE)
+                or sig.bind_partial(*args, **kwargs).arguments.get("dtype") is not None):
             return fn(*args, **kwargs)
         if sampler:                          # draw in the device float, never draw float64 and round
             return fn(*args, dtype=FLOAT, **kwargs)
@@ -155,8 +165,9 @@ def _float_default(fn, sampler):
 
 
 def _install_float_defaults():
-    """float32 mode: inside dprec.jit kernels, JAX array creators and samplers called without a dtype give float32
-    where they would give float64 under x64 (integer and explicit dtypes unchanged); elsewhere they are unchanged."""
+    """float32 mode: inside dprec.jit kernels and in registered modules, JAX array creators and samplers called without
+    a dtype give float32 where they would give float64 under x64 (integer and explicit dtypes unchanged); elsewhere
+    they are unchanged."""
     import jax
     import jax.numpy as jnp
     for mod, names, sampler in ((jnp, _CREATORS, False), (jax.random, _SAMPLERS, True)):
