@@ -56,7 +56,7 @@ device path; the C++ backend independently needs all three altitude tables.
 python3 -m crvfastsim runchain native --gen device --gen-events 50000 \
   --gen-seed 123 --gen-subrun 1 --seed 456 --jax \
   --gdml /inputs/mu2e_extracted_v04.gdml --calib /inputs/crvcalib.csv \
-  --deviation /inputs/crvphoton.csv --tier1b strict_v3 \
+  --deviation /inputs/crvphoton.csv --tier1b strict_v4 \
   --tier1b-dir /inputs/tier1b_strict_v2 --emit /outputs/shard.json --outdir /outputs/chain
 ```
 

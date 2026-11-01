@@ -13,9 +13,8 @@
 # library, CRVCalib/CRVPhoton CSVs, GDML: all streamed by kpp_stream.sh into tmpfs and deleted on exit (the lookup
 # tables come from CVMFS, also into tmpfs). Never on Flare; per-shard JSONs and the merge go back to the GPVM.
 # usage (from the laptop): EXTRA_V=NPROC=12,RUNS=1 kpp_stream.sh "$FASTSIMKIT_FNAL_HOST" chain_node_aurora.sh <files...>
-# Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v4 (default; stream library.root, the topology sidecar and
-# templates_v3.npz, each with its .json; T1B=strict_v3 the same files), T1B=strict_v2 (templates_v2.npz instead) or T1B=legacy (stream
-# lib_prod_as_20files.root; runs with --library, the sampling before 2026-10-28).
+# Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v4, the only set (stream library.root, the topology sidecar and
+# templates_v3.npz, each with its .json).
 # (RUNS: space-separated files-per-process passes; qsub -v cannot carry spaces or commas, so set RUNSFILE instead)
 # Site settings (site.env.example): submit with qsub -A "$ALCF_PROJECT" -v M2FS_FLARE=<work area on Flare>,...
 F=${M2FS_FLARE:?set M2FS_FLARE (work area on Flare; qsub -v M2FS_FLARE=...)}
@@ -52,9 +51,9 @@ GEN=($(ls $L/gen.*.root)); LIB=$(ls $L/lib*.root | head -1); CAL=$(ls $L/crvcali
 DEV=$(ls $L/crvphoton*.csv 2>/dev/null | head -1); GD=$(ls $L/*.gdml | head -1)
 echo "gen files ${#GEN[@]}; library $(basename $LIB); calib $(basename $CAL); gdml $(basename $GD)"
 T1B=${T1B:-strict_v4}
-if [ "$T1B" = legacy ]; then TIER1B="--library $LIB"
-else TV=${T1B#strict_}; [ "$TV" = v4 ] && TV=v3; for f in library.root topology_sidecar_strict_v2_v2.npz topology_sidecar_strict_v2_v2.npz.json templates_$TV.npz templates_$TV.npz.json; do
-  [ -f $L/$f ] || { echo "tier-1b set $T1B: $f not streamed"; exit 3; }; done; TIER1B="--tier1b $T1B --tier1b-dir $L"; fi
+[ "$T1B" = strict_v4 ] || { echo "T1B must be strict_v4"; exit 2; }
+for f in library.root topology_sidecar_strict_v2_v2.npz topology_sidecar_strict_v2_v2.npz.json templates_v3.npz templates_v3.npz.json; do
+  [ -f $L/$f ] || { echo "tier-1b set $T1B: $f not streamed"; exit 3; }; done; TIER1B="--tier1b $T1B --tier1b-dir $L"
 echo "tier 1b: $TIER1B"
 cores() { local i=$1; [ $i -lt 6 ] && echo "$((1+8*i))-$((8+8*i))" || echo "$((53+8*(i-6)))-$((60+8*(i-6)))"; }
 # RUNS: files per process for each pass (e.g. "1 4"); each pass is a separate node-wide measurement on the same inputs
