@@ -12,6 +12,7 @@ dependencies = ["numpy", "pandas", "uproot", "matplotlib", "scipy"]
 
 [project.optional-dependencies]
 jax = ["jax"]
+kit = ["mcp"]
 test = ["pytest"]
 
 [tool.setuptools.packages.find]
