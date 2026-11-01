@@ -28,7 +28,7 @@ and the test tooling of all four repositories. The detector stages import it; th
 | tables and comparisons | `tables`, `match`, `stats`, `plots` | every fast-vs-stock comparison |
 | CRY cosmic generator | `cry_native`, `cry_device`, `cosmic_cry`, `cry_tables`, `cry_validate`, `cry_receipts` | CRV `runchain --gen native|device` (opt-in) |
 | public files over HTTP | `cvmfsget` | geometry and conditions on hosts without a CVMFS mount |
-| endpoints and the kit | `endpoints/` (`slurm_ssh`, `eaf`, `kit`, `parameters`, `submission`, `artifacts`, `geometry`, `snapshots`) and the job scripts `uva/`, `aurora/`, `iri/`, `eaf/` | Mu2eBO (`fastsimkit`), the throughput campaigns |
+| endpoints and the kit | `endpoints/` (`slurm_ssh`, `eaf`, `submission`, `artifacts`, `snapshots`: Mu2e configuration (`mu2e_config`) of the hep-endpoints adapters; `kit`, `parameters`, `geometry`, `chainpoint`) and the job scripts `uva/`, `aurora/`, `iri/`, `eaf/` | Mu2eBO (`fastsimkit`), the throughput campaigns; kit host only (needs hep-endpoints) |
 | site configuration | `site`, `inputs` | every command that needs a path, host or account |
 | tests | `testing`, `testselect`, `ci/` | the test suites and CI of all four repositories |
 

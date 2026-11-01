@@ -7,11 +7,14 @@ Core is used from a clone of the umbrella [`mu2e-fastsim`](https://github.com/Ro
 ## Install and test
 
 ```bash
-pip install -e core            # numpy, pandas, uproot, matplotlib, scipy; JAX optional (pip install -e "core[jax]")
+pip install -e core            # numpy, pandas, uproot, matplotlib, scipy, hep-endpoints; JAX optional ("core[jax]")
 python3 -m pytest -q -p no:cacheprovider core/tests
 ```
 
-or put `core` on `PYTHONPATH` (the umbrella's `site.env` does). The CI environment is pinned in
+or put `core` on `PYTHONPATH` (the umbrella's `site.env` does). The endpoint adapters under `mu2efastsim.endpoints`
+are configured from the experiment-neutral [hep-endpoints](https://github.com/RobMina/hep-endpoints) package
+(`hependpoints`, standard library only), pinned to one commit in `pyproject.toml` and `ci/requirements.txt`. Without
+it the endpoint tests are skipped and every other module works. The CI environment is pinned in
 [`ci/requirements.txt`](../ci/requirements.txt); CI runs the suite with and without JAX.
 `python3 -m mu2efastsim.testselect --why` lists the test files a change affects; `--run --isolate` runs them one
 pytest process per file. Large-sample checks are `@pytest.mark.slow` and run with `--runslow`.
@@ -41,7 +44,18 @@ redistribution; it never overwrites a mismatched file.
 (`submit`, `status`, `results`, `check`, `describe`, `cancel`). `FASTSIMKIT_ENDPOINT` selects the adapter: `uva`
 (any Slurm site over ssh, `endpoints/slurm_ssh.py`) or `eaf` (Fermilab EAF JupyterHub). The settings are the
 `FASTSIMKIT_*` block of the umbrella's `site.env.example`; [`uva/README.md`](../uva/README.md) has the `kits.toml`
-entry. Tasks:
+entry. The kit host (where `fastsimkit` or any `mu2efastsim.endpoints` code runs) needs hep-endpoints installed at
+the pinned commit:
+
+```bash
+pip install "hep-endpoints @ git+https://github.com/RobMina/hep-endpoints.git@<commit in core/pyproject.toml>"
+```
+
+(`pip install -e core` does this.) Jobs do not: the project image, the EAF venv and GPVM `pyenv ana` run task bodies
+that never import `mu2efastsim.endpoints` or `hependpoints`, and `mu2efastsim.site` is standard library only
+(`tests/test_job_side_imports.py`). The UVA GPU types, charge rates and the automatic GPU choice are
+`endpoints/mu2e_config.py` (`UVA_GPU_TABLE`); `ci/endpoint_identity.py` renders a grid of submissions to compare
+endpoint versions byte for byte. Tasks:
 
 | Task | Returns | Endpoints |
 |---|---|---|

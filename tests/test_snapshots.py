@@ -398,3 +398,57 @@ def test_guard_rejects_symlink_replacing_canonical_ancestry(tmp_path, repositori
     assert result.returncode != 0
     assert "symlink in snapshot ancestry" in result.stderr
     assert "runtime-reached" not in result.stdout
+
+
+def main_guard(snapshot):
+    """The guard of core main before the move to hep-endpoints: its program taken verbatim from a job body of the
+    identity rendering (tests/data/endpoint_identity_main.json), with main's request (no branch_modules)."""
+    import re
+    import shlex
+    golden = json.loads((Path(__file__).parent / "data" / "endpoint_identity_main.json").read_text())
+    body = json.loads(golden["streamed/crv_response"]["traffic"][0])["stdin"]
+    for m in re.finditer(r"python3 -I -c '", body):
+        program = shlex.split(body[m.start():body.index(" || exit $?", m.start())])[3]
+        if 'request["action"] == "verify"' in program:
+            request = json.dumps({"action": "verify", "snapshot": snapshot})
+            return "python3 -I -c " + shlex.quote(program) + " " + shlex.quote(request) + " || exit $?\n"
+    raise AssertionError("no verify guard in the rendering of main")
+
+
+@pytest.mark.parametrize("case", ["good", "branch-override", "tracked", "submodule-file", "wrong-commit",
+                                  "wrong-pin", "missing-module", "missing-root"])
+def test_guard_agrees_with_main_guard(tmp_path, repositories, case):
+    """The job-body guard differs in text from core main's (generic branch modules); on a real snapshot both accept
+    and refuse the same states."""
+    umbrella, modules = repositories
+    snapshot = prepare(tmp_path, "release-a", branch="experiment") if case == "branch-override" else prepare(tmp_path)
+    root = Path(snapshot["path"])
+    if case == "tracked":
+        writable(root / "source.py")
+        (root / "source.py").write_text("tampered")
+    elif case == "submodule-file":
+        writable(root / "core" / "source.py")
+        (root / "core" / "source.py").write_text("tampered")
+    elif case == "wrong-commit":
+        snapshot = {**snapshot, "umbrella_commit": git(modules["core"], "rev-parse", "HEAD")}
+    elif case == "wrong-pin":
+        other = git(modules["tracker"], "rev-parse", "experiment")      # tracker is not a branch module
+        snapshot = {**snapshot, "submodules": {**snapshot["submodules"], "tracker": other}}
+    elif case == "missing-module":
+        for p in sorted((root / "tracker").rglob("*"), reverse=True) + [root / "tracker"]:
+            writable(p.parent)
+            if p.is_dir() and not p.is_symlink():
+                p.rmdir()
+            else:
+                p.unlink()
+        writable(root)
+        (root / "tracker").mkdir()
+    elif case == "missing-root":
+        root.rename(root.with_name("hidden"))
+    ours = subprocess.run(["bash", "-c", snapshots.code_guard(snapshot) + "printf runtime-reached"],
+                          capture_output=True, text=True)
+    theirs = subprocess.run(["bash", "-c", main_guard(snapshot) + "printf runtime-reached"],
+                            capture_output=True, text=True)
+    accepted = case in ("good", "branch-override")
+    assert (ours.returncode == 0) == accepted and (theirs.returncode == 0) == accepted, (ours.stderr, theirs.stderr)
+    assert (ours.stdout == "runtime-reached") == accepted and (theirs.stdout == "runtime-reached") == accepted
