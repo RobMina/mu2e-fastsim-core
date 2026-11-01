@@ -478,6 +478,27 @@ def compare_numpy(mat, T0, length, tcut, kcut, positron=False, msc=True, n=100_0
     return out
 
 
+def bench(mat, T0, length, tcut, kcut, n, positron=False, msc=True, reps=2):
+    """Device throughput: seconds per call (after a compile call) for n primaries; float of the process setting."""
+    import time
+    fd = dprec.FLOAT
+    d = np.tile(np.array([0.0, 0.0, 1.0], fd), (n, 1))
+    T = np.full(n, T0, fd)
+    t0 = time.time()
+    out = electron_slab(jax.random.PRNGKey(0), mat, T, d, length, tcut, kcut, positron, msc=msc)
+    jax.block_until_ready(out.T)
+    first = time.time() - t0
+    times = []
+    for r in range(reps):
+        t0 = time.time()
+        out = electron_slab(jax.random.PRNGKey(r + 1), mat, T, d, length, tcut, kcut, positron, msc=msc)
+        jax.block_until_ready(out.T)
+        times.append(time.time() - t0)
+    return dict(material=mat.name, T=T0, length=length, n=n, dtype=str(np.dtype(fd)), backend=jax.default_backend(),
+                device=str(jax.devices()[0].device_kind), first_call_s=first, call_s=times, steps=int(out.steps),
+                per_primary_us=1e6 * min(times) / n)
+
+
 if __name__ == "__main__":
     import argparse
     import json
@@ -491,6 +512,11 @@ if __name__ == "__main__":
     ap.add_argument("--positron", action="store_true")
     ap.add_argument("--no-msc", action="store_true")
     ap.add_argument("--n", type=int, default=100_000)
+    ap.add_argument("--bench", action="store_true", help="device timing only (no NumPy arm)")
     a = ap.parse_args()
+    if a.bench:
+        print(json.dumps(bench(materials.BY_NAME[a.material], a.T, a.length, a.tcut, a.kcut, a.n, a.positron,
+                               not a.no_msc), indent=1))
+        raise SystemExit
     print(json.dumps(compare_numpy(materials.BY_NAME[a.material], a.T, a.length, a.tcut, a.kcut, a.positron,
                                    not a.no_msc, a.n), indent=1))

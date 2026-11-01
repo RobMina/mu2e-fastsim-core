@@ -31,13 +31,16 @@ slabs with EM option 4, 1M events per case (200k for 1 X0 W); merged 2026-11-01:
 | photon and delta yields | Geant4 | within 0.3-0.5 % | pass |
 | e+ annihilation in flight, 1 mm Al | Geant4 | 4.86 +- 0.22 vs 4.93 per 10^4 | pass |
 | exit angle, 20 and 50 MeV in 1 mm Al | Geant4 | chi2/ndf 0.9 / 2.0 | pass |
-| exit angle, 105 MeV in thin layers | Geant4 | chi2/ndf 7.6-88 (Geant4 WentzelVI condensed stepping vs exact sampling of the same cross section) | open |
+| exit angle, 105 MeV in thin layers | Geant4 | chi2/ndf 7.4-91 (Geant4 WentzelVI condensed stepping vs exact sampling of the same cross section) | explained |
+| exit angle, 95 MeV (Geant4 GS regime), 1 mm / 0.1 mm Al | Geant4 | chi2/ndf 2.1 / 9.9 (22.3 / 91 at 105 MeV); only Geant4 breaks the 1/(p beta) scaling across 100 MeV | pass / open (0.1 mm: fast core 2 % wider) |
 | stopped / reflected fraction, 1 X0 W (tabulated e- Mott ratio) | Geant4 | 18.41 vs 18.29 +- 0.09 % / 0.35 vs 0.28 +- 0.013 % (McKinley-Feshbach: 17.90 / 0.24 %) | stopped pass, reflected open |
 | helix step in a uniform field | analytic circle and pitch; composition of steps; zero field | exact to 1e-9 mm | pass |
 | RK4 in a uniform field | the exact helix | fourth-order convergence | pass |
 | path to a plane along the helix | analytic arcsin solution, re-entry, unreachable planes | 1e-9 relative | pass |
 | slab in a transverse field (10 MeV e-, 20 mm air, 1 T) | path R asin(L/R), bend R(1 - cos), loss per mm as without field | within 0.3 % / 1 % / 2 % | pass |
 | Mu2e DS field map, 105 MeV e- from the stopping target to z = 8410 mm | RK4 with 1 mm steps | helix with 10 mm steps: 18 um median, 46 um max after 3.7 m; 25 mm steps: 0.11 / 0.29 mm | pass |
+| device slab stepper (`eslab_jax`) vs NumPy `eslab`, msc on, 200k e-/e+ per case: Al 0.1 / 1 mm 105 MeV, Al 1 mm 20 MeV, W 0.35 / 3.5 mm 105 MeV, e+ Al 1 mm, Mylar 2 mm; float64 and float32 | NumPy model | chi2/ndf of transmitted loss 0.58-1.30, exit angle 0.60-1.21, displacement 0.68-1.48; 1 X0 W stopped 18.21 vs 18.17 % (float64); photon and delta yields within 1 % except Mylar photons -0.8 % (float64) / -2.6 % (float32) | pass |
+| muon `eloss_jax.sample_loss` with the electron options added | the sampler before the change | bit-identical on a 5 x 5 x 3 x 2 grid of materials, momenta, lengths and cuts, float64 and float32, arm64 and x86-64 | pass |
 
 ## Device precision
 
