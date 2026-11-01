@@ -12,6 +12,7 @@ Selecting the tests a change affects is ``python -m mu2efastsim.testselect`` (se
 
 ``check_site_paths`` is the site-path and user-name scan every repository's ``tests/test_no_site_paths.py`` runs.
 """
+import fnmatch
 import gc
 import hashlib
 import os
@@ -110,12 +111,37 @@ def _repo_files(root, skip_top):
             return [root / n for n in names]
     except (OSError, subprocess.CalledProcessError):
         pass
+    # no git (e.g. inside an image): walk the tree, leaving out what the top-level .gitignore names (site.env, outputs)
+    ignored = _gitignore_patterns(root)
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
-        top = Path(dirpath) == root
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not (top and d in skip_top)]
-        found.extend(Path(dirpath) / f for f in filenames)
+        here = Path(dirpath)
+        top = here == root
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not (top and d in skip_top)
+                       and not _ignored(here / d, root, ignored, True)]
+        found.extend(here / f for f in filenames if f not in _SKIP_DIRS and not _ignored(here / f, root, ignored, False))
     return found
+
+
+def _gitignore_patterns(root):
+    try:
+        lines = (root / ".gitignore").read_text().splitlines()
+    except OSError:
+        return []
+    return [ln.strip() for ln in lines if ln.strip() and not ln.lstrip().startswith(("#", "!"))]
+
+
+def _ignored(path, root, patterns, is_dir):
+    rel = path.relative_to(root).as_posix()
+    for pat in patterns:
+        if pat.endswith("/"):
+            if not is_dir:
+                continue
+            pat = pat.rstrip("/")
+        pat = pat.lstrip("/")
+        if fnmatch.fnmatch(path.name, pat) or fnmatch.fnmatch(rel, pat):
+            return True
+    return False
 
 
 def check_site_paths(root, skip_top=(), skip_files=()):
@@ -159,3 +185,6 @@ def site_path_self_test():
               "mktemp -d /tmp/offline-probe.XXXXXXXX", "/tmp|/tmp/*|/local|/localscratch", "/dev/shm/x",
               "~/.mu2efastsim/kit", 'startswith("/pnfs/")'):
         assert not _site_path_hit(s, patterns), s
+    assert _ignored(Path("/r/site.env"), Path("/r"), ["site.env"], False)
+    assert _ignored(Path("/r/a/plots"), Path("/r"), ["plots/"], True) and not _ignored(Path("/r/plots"), Path("/r"), ["plots/"], False)
+    assert _ignored(Path("/r/x/y.root"), Path("/r"), ["*.root"], False) and not _ignored(Path("/r/x/y.py"), Path("/r"), ["*.root"], False)
