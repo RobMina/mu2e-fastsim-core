@@ -78,7 +78,8 @@ class Case:
         text = json.dumps(value, sort_keys=True, default=str) if not isinstance(value, str) else value
         for root in (self.tmp.resolve(), self.tmp):    # the EAF test workdir gets a name the site-path scan accepts
             text = text.replace(str(root / "work"), "<TMP>/eaf-jobs").replace(str(root), "<TMP>")
-        return CAMPAIGN.sub(r"\1<T>", ISO.sub("<ISO>", EPOCH.sub("<T>", TOKEN.sub("<TOKEN>", text))))
+        # campaign_s first: its fractional digits can look like an epoch, and EPOCH would then split the number
+        return ISO.sub("<ISO>", EPOCH.sub("<T>", TOKEN.sub("<TOKEN>", CAMPAIGN.sub(r"\1<T>", text))))
 
     def files(self):
         out = {}
