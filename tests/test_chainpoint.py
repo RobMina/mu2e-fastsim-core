@@ -157,8 +157,8 @@ def test_fanout_stream_merge(tmp_path):
     kit.status("pt1")                               # streams sub-job 0 now that its inbox exists
     names = sorted(d.rsplit("/", 1)[1] for _, d in streamed)   # streamed in parallel: order not fixed
     shared = sorted(d for r, d in streamed if r.startswith("tier1b_"))      # the default set: library + sidecars
-    assert shared == sorted(f"/dev/shm/crvfs_lib_u_udc-x/{f}" for f in CP.TIER1B_SETS["strict_v4"][1])
-    assert names == sorted(list(CP.TIER1B_SETS["strict_v4"][1]) + ["crvcalib_sim_best_v1_5_run1400.csv",
+    assert shared == sorted(f"/dev/shm/crvfs_lib_u_udc-x/{f}" for f in CP.TIER1B_SETS["strict_v5"][1])
+    assert names == sorted(list(CP.TIER1B_SETS["strict_v5"][1]) + ["crvcalib_sim_best_v1_5_run1400.csv",
                      "crvphoton_sim_best_v1_5_run1400.csv", "mu2e_extracted_v04.gdml",
                      "gen.001400_00000019.root", "gen.001400_00000020.root"])
     assert all(d.startswith(f"/node/tmp/crvfs_kit_j{jobs[0]}_1/") for r, d in streamed if not r.startswith("tier1b_"))
@@ -220,7 +220,7 @@ def test_body_is_valid_bash_and_keeps_inputs_off_disk(tmp_path):
     assert res.gpus == 1 and res.minutes == 45
 
 
-@pytest.mark.parametrize("tier1b,lib", [(0, "tier1b_strict_v2/library.root")])
+@pytest.mark.parametrize("tier1b,lib", [(0, "tier1b_strict_v5/library.root"), (1, "tier1b_strict_v2/library.root")])
 def test_library_streamed_once_per_node(tmp_path, tier1b, lib):
     site, ep, kit, streamed = make(tmp_path)
     kit.submit("pt4", {**P, "shards": 3, "files_per_job": 1, "tier1b": tier1b}, [], [])
@@ -239,18 +239,24 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
     body, _ = kit.chain_point.render(CP.validate(P), 0)
     assert "/dev/shm/crvfs_lib_${USER}_" in body and "flock 9" in body and "lib_release" in body
     assert body.count("trap '") >= 1 and "deleted node library" in body
-    assert '--tier1b strict_v4 --tier1b-dir "$S"' in body and "--library" not in body
+    assert '--tier1b strict_v5 --tier1b-dir "$S"' in body and "--library" not in body
+    body, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 1}), 0)
+    assert '--tier1b strict_v4 --tier1b-dir "$S"' in body
     with pytest.raises(ValueError, match="no tier-1b library"):        # named configurations: no library
         kit.chain_point.render(CP.validate({**P, "gen_set": 3, "run_config": 3, "shard_offset": 0}), 0)
 
 
 def test_tier1b_sets():
-    assert CP.tier1b_set(CP.validate(P)) == "strict_v4" and list(CP.TIER1B_SETS) == ["strict_v4"]
-    assert CP.library_files(CP.validate(P))[3] == "tier1b_strict_v2/templates_v3.npz"
-    assert CP.library_files(CP.validate(P))[0] == "tier1b_strict_v2/library.root"
+    assert CP.tier1b_set(CP.validate(P)) == "strict_v5" and sorted(CP.TIER1B_SETS) == ["strict_v4", "strict_v5"]
+    assert CP.library_files(CP.validate(P)) == ["tier1b_strict_v5/library.root", "tier1b_strict_v5/topology.npz",
+                                                "tier1b_strict_v5/topology.npz.json", "tier1b_strict_v5/templates_v3.npz",
+                                                "tier1b_strict_v5/templates_v3.npz.json"]
+    v4 = CP.validate({**P, "tier1b": 1})                            # the previous default, unchanged
+    assert CP.tier1b_set(v4) == "strict_v4" and CP.library_files(v4)[0] == "tier1b_strict_v2/library.root"
+    assert CP.library_files(v4)[1] == "tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz"
     with pytest.raises(ValueError, match="no tier-1b asset set"):                                # older records
         CP.tier1b_set({k: v for k, v in CP.validate(P).items() if k != "tier1b"})
-    for retired in (1, 2, 3, 4):                                    # legacy, strict_v2, strict_v3: retired
+    for retired in (2, 3, 4):                                       # no set behind these values
         with pytest.raises(ValueError):
             CP.validate({**P, "tier1b": retired})
 
@@ -277,7 +283,7 @@ def test_wait_budget_scales_with_bytes(tmp_path):
     assert CP.wait_budget_s(small, mbps=4.0) == CP.WAIT_FLOOR_S
     cg03 = CP.validate({**P, "gen_set": 1, "shards": 4, "files_per_job": 4, "shard_offset": 0})
     cg02 = CP.validate({**cg03, "files_per_job": 20})
-    assert CP.wait_budget_s(cg03, mbps=4.0) == pytest.approx(600 + 4 * (1.1699e9 + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
+    assert CP.wait_budget_s(cg03, mbps=4.0) == pytest.approx(600 + 4 * (CP.TIER1B_SETS["strict_v5"][2] + 3.9e6 + 4 * 5.6e7) / 4e6, abs=1)
     assert CP.wait_budget_s(cg02, mbps=4.0) > 2700 > CP.wait_budget_s(cg03, mbps=4.0) > CP.WAIT_FLOOR_S
     _, _, kit, _ = make(tmp_path)
     body, _ = kit.chain_point.render(cg02, 0)
@@ -501,7 +507,7 @@ def test_native_admission_bytes_budget_and_descriptor(tmp_path):
     _, _, kit, _ = make(tmp_path)
     p = CP.validate(NATIVE)
     assert CP.gen_files(p, 0) == CP.gen_files(p, 31) == []
-    assert CP.point_bytes(p) == p["shards"] * (CP.TIER1B_SETS["strict_v4"][2] + CP.SMALL_BYTES)
+    assert CP.point_bytes(p) == p["shards"] * (CP.TIER1B_SETS["strict_v5"][2] + CP.SMALL_BYTES)
     assert CP.chain_estimate_s(p) == 60 + (180 + 900) * .05
     assert kit.check("native", {"task": "chain_point", **p}, [], [])["ok"]
     assert "gen_events" not in CP.validate(P)
