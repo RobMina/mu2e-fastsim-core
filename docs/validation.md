@@ -48,5 +48,15 @@ The CRV device kernels run in float32 by default (`MU2EFS_DEVICE_FLOAT`, 2026-11
 V100 and MIG A100 slices: every aggregate within the float64 seed-to-seed spread; seq-0 pulse PE float32 - float64 =
 -0.03 to -0.14 %, bounded at <= 0.3 % (2 sigma) per sector group (crv `docs/device-precision.md`); device tier-1b
 sampler passes the deck rule at float32 (0 of 21 shapes flagged). Beam and tracker JAX outputs are bit-identical to
-float64 (every jitted call hashed); float64 mode is bit-identical to the previous default. float32 results repeat on
-one GPU model but discrete counts differ slightly between models, so provenance records the model.
+float64 (every jitted call hashed); float64 mode is bit-identical to the previous default.
+
+Run-to-run reproducibility on the GPU (2026-11-01): XLA autotunes each fused kernel by timing candidates when it
+compiles it, and the choice changed between processes (12-52 of about 1,400 kernels between two runs on an RTX PRO 6000
+MIG slice, the full card and an A100), so CRV device output differed between runs of the same code and seed on every
+card: float32 in transport, voltages, ADCs and cluster floats, float64 in digi voltages (1 ulp). With
+`MU2EFS_DEVICE_DETERMINISTIC` (default on: `--xla_gpu_autotune_level=0`, `determinism.py`) separate processes are
+byte-identical at every CRV stage: float32 on all three cards and a V100, float64 on the MIG slice. Cost on the MIG
+slice (CRV chain warm pass): +0.8 % float32, +0.4 % float64, both within the run-to-run spread; the cold pass is 16-28 %
+faster. `--xla_gpu_deterministic_ops=true` also repeats but slows the chain 1.7x. Across GPU kinds float values differ
+and float32 discrete counts can differ slightly, so provenance records the precision, the determinism setting and the
+device kind (crv `docs/device-precision.md`).

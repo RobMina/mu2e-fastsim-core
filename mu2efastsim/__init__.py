@@ -12,5 +12,11 @@ the mu2e-fastsim umbrella repository. Definitions live once in these modules, do
     tables     flat-table I/O in the art dumper layout (TFileService directory dump/), keyed by (run, subrun, event)
     stats      robust statistics shared by every comparison (median, core sigma, MPV, binned ratio band)
     plots      shared plotting helpers + write_json
+
+Importing the package applies the GPU determinism setting (determinism.py, MU2EFS_DEVICE_DETERMINISTIC) before
+any JAX backend exists.
 """
+from . import determinism as _determinism
+
 __version__ = "0.1.0"
+_determinism.apply()

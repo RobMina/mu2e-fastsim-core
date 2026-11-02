@@ -20,7 +20,8 @@ repository holds code only: no Mu2e-internal conditions, tables, data or results
 | CRY backends (`cry_native`, `cry_device`) | opt-in; device generator consistent with stock CRY (accepted rate 0.9998 +- 0.0016) |
 | endpoints and `fastsimkit` | UVA (Slurm), Fermilab EAF, ALCF Polaris (IRI) and Aurora (PBS) job paths; admission and recovery unit-tested |
 | electrons (`ebrem`, `eioni`, `emsc`, `eannihil`, `eslab`) | opt-in; brem, ionisation, multiple scattering and e+ annihilation in a slab agree with Geant4 option 4 (loss chi2/ndf 0.5-1.4 in nine cases); thin-layer exit angles at 105 MeV differ (Geant4 WentzelVI stepping); field stepping (`ehelix`) checked against analytic helices and RK4; device stepper `eslab_jax` matches the NumPy model (no field) |
-| device precision (`precision`) | float32 by default in the CRV device kernels (`MU2EFS_DEVICE_FLOAT`; float64 one variable away, bit-identical across GPU models); beam, tracker and host code stay float64 |
+| device precision (`precision`) | float32 by default in the CRV device kernels (`MU2EFS_DEVICE_FLOAT`; float64 one variable away); beam, tracker and host code stay float64 |
+| GPU determinism (`determinism`) | XLA autotuning off by default (`MU2EFS_DEVICE_DETERMINISTIC`), so device output repeats run to run on one GPU kind; recorded in the precision provenance |
 
 Details: [`docs/validation.md`](docs/validation.md), [`docs/limitations.md`](docs/limitations.md).
 
@@ -53,6 +54,7 @@ More: [`docs/running.md`](docs/running.md) (install, input verification, the kit
 | `mu2efastsim/cry_*.py`, `cosmic_cry.py`, `native/cry/` | CRY 1.7 native adapter and container recipe, device sampler, validation |
 | `mu2efastsim/endpoints/` | Mu2e configuration of the [hep-endpoints](https://github.com/RobMina/hep-endpoints) adapters (Slurm over ssh with automatic GPU type: MIG slice for one-GPU jobs up to 32 GB; EAF; kit host only) and the Mu2eBO kit |
 | `mu2efastsim/precision.py` | device float of the JAX kernels (`MU2EFS_DEVICE_FLOAT`), scoped to registered modules and `precision.jit` kernels |
+| `mu2efastsim/determinism.py` | GPU run-to-run determinism: appends `--xla_gpu_autotune_level=0` to `XLA_FLAGS` when the package is imported (`MU2EFS_DEVICE_DETERMINISTIC=0` turns it off) |
 | `mu2efastsim/site.py`, `inputs.py` | site configuration from the environment; input manifest check and fetch |
 | `mu2efastsim/testing.py`, `testselect.py`, `ci/` | shared pytest hooks, the site-path checker, test selection, CI pins and helpers |
 | `uva/`, `aurora/`, `iri/`, `eaf/` | endpoint job scripts (UVA Slurm, ALCF Aurora, ALCF Polaris IRI, Fermilab EAF) |
