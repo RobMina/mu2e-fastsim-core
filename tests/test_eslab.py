@@ -129,3 +129,22 @@ def test_start_depth_default_is_identical_and_inside_start_exits_either_face():
     assert back.reflected.all() and np.allclose(back.position[:, 2], 0.0, atol=1e-9)
     with pytest.raises(ValueError):
         S.electron_slab(np.random.default_rng(1), mat, np.full(2, T0), d[:2], L, TCUT, KCUT, z0=2 * L)
+
+
+@pytest.mark.parametrize("field", [None, [0.0, 0.0, 0.0], [0.0, 0.0, 0.5]])
+@pytest.mark.parametrize("msc", [False, True])
+@pytest.mark.parametrize("positron", [False, True])
+def test_boundary_starts_exit_outward_and_transport_inward(field, msc, positron):
+    T = np.ones(4)
+    d = np.array([[0.0, 0.0, -1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
+    z0 = np.array([0.0, 1.0, 0.0, 1.0])
+    r = S.electron_slab(np.random.default_rng(42), M.BY_NAME["G4_AIR"], T, d, 1.0, 1000.0, 1000.0,
+                        positron=positron, msc=msc, z0=z0, field=field)
+    assert np.array_equal(r.path[:2], [0.0, 0.0])
+    assert np.array_equal(r.T[:2], T[:2]) and np.array_equal(r.continuous[:2], [0.0, 0.0])
+    assert np.array_equal(r.position[:2, 2], z0[:2]) and np.array_equal(r.direction[:2], d[:2])
+    assert np.array_equal(r.reflected[:2], [True, False]) and not r.stopped[:2].any()
+    for secondary in (r.photons, r.deltas, r.annihilation):
+        assert not np.isin(secondary.track, [0, 1]).any()
+    assert (r.path[2:] > 0).all()
+    assert ((r.position[:, 2] >= -1e-9) & (r.position[:, 2] <= 1.0 + 1e-9)).all()

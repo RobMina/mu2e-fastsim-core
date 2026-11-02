@@ -187,3 +187,68 @@ def test_start_depth_field_and_compaction_parity_with_numpy():
         z = r.position[:, 2]
         assert np.allclose(z[~r.stopped & r.reflected], 0.0, atol=1e-8)
         assert np.allclose(z[~r.stopped & ~r.reflected], L, atol=1e-8)
+
+
+@pytest.mark.parametrize("chunk", [0, -1, 0.5, 1.5, np.float64(2.0), False, True, np.bool_(True)])
+def test_compaction_rejects_nonpositive_or_noninteger_chunks(chunk, monkeypatch):
+    def unexpected_compaction(*args):
+        pytest.fail("invalid chunk reached compaction")
+
+    monkeypatch.setattr(SJ, "_compacted", unexpected_compaction)
+    with pytest.raises(ValueError, match="chunk must be a positive integer"):
+        SJ.electron_slab(jax.random.PRNGKey(42), AL, np.ones(1), np.array([[0.0, 0.0, 1.0]]), 1.0,
+                         *CUTS["G4_Al"], chunk=chunk)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_plane_crossings_over_many_revolutions(dtype):
+    from mu2efastsim import ehelix
+    jnp = jax.numpy
+    R = 1.0 / ehelix.K
+    x = jnp.zeros((4, 3), dtype)
+    d = jnp.asarray(np.tile([0.0, 0.0, 1.0], (4, 1)), dtype)
+    p = jnp.ones(4, dtype)
+    field = jnp.asarray(np.tile([1.0, 0.0, 0.0], (4, 1)), dtype)
+    zp = jnp.asarray([0.5 * R, 2 * R, -0.5 * R, 0.5 * R], dtype)
+    smax = jnp.asarray([32 * np.pi * R] * 3 + [0.1 * R], dtype)
+    s = np.asarray(jax.jit(SJ._to_plane)(x, d, p, -1.0, field, zp, smax))
+    expected = R * np.array([np.arcsin(0.5), np.pi + np.arcsin(0.5)])
+    assert s[[0, 2]] == pytest.approx(expected, rel=2e-6)
+    assert np.isinf(s[[1, 3]]).all()
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_slab_leaves_at_first_face_before_curling_back(dtype):
+    from mu2efastsim import ehelix
+    air, T0, cut = M.BY_NAME["G4_AIR"], 1.0, 1000.0
+    p = np.sqrt(T0 * (T0 + 2 * B.ME))
+    dedx = (I.dedx_restricted(air, T0, cut) + B.dedx_restricted(air, T0, cut))[0]
+    plan = max(S.STEP_FRACTION * T0 / dedx, S.FINAL_RANGE)
+    R = plan / (32 * np.pi)
+    L = 0.5 * R
+    r = SJ.electron_slab(jax.random.PRNGKey(42), air, np.array([T0], dtype),
+                         np.array([[0.0, 0.0, 1.0]], dtype), L, cut, cut, field=[p / (ehelix.K * R), 0.0, 0.0])
+    assert not r.stopped[0] and not r.reflected[0]
+    assert float(r.path[0]) == pytest.approx(R * np.arcsin(0.5), rel=2e-6)
+    assert float(r.position[0, 2]) == pytest.approx(L, rel=2e-6)
+    assert T0 - np.asarray(r.T) == pytest.approx(np.asarray(r.continuous), abs=1e-6 if dtype == np.float32 else 1e-12)
+    assert not np.asarray(r.n_photons + r.n_deltas).any()
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+@pytest.mark.parametrize("msc,chunk", [(False, None), (True, np.int64(1))])
+def test_boundary_starts_exit_outward_and_transport_inward(dtype, msc, chunk):
+    T = np.ones(4, dtype)
+    d = np.array([[0.0, 0.0, -1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]], dtype)
+    z0 = np.array([0.0, 1.0, 0.0, 1.0])
+    for field in (None, [0.0, 0.0, 0.0], [0.0, 0.0, 0.5]):
+        r = jax.tree_util.tree_map(np.asarray, SJ.electron_slab(
+            jax.random.PRNGKey(42), M.BY_NAME["G4_AIR"], T, d, 1.0, 1000.0, 1000.0,
+            msc=msc, z0=z0, field=field, chunk=chunk, min_bucket=1))
+        assert np.array_equal(r.path[:2], [0.0, 0.0])
+        assert np.array_equal(r.T[:2], T[:2]) and np.array_equal(r.continuous[:2], [0.0, 0.0])
+        assert np.array_equal(r.position[:2, 2], z0[:2]) and np.array_equal(r.direction[:2], d[:2])
+        assert np.array_equal(r.reflected[:2], [True, False]) and not r.stopped[:2].any()
+        assert not (r.n_photons[:2] + r.n_deltas[:2] + r.n_annihilation[:2]).any()
+        assert (r.path[2:] > 0).all()
+        assert ((r.position[:, 2] >= -1e-6) & (r.position[:, 2] <= 1.0 + 1e-6)).all()

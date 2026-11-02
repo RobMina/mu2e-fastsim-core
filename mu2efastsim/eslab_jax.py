@@ -1,4 +1,4 @@
-"""JAX twin of eslab.electron_slab (e-/e+ through a slab with msc and annihilation, no field): fixed-shape lanes.
+"""JAX twin of eslab.electron_slab (e-/e+ through a slab with msc, annihilation and optional field and compaction).
 
 Same physics and step logic as eslab; how the NumPy constructs map to JAX:
   * every cross section, stopping power, range, soft/hard msc rate and u_c is a host table on a uniform ln T grid
@@ -142,7 +142,6 @@ def _rotate_uz(d, cost, phi):
 
 
 K_FIELD = 0.299792458         # MeV/c per (T mm), as ehelix.K
-NSEG_MAX = 16                 # sub-arcs of at most 0.5 rad scanned by _to_plane (ehelix.to_plane: up to 4096)
 
 
 def _hframe(u, B):
@@ -175,8 +174,7 @@ def _helix(x, u, p, q, B, s):
 
 
 def _to_plane(x, u, p, q, B, zp, smax):
-    """ehelix.to_plane with a fixed scan of at most NSEG_MAX sub-arcs: smallest s in (0, smax] where the helix
-    reaches z = zp, inf where it does not."""
+    """Scan sub-arcs of at most 0.5 rad for the first s in (0, smax] reaching z = zp, inf where none does."""
     bh, bm, upar, uperp, w = _hframe(u, B)
     k = K_FIELD * q * bm / p
     smax = jnp.where(jnp.isfinite(smax), smax, 0.0)
@@ -188,19 +186,23 @@ def _to_plane(x, u, p, q, B, zp, smax):
     def dz_of(s):
         return upar * bh[:, 2] + jnp.cos(k * s) * uperp[:, 2] + jnp.sin(k * s) * w[:, 2]
 
-    nseg = jnp.clip(jnp.ceil(jnp.abs(k) * smax / 0.5), 1, NSEG_MAX)
+    nseg = jnp.maximum(jnp.ceil(jnp.abs(k) * smax / 0.5), 1)
     lo = jnp.full_like(smax, 1e-12)
     f0 = z_of(lo)
 
-    def scan(j, c):
-        lo, f0, hi, found = c
+    def scanning(c):
+        j, _, _, _, found = c
+        return jnp.any((~found) & (j <= nseg))
+
+    def scan(c):
+        j, lo, f0, hi, found = c
         on = (~found) & (j <= nseg)
         sj = smax * j / nseg
         fj = z_of(sj)
         cross = on & ((jnp.sign(fj) != jnp.sign(f0)) | (fj == 0)) & (f0 != 0)
-        return (jnp.where(on & ~cross, sj, lo), jnp.where(on & ~cross, fj, f0), jnp.where(cross, sj, hi),
+        return (j + 1, jnp.where(on & ~cross, sj, lo), jnp.where(on & ~cross, fj, f0), jnp.where(cross, sj, hi),
                 found | cross)
-    lo, f0, hi, found = lax.fori_loop(1, NSEG_MAX + 1, scan, (lo, f0, lo, jnp.zeros(smax.shape, bool)))
+    _, lo, f0, hi, found = lax.while_loop(scanning, scan, (jnp.int32(1), lo, f0, lo, jnp.zeros(smax.shape, bool)))
     hi = jnp.where(found, hi, lo)
 
     def bis(_, c):
@@ -349,6 +351,8 @@ def _run(key, tab, mc, T0, d0, L, tcut, kcut, dsmax, positron, msc, annihilation
                    nan=jnp.zeros(n, jnp.int32), ean=f32z, it=jnp.int32(0))
         if x0 is not None:
             st0["x"] = jnp.asarray(x0, dt)
+        z, dz = st0["x"][:, 2], st0["d"][:, 2]
+        st0["exited"] = ~st0["stopped"] & (((z == 0) & (dz < 0)) | ((z == L) & (dz > 0)))
         st0["cont"] = jnp.where(st0["stopped"], st0["T"], 0.0)
         if anni:
             st0["nan"] = jnp.where(st0["stopped"], 2, 0)
@@ -560,9 +564,12 @@ def electron_slab(key, mat, T, d, length, tcut, kcut, positron=False, msc=False,
                   min_bucket=256):
     """eslab.electron_slab on the device: same arguments with a jax.random key; returns SlabOut (per-track
     secondary counts and energy sums). Computes in the dtype of T. Opt-in, as in eslab: z0 (start depth) and field
-    (a 3-vector or (n, 3) per-track constant fields [T]: helix steps, faces along the helix). chunk: run the loop in
-    rounds of `chunk` iterations and keep only the live lanes between rounds (padded to a power of two, at least
+    (a 3-vector or (n, 3) per-track constant fields [T]: helix steps, faces along the helix). Tracks starting on a
+    face and pointing outward exit without transport. chunk (positive integer): run the loop in rounds of `chunk`
+    iterations and keep only the live lanes between rounds (padded to a power of two, at least
     min_bucket); statistically equivalent, not identical per seed (a lane's random numbers depend on its slot)."""
+    if chunk is not None and (not isinstance(chunk, (int, np.integer)) or isinstance(chunk, (bool, np.bool_)) or chunk <= 0):
+        raise ValueError("electron_slab: chunk must be a positive integer")
     dt = dprec.float_of(T)
     T = jnp.asarray(T, dt)
     n = T.shape[0]

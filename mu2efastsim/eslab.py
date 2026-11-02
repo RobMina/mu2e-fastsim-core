@@ -118,7 +118,8 @@ def electron_slab(rng, mat, T, d, length, tcut, kcut, positron=False, msc=False,
     hard_per_step sets the least number of hard elastic collisions per max_step; field (a 3-vector [T], an (n, 3)
     array of per-track constant fields, or a callable B(x)) bends every step on the helix of the field at its start
     (ehelix), the faces found along the helix; z0 [mm] (scalar or per track, 0 <= z0 <= length) starts the tracks
-    inside the slab at that depth, in any direction (e.g. an electron born in a foil), default the entry face."""
+    inside the slab at that depth, in any direction (e.g. an electron born in a foil), default the entry face.
+    A track starting on a face and pointing out of the slab exits without transport."""
     T = np.array(np.atleast_1d(T), float)
     n = T.size
     d = np.array(d, float).reshape(n, 3)
@@ -132,7 +133,7 @@ def electron_slab(rng, mat, T, d, length, tcut, kcut, positron=False, msc=False,
     pend = np.zeros(n)       # path since the last continuous-loss point
     cont = np.zeros(n)
     stopped = np.zeros(n, bool)
-    exited = np.zeros(n, bool)
+    exited = (T > T_STOP) & (((pos[:, 2] == 0) & (d[:, 2] < 0)) | ((pos[:, 2] == L) & (d[:, 2] > 0)))
     annihilated = np.zeros(n, bool)
     anni = positron and annihilation
     per_track = field is not None and not callable(field) and np.ndim(field) == 2
@@ -148,7 +149,7 @@ def electron_slab(rng, mat, T, d, length, tcut, kcut, positron=False, msc=False,
             gammas.append((np.repeat(idx, 2), np.repeat(path[idx], 2), e.ravel(), u.reshape(-1, 3),
                            np.repeat(pos[idx], 2, axis=0)))
 
-    live = np.flatnonzero(T > T_STOP)
+    live = np.flatnonzero((T > T_STOP) & ~exited)
     low0 = np.flatnonzero(T <= T_STOP)
     cont[low0] += T[low0]
     T[low0] = 0.0
