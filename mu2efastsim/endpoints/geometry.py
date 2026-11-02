@@ -18,8 +18,10 @@ SCALARS = {"stoppingTarget.deltaZ", "stoppingTarget.z0InMu2e", "stoppingTarget.h
            "protonabsorber.distFromTargetEnd"}
 VECTORS = {"stoppingTarget.radii", "stoppingTarget.halfThicknesses", "stoppingTarget.zVars",
            "stoppingTarget.holeRadii"}
+# Absorber switches an overlay may only turn off (beamfastsim then does not build that absorber).
+ABSORBER_OFF = {"hasTSdA"}
 NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
-DECLARATION = re.compile(r"\s*(double|vector<\s*double\s*>)\s+([A-Za-z][A-Za-z0-9_.]*)\s*=\s*([^;]+);", re.S)
+DECLARATION = re.compile(r"\s*(double|bool|vector<\s*double\s*>)\s+([A-Za-z][A-Za-z0-9_.]*)\s*=\s*([^;]+);", re.S)
 HEX = re.compile(r"[0-9a-f]{64}")
 
 
@@ -101,6 +103,12 @@ def validate_text(data):
         if match is None:
             raise ValueError("fastsimkit: unsupported geometry syntax or additional include")
         typ, key, raw = match.groups()
+        if typ == "bool":
+            if key not in ABSORBER_OFF or key in keys or raw.strip() != "false":
+                raise ValueError(f"fastsimkit: only an absorber switch set to false may be a bool ({key!r})")
+            keys.add(key)
+            pos = match.end()
+            continue
         is_vector = typ.startswith("vector")
         if key not in (VECTORS if is_vector else SCALARS) or key in keys:
             raise ValueError(f"fastsimkit: unsupported, mistyped or duplicate target geometry key {key!r}")

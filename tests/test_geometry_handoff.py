@@ -83,6 +83,9 @@ def test_conflicting_param_multiple_files_other_tasks(tmp_path, kit):
     '#include "Offline/Mu2eG4/geom/geom_common.txt"\ndouble stoppingTarget.deltaZ = 0;\n',
     '#include "Offline/Mu2eG4/geom/geom_common.txt"\nvector<double> stoppingTarget.radii = {};\n',
     '#include "Offline/Mu2eG4/geom/geom_common.txt"\ndouble stoppingTarget.deltaZ = 1; double stoppingTarget.deltaZ = 2;\n',
+    '#include "Offline/Mu2eG4/geom/geom_common.txt"\nbool hasTSdA = true;\n',
+    '#include "Offline/Mu2eG4/geom/geom_common.txt"\nbool ds.hasServicePipes = false;\n',
+    '#include "Offline/Mu2eG4/geom/geom_common.txt"\nbool hasTSdA = false;\nbool hasTSdA = false;\n',
 ])
 def test_unsupported_overlay_fails_before_submission(tmp_path, kit, text):
     path = tmp_path / "a.txt"
@@ -90,6 +93,11 @@ def test_unsupported_overlay_fails_before_submission(tmp_path, kit, text):
     path.write_text(text)
     ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     refused(kit, P, [ref])
+
+
+def test_absorber_off_switch_admitted():
+    text, keys = G.validate_text(f'#include "{G.BASE}"\ndouble stoppingTarget.deltaZ = 22;\nbool hasTSdA = false;\n'.encode())
+    assert keys == ["hasTSdA", "stoppingTarget.deltaZ"]
 
 
 def test_digest_regular_file_size_guards(tmp_path, kit):
