@@ -168,6 +168,13 @@ def compare_samples(case, g, f, tcut, kcut):
     le = np.concatenate([[0.0], np.geomspace(1e-3, T0, 41)])
     out["loss_chi2_ndf"] = chi2(gl, fl, le)
     out["loss_chi2_ndf_quantile"] = chi2(gl, fl, quantile_edges(gl, 50, 0.0, T0))
+    # reflected primaries: exit energy and polar angle to the entry normal
+    gr, fr = g["T"][g["refl"]], f["T"][f["refl"]]
+    out["refl_T_g4"], out["refl_T_fast"] = summary(gr), summary(fr)
+    below = lambda s, t: float((s["refl"] & (s["T"] < t)).mean())
+    out["refl_frac_T_below"] = {str(t): [below(g, t), below(f, t)] for t in (0.1, 1.0, 3.0, 10.0, 30.0)}
+    out["refl_theta_g4"] = summary(np.pi - g["theta"][g["refl"]])
+    out["refl_theta_fast"] = summary(np.pi - f["theta"][f["refl"]])
     for lab, thr in (("gt1", 1.0), ("gt5", 5.0), ("gt20", 20.0)):
         out[f"frac_loss_{lab}"] = [float((gl > thr).mean()), float((fl > thr).mean())]
     # transmitted primaries leaving with little energy, per generated primary
@@ -210,6 +217,31 @@ def compare(case_dir, msc=True, annihilation=True, events=None, seed=None, **kw)
     return out
 
 
+def loss_pair(dir_a, dir_b, msc=True, events=None, seed=None):
+    """Loss of transmitted primaries in two cases of the same slab (e.g. two energies): Geant4 a vs b, fast a vs b
+    and Geant4 vs fast per case, two-sample chi2 on the same log bins (losses scaled to the case energy are not
+    used: the thin-layer loss barely depends on the energy), with per-bin pulls (b - a, scaled to equal sizes)."""
+    sides = []
+    for d in (dir_a, dir_b):
+        chunks = sorted(str(p) for p in Path(d).glob("chunk*") if (p / "foil.root").exists())
+        case = json.loads((Path(chunks[0]) / "case.json").read_text())
+        kcut, tcut = cuts_from_log((Path(chunks[0]) / "job.log").read_text(), case["material"])
+        g = read_g4(chunks, case["thickness_mm"])
+        f = run_fast(case, events or g["n"], tcut, kcut, msc, True, seed)
+        sides.append((case, case["T_MeV"] - g["T"][g["trans"]], case["T_MeV"] - f["T"][f["trans"]]))
+    (ca, ga, fa), (cb, gb, fb) = sides
+    T0 = min(ca["T_MeV"], cb["T_MeV"])
+    le = np.concatenate([[0.0], np.geomspace(1e-3, T0, 41)])
+
+    def pull(a, b):
+        terms, m, ratio = chi2_bins(a, b, le)
+        sign = np.sign(np.nan_to_num(ratio, nan=1.0) - 1)
+        return dict(chi2=[float(terms.sum()), int(m.sum())], pulls=[round(float(v), 2) for v in sign * np.sqrt(terms)])
+    return dict(cases=[ca.get("case"), cb.get("case")], edges=[float(v) for v in le],
+                g4_a_vs_b=pull(ga, gb), fast_a_vs_b=pull(fa, fb), a_g4_vs_fast=pull(ga, fa), b_g4_vs_fast=pull(gb, fb),
+                summaries={k: summary(v) for k, v in (("g4_a", ga), ("g4_b", gb), ("fast_a", fa), ("fast_b", fb))})
+
+
 def table(reports):
     """Markdown rows: fates, loss of transmitted primaries, exit angle and lateral displacement, secondaries."""
     f = lambda c: f"{c[0] / max(c[1], 1):.1f}"
@@ -244,10 +276,21 @@ def main(argv=None):
     ap.add_argument("--hard-per-step", type=float, help="fast-arm least hard collisions per msc step cap")
     ap.add_argument("--mott", choices=("table", "mckinley", "none"), help="e- Mott factor on hard collisions "
                     "(default: emsc.MOTT); mckinley and none are diagnostics")
+    ap.add_argument("--ff-tmin", type=float, help="nuclear form factor only above this T [MeV] (emsc.FF_TMIN; "
+                    "100 = option 4's WentzelVI range, Goudsmit-Saunderson below uses a point nucleus)")
+    ap.add_argument("--pair", action="store_true", help="loss_pair of the two case directories given")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
+    if a.pair:
+        text = json.dumps(loss_pair(*a.cases, msc=a.msc, events=a.events, seed=a.seed), indent=1)
+        print(text)
+        if a.out:
+            Path(a.out).write_text(text)
+        return
     if a.mott:
         emsc.MOTT = a.mott
+    if a.ff_tmin is not None:
+        emsc.FF_TMIN = a.ff_tmin
     if a.table:
         print(table([r for c in a.cases for r in (lambda x: x if isinstance(x, list) else [x])(
             json.loads(Path(c).read_text()))]))

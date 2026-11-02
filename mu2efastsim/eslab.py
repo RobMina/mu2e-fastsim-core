@@ -1,20 +1,21 @@
 """e-/e+ crossing of a uniform slab with Geant4 EM option 4 physics, optionally in a magnetic field.
 
-The slab is 0 <= z <= length, unbounded in x and y; tracks start at the origin with directions d (d_z > 0). Each step
-is the shortest of the free path to the next discrete interaction (Seltzer-Berger photon above kcut or Moller / Bhabha
-delta above tcut, from the cross sections at the pre-step energy; for e+ also annihilation in flight; with msc also a
-hard elastic collision), the step limit of option 4's e+- step function (mean continuous loss at most STEP_FRACTION of
-the kinetic energy, not below FINAL_RANGE), with msc a fraction of the transport mean free path and of the slab
-thickness, and the distance to the slab face. The fluctuated continuous loss (eioni.continuous_loss) is taken over the
-path since the last loss point: at every step without msc; with msc not at the msc sub-steps and hard collisions,
-whose many short segments would narrow the Urban straggling. At a brem/delta point the interaction happens with
-probability sigma(post) / sigma(pre) (G4VEnergyLossProcess integral approach); annihilation and hard elastic
-collisions, whose cross sections grow as the energy falls, are sampled against their value at half the pre-step energy
-and thinned. Photons and deltas are returned, not transported; the parent's direction changes by their recoil. With
-msc=True (emsc) the soft deflection of a step is applied at a uniformly random point along it (random hinge), hard
-collisions at the step end; a track whose restricted CSDA range is shorter than its distance to both faces cannot
-leave, so it steps by energy loss only and scatters with the soft part alone (u_c = 2), its secondaries still made. A positron that annihilates in flight or stops gives two photons (eannihil). Energies in MeV,
-lengths in mm.
+The slab is 0 <= z <= length, unbounded in x and y; tracks start at the origin with directions d (d_z > 0), or at a
+depth z0 inside the slab in any direction. Each step is the shortest of the free path to the next discrete interaction
+(Seltzer-Berger photon above kcut or Moller / Bhabha delta above tcut, from the cross sections at the pre-step energy;
+for e+ also annihilation in flight; with msc also a hard elastic collision), the step limit of option 4's e+- step
+function (mean continuous loss at most STEP_FRACTION of the kinetic energy, not below FINAL_RANGE), with msc a
+fraction of the transport mean free path and of the slab thickness, and the distance to the slab face. The fluctuated
+continuous loss (eioni.continuous_loss) is taken over the path since the last loss point: at every step without msc;
+with msc not at the msc sub-steps and hard collisions, whose many short segments would narrow the Urban straggling. At
+a brem/delta point the interaction happens with probability sigma(post) / sigma(pre) (G4VEnergyLossProcess integral
+approach); annihilation and hard elastic collisions, whose cross sections grow as the energy falls, are sampled
+against their value at half the pre-step energy and thinned. Photons and deltas are returned, not transported; the
+parent's direction changes by their recoil. With msc=True (emsc) the soft deflection of a step is applied at a
+uniformly random point along it (random hinge), hard collisions at the step end; a track whose restricted CSDA range
+is shorter than its distance to both faces cannot leave, so it steps by energy loss only and scatters with the soft
+part alone (u_c = 2), its secondaries still made. A positron that annihilates in flight or stops gives two photons
+(eannihil). Energies in MeV, lengths in mm.
 """
 from typing import NamedTuple
 
@@ -110,24 +111,34 @@ def csda_range(mat, T, tcut, kcut, positron=False):
 
 
 def electron_slab(rng, mat, T, d, length, tcut, kcut, positron=False, msc=False, annihilation=True, max_step=None,
-                  hard_per_step=HARD_PER_STEP, field=None):
+                  hard_per_step=HARD_PER_STEP, field=None, z0=None):
     """Cross a slab of thickness `length` [mm] of `mat` from z = 0 along directions d (n, 3) from kinetic energies
     T [MeV]; msc=True adds multiple scattering (emsc), annihilation=False switches off e+ annihilation, max_step [mm]
     caps the msc step (default length / MSC_SLAB_STEPS: a hinge beyond the face would leave the track unscattered) and
-    hard_per_step sets the least number of hard elastic collisions per max_step; field (a 3-vector [T] or a callable
-    B(x)) bends every step on the helix of the field at its start (ehelix), the faces found along the helix."""
+    hard_per_step sets the least number of hard elastic collisions per max_step; field (a 3-vector [T], an (n, 3)
+    array of per-track constant fields, or a callable B(x)) bends every step on the helix of the field at its start
+    (ehelix), the faces found along the helix; z0 [mm] (scalar or per track, 0 <= z0 <= length) starts the tracks
+    inside the slab at that depth, in any direction (e.g. an electron born in a foil), default the entry face.
+    A track starting on a face and pointing out of the slab exits without transport."""
     T = np.array(np.atleast_1d(T), float)
     n = T.size
     d = np.array(d, float).reshape(n, 3)
     L = float(length)
     pos = np.zeros((n, 3))
+    if z0 is not None:
+        pos[:, 2] = np.broadcast_to(np.asarray(z0, float), (n,))
+        if ((pos[:, 2] < 0) | (pos[:, 2] > L)).any():
+            raise ValueError("electron_slab: z0 outside [0, length]")
     path = np.zeros(n)
     pend = np.zeros(n)       # path since the last continuous-loss point
     cont = np.zeros(n)
     stopped = np.zeros(n, bool)
-    exited = np.zeros(n, bool)
+    exited = (T > T_STOP) & (((pos[:, 2] == 0) & (d[:, 2] < 0)) | ((pos[:, 2] == L) & (d[:, 2] > 0)))
     annihilated = np.zeros(n, bool)
     anni = positron and annihilation
+    per_track = field is not None and not callable(field) and np.ndim(field) == 2
+    if per_track:
+        field = np.asarray(field, float).reshape(n, 3)
     dsmax = L / MSC_SLAB_STEPS if max_step is None else float(max_step)
     charge = 1.0 if positron else -1.0
     photons, deltas, gammas = [], [], []
@@ -138,7 +149,7 @@ def electron_slab(rng, mat, T, d, length, tcut, kcut, positron=False, msc=False,
             gammas.append((np.repeat(idx, 2), np.repeat(path[idx], 2), e.ravel(), u.reshape(-1, 3),
                            np.repeat(pos[idx], 2, axis=0)))
 
-    live = np.flatnonzero(T > T_STOP)
+    live = np.flatnonzero((T > T_STOP) & ~exited)
     low0 = np.flatnonzero(T <= T_STOP)
     cont[low0] += T[low0]
     T[low0] = 0.0
@@ -174,18 +185,19 @@ def electron_slab(rng, mat, T, d, length, tcut, kcut, positron=False, msc=False,
         xl = pos[live]
         if field is not None:
             pmom = np.sqrt(Tl * (Tl + 2 * eioni.ME))
+            fld = field[live] if per_track else field
 
         def face(x, u, smax):
             if field is None:
                 return _to_face(x[:, 2], u[:, 2], L)
-            B = ehelix.field_at(field, x)
+            B = ehelix.field_at(fld, x)
             return np.minimum(ehelix.to_plane(x, u, pmom, charge, B, L, smax),
                               ehelix.to_plane(x, u, pmom, charge, B, 0.0, smax))
 
         def move(x, u, s):
             if field is None:
                 return x + s[:, None] * u, u
-            return ehelix.helix(x, u, pmom, charge, ehelix.field_at(field, x), s)
+            return ehelix.helix(x, u, pmom, charge, ehelix.field_at(fld, x), s)
 
         if msc:
             tau = rng.random(live.size)
