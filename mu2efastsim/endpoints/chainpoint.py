@@ -77,7 +77,7 @@ CHAIN_SETUP_S, CHAIN_S_PER_MEVENT = 60.0, 180.0
 # tier-1b asset sets (crvfastsim.tier1b_assets.SETS; crv tests keep the two equal): directory under the FNAL data root,
 # files (library first), bytes of the whole set
 TIER1B_SETS = {"strict_v5": ("tier1b_strict_v5", ("library.root", "topology.npz", "topology.npz.json", "templates_v3.npz",
-                                                  "templates_v3.npz.json"), 1.2e9),
+                                                  "templates_v3.npz.json"), 1.1792e9),
                "strict_v4": ("tier1b_strict_v2", ("library.root", "topology_sidecar_strict_v2_v2.npz",
                                                   "topology_sidecar_strict_v2_v2.npz.json", "templates_v3.npz",
                                                   "templates_v3.npz.json"), 1.1699e9)}
