@@ -26,5 +26,10 @@ def test_endpoint_rendering_matches_core_main():
     assert {k for k in ours if ours[k] != MAIN["cases"][k]} == set()
 
 
+@pytest.mark.parametrize("value", ["-963323.1757819653", "-963323.1854550838", "-963323.2757819653", "1793500000.5"])
+def test_campaign_time_masks_to_one_token(value):
+    assert EI.Case(Path("/nowhere")).norm('{"campaign_s": ' + value + "}") == '{"campaign_s": <T>}'
+
+
 def test_known_differences_are_only_the_snapshot_check():
     assert MAIN["changed"] == ["streamed/beam_point", "streamed/crv_response"]
