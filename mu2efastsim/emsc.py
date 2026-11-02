@@ -36,6 +36,7 @@ ALPHA = 1 / 137.035999
 COEFF = 2 * np.pi * (ME * ebrem.RE_MM) ** 2      # MeV2 mm2
 SCREEN_A0 = 0.5 * ALPHA ** 2 * (ME / 0.88534) ** 2   # ScreenRSquareElec / Z^(2/3) [MeV2]
 FORM_FACTOR = 6.937e-6                           # MeV-2, times A^0.54 (G4WentzelOKandVIxSection::InitialiseA)
+FF_TMIN = 0.0          # MeV: nuclear form factor on hard collisions above this T (100: only in option 4's WentzelVI range)
 MF_MAX = 0.7698003589195010                      # max of sqrt(u/2)(2 - u) on [0, 2] (u = 2/3)
 C1 = 0.05                                        # hard mean free path / lambda_1
 STEP_LAMBDA1 = 0.1                               # step limit in units of lambda_1
@@ -340,7 +341,7 @@ def sample_hard(rng, mat, T, uc, tcut, positron=False):
     u = np.clip(u, uc, umax)
     z, n, a = elements(mat)
     mom2, invb2, _ = kinematics(T)
-    ff = np.where(on_nuc, 1 / (1 + FORM_FACTOR * a[iel] ** 0.54 * mom2 * u) ** 2, 1.0)
+    ff = np.where(on_nuc & (T > FF_TMIN), 1 / (1 + FORM_FACTOR * a[iel] ** 0.54 * mom2 * u) ** 2, 1.0)
     env = mott_envelope(z, T, positron)[iel, cols]
     acc = rng.random(T.size) * env <= mott_factor(z[iel], u, invb2, positron) * ff
     return u, acc

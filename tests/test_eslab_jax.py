@@ -139,3 +139,51 @@ def test_parity_200k(case):
     r = SJ.compare_numpy(M.BY_NAME[name], T0, L, tc, kc, n=200_000)
     for k in ("loss", "theta", "r"):
         assert r[k]["chi2_ndf"] < 2.0, (k, r[k])
+
+
+def test_helix_and_plane_crossing_match_ehelix():
+    from mu2efastsim import ehelix
+    jnp = jax.numpy
+    rng = np.random.default_rng(6)
+    n = 300
+    x = rng.normal(0, 5, (n, 3))
+    u = rng.normal(0, 1, (n, 3))
+    u /= np.linalg.norm(u, axis=1, keepdims=True)
+    p = rng.uniform(0.5, 105.0, n)
+    B = rng.normal(0, 1, (n, 3))
+    s = rng.uniform(0, 30, n)
+    xn, un = ehelix.helix(x, u, p, -1.0, B, s)
+    xj, uj = SJ._helix(jnp.asarray(x), jnp.asarray(u), jnp.asarray(p), -1.0, jnp.asarray(B), jnp.asarray(s))
+    assert np.allclose(xj, xn, atol=1e-9) and np.allclose(uj, un, atol=1e-12)
+    zp = x[:, 2] + rng.uniform(-3, 3, n)
+    sn = ehelix.to_plane(x, u, p, -1.0, B, zp, 6.0)
+    sj = np.asarray(SJ._to_plane(jnp.asarray(x), jnp.asarray(u), jnp.asarray(p), -1.0, jnp.asarray(B),
+                                 jnp.asarray(zp), jnp.asarray(np.full(n, 6.0))))
+    fin = np.isfinite(sn)
+    assert (np.isfinite(sj) == fin).all() and np.allclose(sj[fin], sn[fin], atol=1e-9)
+
+
+def test_start_depth_field_and_compaction_parity_with_numpy():
+    # 0.5 mm Al from mid-depth in a 1 T transverse field, 105 MeV e- both ways: fates and loss medians as in NumPy;
+    # compaction keeps the energy balance and matches the uncompacted run within statistics
+    n, L, T0 = 4000, 0.5, 105.0
+    tc, kc = CUTS["G4_Al"]
+    rng = np.random.default_rng(7)
+    ct = rng.uniform(-1, 1, n)
+    ph = rng.uniform(0, 2 * np.pi, n)
+    d = np.stack([np.sqrt(1 - ct ** 2) * np.cos(ph), np.sqrt(1 - ct ** 2) * np.sin(ph), ct], axis=1)
+    Bf = np.array([1.0, 0.0, 0.0])
+    a = S.electron_slab(np.random.default_rng(8), AL, np.full(n, T0), d, L, tc, kc, msc=True, z0=0.25, field=Bf)
+    kw = dict(msc=True, z0=0.25, field=Bf)
+    b = jax.tree_util.tree_map(np.asarray, SJ.electron_slab(jax.random.PRNGKey(8), AL, np.full(n, T0), d, L, tc, kc,
+                                                            **kw))
+    c = SJ.electron_slab(jax.random.PRNGKey(9), AL, np.full(n, T0), d, L, tc, kc, chunk=16, min_bucket=64, **kw)
+    for r in (b, c):
+        assert r.reflected.mean() == pytest.approx(a.reflected.mean(), abs=5 * np.sqrt(0.25 / n))
+        assert np.median(T0 - r.T[~r.stopped]) == pytest.approx(np.median(T0 - a.T[~a.stopped]), rel=0.05)
+        assert np.median(r.path) == pytest.approx(np.median(a.path), rel=0.03)
+        out = r.continuous + r.photon_energy + r.delta_energy
+        assert T0 - r.T == pytest.approx(out, abs=1e-8)
+        z = r.position[:, 2]
+        assert np.allclose(z[~r.stopped & r.reflected], 0.0, atol=1e-8)
+        assert np.allclose(z[~r.stopped & ~r.reflected], L, atol=1e-8)

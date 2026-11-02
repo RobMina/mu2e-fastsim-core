@@ -112,3 +112,20 @@ def test_slow_electrons_stop_or_reflect_with_msc():
     r = S.electron_slab(np.random.default_rng(23), W, np.full(n, 0.5), d, 1.0, TCUT, KCUT, msc=True)
     assert (r.stopped | r.reflected).all() and r.reflected.any()
     assert (r.position[r.stopped, 2] < 0.5).all()
+
+
+def test_start_depth_default_is_identical_and_inside_start_exits_either_face():
+    n, T0, L = 4000, 105.0, 0.5
+    mat = M.BY_NAME["G4_Al"]
+    d = np.tile([0.0, 0.0, 1.0], (n, 1))
+    a = S.electron_slab(np.random.default_rng(7), mat, np.full(n, T0), d, L, TCUT, KCUT, msc=True)
+    b = S.electron_slab(np.random.default_rng(7), mat, np.full(n, T0), d, L, TCUT, KCUT, msc=True, z0=0.0)
+    assert np.array_equal(a.T, b.T) and np.array_equal(a.position, b.position)
+    half = S.electron_slab(np.random.default_rng(8), mat, np.full(n, T0), d, L, TCUT, KCUT, z0=0.5 * L)
+    full = S.electron_slab(np.random.default_rng(9), mat, np.full(n, T0), d, 0.5 * L, TCUT, KCUT)
+    da, db = T0 - half.T, T0 - full.T
+    assert abs(da.mean() - db.mean()) < 4 * np.hypot(da.std(), db.std()) / np.sqrt(n)
+    back = S.electron_slab(np.random.default_rng(10), mat, np.full(n, T0), -d, L, TCUT, KCUT, z0=0.25 * L)
+    assert back.reflected.all() and np.allclose(back.position[:, 2], 0.0, atol=1e-9)
+    with pytest.raises(ValueError):
+        S.electron_slab(np.random.default_rng(1), mat, np.full(2, T0), d[:2], L, TCUT, KCUT, z0=2 * L)

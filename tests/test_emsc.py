@@ -123,3 +123,24 @@ def test_tabulated_mott_ratio_limits_and_envelope():
         u = rng.uniform(0, 2, (2000, T.size))
         r = E.mott_factor(np.full(u.shape, z), u, (T + E.ME) ** 2 / (T * (T + 2 * E.ME)))
         assert (r <= env[None, :] + 1e-12).all() and (r >= 0).all()
+
+
+def test_form_factor_threshold_accepts_more_large_angle_collisions_below_it():
+    W = M.BY_NAME["G4_W"]
+    n, T, uc = 200_000, 50.0, 0.5
+    acc = {}
+    for tmin in (0.0, 100.0):
+        E.FF_TMIN = tmin
+        try:
+            u, a = E.sample_hard(np.random.default_rng(3), W, np.full(n, T), uc, TCUT)
+        finally:
+            E.FF_TMIN = 0.0
+        acc[tmin] = a.mean()
+    assert acc[100.0] > acc[0.0] * 1.1            # no nuclear form factor below 100 MeV
+    u0, a0 = E.sample_hard(np.random.default_rng(3), W, np.full(n, 150.0), uc, TCUT)
+    E.FF_TMIN = 100.0
+    try:
+        u1, a1 = E.sample_hard(np.random.default_rng(3), W, np.full(n, 150.0), uc, TCUT)
+    finally:
+        E.FF_TMIN = 0.0
+    assert np.array_equal(a0, a1) and np.array_equal(u0, u1)   # above the threshold: unchanged

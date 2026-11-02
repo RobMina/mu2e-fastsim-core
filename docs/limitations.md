@@ -1,12 +1,14 @@
 # Core: limitations
 
-- **Electrons: slab physics, field stepping checked against itself only.** Electron and positron modules (`eslab` and
-  its parts) are opt-in and validated in slabs against Geant4; field stepping (`ehelix`, `eslab(field=...)`) is checked
-  against analytic helices and RK4, not yet against Geant4; the device stepper `eslab_jax` has no field, returns
-  secondaries as per-track counts and energy sums, and keeps finished lanes in the loop (no compaction: the thick-W
-  case runs ~3500 iterations); no conversion-electron or cosmic-fake chain yet. Open differences from Geant4: the
-  reflected fraction in 1 X0 W, and in 0.1 mm Al at 95 MeV the transmitted-loss chi2/ndf of 5.1 (quantiles q10-q90
-  within 0.3 %, yields within 1 sigma; not understood). Inside a slab the field is taken at the start of each step.
+- **Electrons: slab physics, field stepping checked against itself and through the conversion-electron chain.**
+  Electron and positron modules (`eslab` and its parts) are opt-in and validated in slabs against Geant4; field
+  stepping (`ehelix`, `eslab(field=...)`, `eslab_jax(field=...)`) is checked against analytic helices, RK4 and the
+  NumPy model, and end to end in the umbrella's conversion-electron chain against Geant4. Inside a slab the field is
+  constant per track (taken at the entry or step start). The device stepper returns secondaries as per-track counts
+  and energy sums. Open differences from Geant4: with the default form factor the reflected fraction in 1 X0 W is low
+  (0.28 vs 0.35 %; `emsc.FF_TMIN = 100` closes it, opt-in); the transmitted-loss shape in 0.1 mm Al at 95 MeV
+  (chi2/ndf 5.1, low side of the Landau peak) is Geant4's change of multiple-scattering model at 100 MeV, not the
+  fast model (Geant4 95 vs 105 MeV differs there, fast 95 vs 105 does not).
 - **No magnetic field** in the core muon transport: straight segments with multiple scattering, for the field-free
   extracted configuration. The beam stage has its own field-map stepping (umbrella `beam/`).
 - `eloss_jax` does not port delta-ray sampling (`sample_deltas`); the CRV transport has its own device sampler for it.
