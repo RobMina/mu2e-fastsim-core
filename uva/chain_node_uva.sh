@@ -15,7 +15,8 @@
 # node tmpfs; the v6_0 lookup tables come from CVMFS into tmpfs; all deleted on exit (cleanup.txt). Per-shard JSONs
 # and the merge go back to the GPVM. usage (laptop, UVA network):
 #   JOB=chain_node_uva.sh EXPORTS=NPROC=8,RUNS=4 kpp_stream_uva.sh "$FASTSIMKIT_FNAL_HOST" mu2e/fastsim_uva <files...>
-# Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v4, the only set (stream library.root, the topology sidecar and
+# Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v5 (default) or strict_v4 (previous default); stream that set's
+# library.root, topology sidecar and
 # templates_v3.npz, each with its .json).
 # Device float: MU2EFS_DEVICE_FLOAT (float32 default, float64); JAX compilation cache: FASTSIMKIT_JAX_CACHE (default
 # $FASTSIMKIT_SCRATCH/jaxcache, "" = off), shared by all jobs (entries are keyed by card, JAX version and program).
@@ -63,9 +64,13 @@ ls -la $L | grep -v ready | awk 'NR>1{print $5, $9}'
 GEN=($(ls $L/gen.*.root)); LIB=$(ls $L/lib*.root | head -1); CAL=$(ls $L/crvcalib*.csv | head -1)
 DEV=$(ls $L/crvphoton*.csv 2>/dev/null | head -1); GD=$(ls $L/*.gdml | head -1)
 echo "gen files ${#GEN[@]}; library $(basename $LIB); calib $(basename $CAL); gdml $(basename $GD)"
-T1B=${T1B:-strict_v4}
-[ "$T1B" = strict_v4 ] || { echo "T1B must be strict_v4"; exit 2; }
-for f in library.root topology_sidecar_strict_v2_v2.npz topology_sidecar_strict_v2_v2.npz.json templates_v3.npz templates_v3.npz.json; do
+T1B=${T1B:-strict_v5}
+case $T1B in
+  strict_v5) T1BF="library.root topology.npz topology.npz.json templates_v3.npz templates_v3.npz.json" ;;
+  strict_v4) T1BF="library.root topology_sidecar_strict_v2_v2.npz topology_sidecar_strict_v2_v2.npz.json templates_v3.npz templates_v3.npz.json" ;;
+  *) echo "T1B must be strict_v5 or strict_v4"; exit 2 ;;
+esac
+for f in $T1BF; do
   [ -f $L/$f ] || { echo "tier-1b set $T1B: $f not streamed"; exit 3; }; done; TIER1B="--tier1b $T1B --tier1b-dir $L"
 echo "tier 1b: $TIER1B"
 CPP=$(( ${SLURM_CPUS_ON_NODE:-128} / NP ))
