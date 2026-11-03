@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from mu2efastsim.endpoints import capabilities as C, chainpoint
+from mu2efastsim.endpoints.geometry import GEOMETRY_TASKS
 from mu2efastsim.endpoints.kit import TASKS
 
 pytestmark = pytest.mark.usefixtures("site_env")   # placeholder site variables (tests/conftest.py)
@@ -32,7 +33,7 @@ def test_declarative_schema_serializable_and_fresh():
     assert set(description) == set(TASKS) | {"chain_point"}
     json.dumps(description, allow_nan=False)
     for task, descriptor in description.items():
-        assert descriptor["file_kinds"] == (["geom"] if task == "beam_point" else [])
+        assert descriptor["file_kinds"] == (["geom"] if task in GEOMETRY_TASKS else [])
         assert descriptor["validation_scope"]["physics_commissioned"] is False
         assert descriptor["route_requirements"]
         for metric in descriptor["metrics"].values():
@@ -251,6 +252,7 @@ class NoPhysicsImports:
             raise AssertionError('physics dependency imported: ' + fullname)
 sys.meta_path.insert(0, NoPhysicsImports())
 from mu2efastsim.endpoints import capabilities, chainpoint
+from mu2efastsim.endpoints.geometry import GEOMETRY_TASKS
 from mu2efastsim.endpoints.kit import TASKS
 capabilities.describe_tasks(TASKS, chainpoint)
 '''

@@ -35,7 +35,7 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _COUNTS = {
     "events", "generated_events", "accepted_events", "events_with_steps", "jobs_ok", "library_reused_jobs",
     "stops", "muons", "foils", "n_terms", "pytest_failed", "vetoed", "selected", "passing_gate",
-    "deadtime_selected", "primary_muons", "straw_steps", "digis", "hits", "seeds",
+    "deadtime_selected", "primary_muons", "electrons", "straw_steps", "digis", "hits", "seeds",
     "fit_attempts", "fit_successes", "events_with_fit", "written_events", "active_hits",
 }
 _UNITS = {
@@ -45,6 +45,10 @@ _UNITS = {
     "muons_per_s_warm": "muons/s", "gpu_hours": "GPU*h", "est_su": "SU",
     "accepted_per_gpu_hour": "events/(GPU*h)", "accepted_per_gpu_hour_chain": "events/(GPU*h)",
     "accepted_per_est_su": "events/SU",
+    "signal_box_low_mev": "MeV", "signal_box_high_mev": "MeV", "signal_mpv_mev": "MeV", "signal_fwhm_mev": "MeV",
+    "signal_rate": "events", "dio_background": "events", "cosmic_background": "events",
+    "total_background": "events", "total_background_err": "events", "electrons_per_s": "electrons/s",
+    "stops_per_gen_event": "stops/event", "stops_per_pot": "stops/POT", "muons_per_event": "muons/event",
 }
 
 
@@ -91,7 +95,7 @@ def _rule(when, *, unavailable=(), conditional=(), reason):
 def _routes(task):
     if task == "chain_point":
         return [{"name": "streaming", "requires": ["stream_in"]}]
-    if task in ("beam_point", "crv_response", "tracker_point"):
+    if task in ("beam_point", "beam_sob", "crv_response", "tracker_point"):
         rows = [{"name": "mounted", "requires": ["fnal_data"]},
                 {"name": "streaming", "requires": ["stream_in", "no_fnal_data"]}]
         if task == "crv_response":
@@ -224,6 +228,16 @@ def describe_tasks(tasks, chainpoint_module):
                     "scope": "Frame-coverage sample standard deviation / sqrt(frames); needs at least two frames.",
                     "gp_observation_noise": False,
                 }
+        elif task == "beam_sob":
+            metrics.setdefault("input_wait_s", _metric("input_wait_s", "conditional", "Streaming route only."))
+            for name, of in (("sensitivity_err", "sensitivity"), ("ce_acceptance_err", "ce_acceptance"),
+                             ("box_eff_per_stop_err", "box_eff_per_stop"),
+                             ("total_background_err", "total_background")):
+                if name in metrics:
+                    metrics[name]["uncertainty"] = {
+                        "of": of, "kind": "jackknife_standard_error", "formula": "over the electron chunks",
+                        "scope": "Finite conversion-electron sampling only, stops fixed; not model/systematic.",
+                        "gp_observation_noise": False}
         elif task == "v4_response":
             _set(metrics, [n for n in metrics if not n.endswith("_pass")], "conditional",
                  "Only returned when the corresponding V4 diagnostic JSON exists; pass=0 alone is still returned.")
@@ -231,7 +245,7 @@ def describe_tasks(tasks, chainpoint_module):
             _set(metrics, metrics, "conditional", "Metric must be present in the producer's benchmark JSON.")
         result[task] = {"metrics": metrics, "metric_rules": rules, "metric_patterns": patterns,
                         "configurations": configs, "route_requirements": _routes(task),
-                        "file_kinds": ["geom"] if task == "beam_point" else [],
+                        "file_kinds": ["geom"] if task in ("beam_point", "beam_sob") else [],
                         "validation_scope": deepcopy(_SCOPE)}
     return result
 
@@ -319,7 +333,7 @@ def resolve(task, params, endpoint, tasks, chainpoint_module):
     patterns = [dict(p, availability=p["status"]) for p in descriptor["metric_patterns"] if _matches(p["when"], params)]
     route = _route(task, endpoint, params)
     stream_only = ("input_wait_s", "inputs_reused") if task == "crv_response" else ("input_wait_s",)
-    if task in ("beam_point", "crv_response"):
+    if task in ("beam_point", "beam_sob", "crv_response"):
         _set(metrics, stream_only, "available" if route["name"] == "streaming" else "unavailable",
              "Emitted by the streaming delegate only." if route["name"] == "streaming" else
              "Mounted/plain routes do not produce streaming wait or cache-reuse metrics.")

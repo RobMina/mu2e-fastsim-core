@@ -107,6 +107,9 @@ def schema(task: str, names) -> dict[str, Parameter]:
     elif task == "beam_point":
         specs = {"geom": Parameter("geometry", role="physics_design"), "muons": integer(1, 10 ** 7),
                  "seed": seed, "repeat": integer(0, 5, role="timing_repeat")}
+    elif task == "beam_sob":
+        specs = {"geom": Parameter("geometry", role="physics_design"), "muons": integer(0, 10 ** 7),
+                 "electrons": integer(1000, 10 ** 7), "seed": seed}
     elif task == "veto_c4":
         specs = {"selection": enum("run1a_dev"), "dt_lo": number(unit="ns"), "dt_hi": number(unit="ns"),
                  "min_pe": number(0, unit="PE"), "min_layers": integer(0, 4, role="analysis"),
