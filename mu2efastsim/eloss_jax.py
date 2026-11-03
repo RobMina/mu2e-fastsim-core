@@ -245,15 +245,16 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
     return jnp.where(u, loss * scaling, out)
 
 
-def sample_loss_electron(key, mat, T, length, cut, mean, positron=False, K=K_POISSON):
+def sample_loss_electron(key, mat, T, length, cut, mean, positron=False, K=K_POISSON, unroll=False):
     """Urban fluctuation of the continuous e-/e+ loss `mean` [MeV] over `length` [mm] at kinetic energy T: the
-    eioni.continuous_loss counterpart (tmax = T/2 or T, cut = min(tcut, tmax), no Gaussian/Gamma regime)."""
+    eioni.continuous_loss counterpart (tmax = T/2 or T, cut = min(tcut, tmax), no Gaussian/Gamma regime). unroll:
+    as _sample (opt-in)."""
     dt = dprec.float_of(T, mean)
     T = jnp.asarray(T, dt)
     p = jnp.sqrt(T * (T + 2 * ME))
     tmax = T if positron else 0.5 * T
     return _sample(key, consts(mat), p, length, jnp.minimum(jnp.asarray(cut, dt), tmax), jnp.asarray(ME, dt), K=K,
-                   mean=jnp.asarray(mean, dt), tmax=tmax, gaussian=False)
+                   mean=jnp.asarray(mean, dt), tmax=tmax, gaussian=False, **({"unroll": True} if unroll else {}))
 
 
 def sample_loss(key, mat, p, length, tcut, mass=MMU, K=K_POISSON, mean=None):

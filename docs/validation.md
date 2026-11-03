@@ -48,6 +48,9 @@ slabs with EM option 4, 1M events per case (200k for 1 X0 W); merged 2026-11-01:
 | device helix face search over 16 revolutions, float64 and float32 | analytic first crossings and unreachable planes; 1 MeV e- in air, 0.481 T transverse field | first crossings found without a fixed scan cap; slab transmits at 5.166 mm path rather than reflecting after a later crossing | pass |
 | slab starts on either face, inward and outward; NumPy e-/e+, device float64/float32 with and without compaction | no field, explicit zero field and 0.5 T normal field; msc off/on | outward starts exit with zero path and deposition, unchanged energy and position; inward starts transport | pass |
 | device compaction chunk validation | zero, negative, fractional and boolean chunks | rejected with ValueError before compaction; positive integer chunks remain supported | pass |
+| `eslab_jax` step factored out of the loop (`_slab_body`), per-lane layer types and opt-in unroll present | outputs before the change | `electron_slab` float64/float32 outputs byte-identical over 14 cases (plain, msc, e+, field, field without msc, start depth, compaction) | pass |
+| `lane_step` with Al, polyethylene and W lanes interleaved in one loop, float64 and float32, msc with and without field, field without msc | `electron_slab` per material, same key | stopped, reflected, photon and delta counts identical per lane; energies, positions, directions, paths to rounding (1e-11 / 2e-5) | pass |
+| `lane_step(unroll=True)` | `unroll=False` | same counts per lane, continuous outputs to 1e-11 | pass |
 | muon `eloss_jax.sample_loss` with the electron options added | the sampler before the change | bit-identical on a 5 x 5 x 3 x 2 grid of materials, momenta, lengths and cuts, float64 and float32, arm64 and x86-64 | pass |
 
 ## Device precision
