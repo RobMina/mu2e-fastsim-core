@@ -112,3 +112,34 @@ sampler into a larger jitted transport step. This has not been measured (no GPU 
 
 Celeritas `src/celeritas/em/distribution/EnergyLossUrbanDistribution.hh` (with `EnergyLossGaussianDistribution`,
 `EnergyLossGammaDistribution`, `EnergyLossHelper`, `FluctuationData`) was used as the guide for the branch structure.
+
+## Device-resident slab loss (`mu2efastsim/slab_jax.py`)
+
+`transport.slab_loss` slices a (material, |p|, length) pair so dE/dx follows the slowing muon: one slice for a fast
+muon, 60-150 for one that ranges out. As an XLA loop over a batch, every iteration evaluates the slice on every lane and
+the host reads the loop predicate back, so a batch costs (slices of its slowest lane) x (kernel launches + one
+device-to-host copy). `slab_jax` runs the loop per block of lanes inside one kernel:
+
+- **Draws.** Raw-key threefry (`tf2x32`, `fold_in`, `uniform`, `normal`) is bit for bit `jax.random` with the
+  partitionable threefry (the JAX default), written as uint32 arithmetic that also lowers in a Pallas kernel.
+  `sample` is `eloss_jax._sample` on raw keys with the same draws; `slab_loss` keeps the slice keys
+  `fold_in(pair key, slice)` and the slice, stop and fallback policy of `transport.slab_loss`.
+- **Paths.** `slab_loss` (independent pairs) and `path_loss` (a sequence of slabs and mean-loss segments crossed in
+  order, e.g. a world column of bands and materials, one call for the whole path). Implementations: `xla` (vmapped
+  while loop; the reference, and the path on CPU and on non-NVIDIA GPUs), `pallas` (Triton kernel, NVIDIA CUDA only),
+  `interpret` (the kernel code run by the Pallas interpreter, for CPU tests). `default_impl()` takes the kernel on a
+  CUDA backend and the XLA path elsewhere; `MU2EFS_SLAB_KERNEL=xla|pallas` forces one; `provenance()` records it.
+- **Inside the kernel** each block skips the Gaussian and Gamma regimes when none of its lanes is in them and stops the
+  Poisson and Gamma rounds once no lane's value can change; the lanes that use those values get the same results.
+  Pallas has no erf/erfc (Cephes rational approximations, max relative difference to `lax.erf`/`lax.erfc` below
+  1e-14), cannot capture array constants (`ndtri` with scalar coefficients, the same arithmetic as jax's) and has no
+  boolean reduction (`any` as a max over int32).
+- **Agreement.** Separately compiled programs round differently in the last bit (already `_sample(unroll=True)` against
+  `unroll=False`), and a last-bit change can move one slice boundary of a lane, so the device path agrees with
+  `eloss_jax._sample` and the XLA reference to rounding, not bit for bit. Tests (`tests/test_slab_jax.py`): raw
+  threefry bit for bit `jax.random` (fold_in, split, uniform at float64/float32 with and without minval, normal);
+  `sample` against `_sample` (20 k lanes, all regimes) within 1e-13 relative, 99 % bit-equal; `slab_loss` against a
+  `fold_in` + `_sample` slice loop with 99.5 % of lanes taking the same slices; the interpreted kernel against the XLA
+  implementation; mean and quantiles against NumPy `transport.slab_loss` in distribution. On an NVIDIA GPU the kernel
+  and the XLA implementation take the same slices on every lane of a 16 k-lane test with the loss equal to 1e-14
+  relative at float64 (5e-4 at float32).
