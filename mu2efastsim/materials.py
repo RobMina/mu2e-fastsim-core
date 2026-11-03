@@ -34,6 +34,7 @@ class Material:
     sternheimer: tuple = ()     # (C, X0, X1, a, m, delta0) of G4DensityEffectData, empty = no table
     birks_mm_per_MeV: float = 0.0
     cuts_e_MeV: dict = field(default_factory=dict)   # production threshold for delta electrons, by region tag
+    state: str = "solid"        # "gas": Geant4's gas branch of the Sternheimer parametrisation (at STP)
 
     @cached_property
     def zeff(self):
@@ -49,14 +50,24 @@ class Material:
 
     @cached_property
     def _density_params(self):
-        """(C, X0, X1, a, m, delta0): the NIST table when given, else Sternheimer 1971 for condensed materials
-        (G4IonisParamMat::ComputeDensityEffectParameters, solid branch; every non-NIST material here is a solid)."""
+        """(C, X0, X1, a, m, delta0): the NIST table when given, else Sternheimer 1971
+        (G4IonisParamMat::ComputeDensityEffectParameters): solid branch, or the gas branch for state "gas" (no
+        pressure/temperature correction: the gas is taken at STP)."""
         if self.sternheimer:
             return self.sternheimer
         hbarc_mm = 197.3269804e-12            # MeV mm
         re_mm = 2.8179403262e-12
         e_plasma = np.sqrt(4 * np.pi * hbarc_mm ** 2 * re_mm * self.electron_density_per_mm3)   # MeV
         C = 1 + 2 * np.log(self.I_eV * 1e-6 / e_plasma)
+        if self.state == "gas":
+            x1 = 4.0
+            for c_hi, x0 in ((10.0, 1.6), (10.5, 1.7), (11.0, 1.8), (11.5, 1.9), (12.25, 2.0)):
+                if C <= c_hi:
+                    break
+            else:
+                x0, x1 = (2.0, 5.0) if C <= 13.804 else (0.326 * C - 2.5, 5.0)
+            a = 2 * np.log(10) * (C / (2 * np.log(10)) - x0) / (x1 - x0) ** 3.0
+            return (C, x0, x1, a, 3.0, 0.0)
         icase = 0 if self.I_eV < 100.0 else 1
         x0 = 0.2 if C < (3.681, 5.215)[icase] else 0.326 * C - (1.0, 1.5)[icase]
         x1 = (2.0, 3.0)[icase]

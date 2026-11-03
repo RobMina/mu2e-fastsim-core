@@ -68,3 +68,13 @@ def test_tracker_materials_match_the_gdml_export():
     assert abs(MM.ELECTRONICS.I_eV - 226.4011) < 1e-3 and abs(MM.ELECTRONICS.fractions["Au"] - 0.034) < 1e-9
     assert abs(MM.ALUMINIUM_7075.fractions["Zn"] - 0.056) < 1e-9
     assert abs(MM.CONCRETE_MARS.fractions["Fe"] - 0.014) < 1e-9
+
+
+def test_gas_state_density_branch():
+    import dataclasses
+    from mu2efastsim import materials as Mt
+    gas = Mt.Material("ArCO2", 0.001696, 158.62, {"Ar": 0.784, "O": 0.157, "C": 0.059})
+    C, x0, x1, a, m, d0 = dataclasses.replace(gas, state="gas").density_params()
+    assert gas.density_params()[1:3] != (2.0, 4.0)                 # default: the solid branch, unchanged
+    assert 11.5 < C <= 12.25 and (x0, x1, m, d0) == (2.0, 4.0, 3.0, 0.0)
+    assert abs(a - 2 * np.log(10) * (C / (2 * np.log(10)) - 2.0) / 8.0) < 1e-12
