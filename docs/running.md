@@ -57,16 +57,18 @@ that never import `mu2efastsim.endpoints` or `hependpoints`, and `mu2efastsim.si
 `endpoints/mu2e_config.py` (`UVA_GPU_TABLE`); `ci/endpoint_identity.py` renders a grid of submissions to compare
 endpoint versions byte for byte. Tasks:
 
-| Task | Returns | Endpoints |
-|---|---|---|
-| `reco_bench` | synthetic CRV reco throughput | any GPU |
-| `response_bench` | photon and SiPM throughput with the real lookup table and photon map | any GPU |
-| `v4_response` | the V4 photon and SiPM checks | any GPU |
-| `chain_point` | one point of the CRV fast chain as N one-GPU jobs, inputs streamed in | Slurm |
-| `chain`, `regression` | the CRV chain on held-out shards vs the stock chain | EAF |
-| `veto_c4` | CRV veto inefficiency of a veto card (CPU) | EAF |
-| `tracker_point` | stage-C steps, fast digis, hits, seeds and the F2 fit of one shard ([tracker-point.md](tracker-point.md)) | EAF, Slurm |
-| `beam_point` | stop fraction and stop profile of a target geometry (umbrella `beam/` on `PYTHONPATH`) | EAF, Slurm |
+| Task | Returns | Endpoints | Validated |
+|---|---|---|---|
+| `reco_bench` | synthetic CRV reco throughput | any GPU | benchmark only, no physics output |
+| `response_bench` | photon and SiPM throughput with the real lookup table and photon map | any GPU | benchmark of the V4-validated response |
+| `v4_response` | the V4 photon and SiPM checks | any GPU | V4 pass on A100, PVC, B200 and T4: PE per SiPM within 0.20 %, times within 0.14 ns |
+| `chain_point` | one point of the CRV fast chain as N one-GPU jobs, inputs streamed in | Slurm | the CRV default chain (crv `docs/validation.md`: cluster PE chi2/ndf 1.09 on 5 M held-out events, counts within 0.4 %) |
+| `chain`, `regression` | the CRV chain on held-out shards vs the stock chain | EAF | as `chain_point` |
+| `crv_response` | one response-tuning point (reco-r3) scored against KPP data | EAF, Slurm | V-R5: the objective has the same minimum as the stock path within the loop noise |
+| `veto_c4` | CRV veto inefficiency of a veto card (CPU) | EAF | C4 rule evaluation on a cached Run 1A selection; the frame-level veto closure is not on main |
+| `tracker_point` | stage-C steps, fast digis, hits, seeds and the F2 fit of one shard ([tracker-point.md](tracker-point.md)) | EAF, Slurm | T-V0, T-V1 pass; fast digis vs stock on the same steps 0 of 19 flagged; open: T-V3 track yield -1.42 +- 0.37 % |
+| `beam_point` | stop fraction and stop profile of a target geometry (umbrella `beam/` on `PYTHONPATH`) | EAF, Slurm | 65 Geant4-evaluated design points: Geant4 / fast 1.0045 +- 0.0005 (+- 0.0077 from the predicted scale), rank correlation 0.998; paired stop fraction 0.5-0.7 % low |
+| `beam_sob` | sob stand-in of a target geometry: stops, conversion electrons, calorimeter proxy, the studies' approximate sensitivity (umbrella `beam/`; CPU) | EAF, Slurm | 65 design points: Geant4 / fast 0.9920 +- 0.0006 (+- 0.0077 from the stops normalisation), rms 0.46 %, rank correlation 0.993; the calorimeter proxy keeps 1.7 % too many electrons |
 
 ## Endpoint job scripts
 

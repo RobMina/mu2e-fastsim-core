@@ -19,7 +19,7 @@ This page lists the checks of core components on their own. "Commit" is the core
 ## Electrons
 
 Electron and positron physics (Seltzer-Berger bremsstrahlung, Moller/Bhabha ionisation, mixed screened-Rutherford
-multiple scattering, two-photon annihilation, slab stepping; NumPy, opt-in, `eslab`). Geant4 reference: electron-gun
+multiple scattering, two-photon annihilation, slab stepping; NumPy, `eslab`). Geant4 reference: electron-gun
 slabs with EM option 4, 1M events per case (200k for 1 X0 W); merged 2026-11-01:
 
 | Check | Reference | Result | Verdict |

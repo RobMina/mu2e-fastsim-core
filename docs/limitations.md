@@ -1,7 +1,7 @@
 # Core: limitations
 
 - **Electrons: slab physics, field stepping checked against itself and through the conversion-electron chain.**
-  Electron and positron modules (`eslab` and its parts) are opt-in and validated in slabs against Geant4; field
+  Electron and positron modules (`eslab` and its parts, `eslab_jax`) are validated in slabs against Geant4; field
   stepping (`ehelix`, `eslab(field=...)`, `eslab_jax(field=...)`) is checked against analytic helices, RK4 and the
   NumPy model, and end to end in the umbrella's conversion-electron chain against Geant4. Inside a slab the field is
   constant per track (taken at the entry or step start). The device stepper returns secondaries as per-track counts
