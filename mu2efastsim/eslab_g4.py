@@ -276,8 +276,6 @@ def main(argv=None):
     ap.add_argument("--hard-per-step", type=float, help="fast-arm least hard collisions per msc step cap")
     ap.add_argument("--mott", choices=("table", "mckinley", "none"), help="e- Mott factor on hard collisions "
                     "(default: emsc.MOTT); mckinley and none are diagnostics")
-    ap.add_argument("--ff-tmin", type=float, help="nuclear form factor only above this T [MeV] (emsc.FF_TMIN; "
-                    "100 = option 4's WentzelVI range, Goudsmit-Saunderson below uses a point nucleus)")
     ap.add_argument("--pair", action="store_true", help="loss_pair of the two case directories given")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
@@ -289,8 +287,6 @@ def main(argv=None):
         return
     if a.mott:
         emsc.MOTT = a.mott
-    if a.ff_tmin is not None:
-        emsc.FF_TMIN = a.ff_tmin
     if a.table:
         print(table([r for c in a.cases for r in (lambda x: x if isinstance(x, list) else [x])(
             json.loads(Path(c).read_text()))]))

@@ -8,8 +8,9 @@ cross section, which this module samples directly instead of through their conde
   dsigma/du = 2 pi (m_e r_e)^2 / (beta^2 p^2) [Z^2 F_N(u) + Z F_e(u)] R(u) / (u + s)^2,  u = 1 - cos(theta),
 
 with the screening s of G4WentzelOKandVIxSection::SetupTarget for light particles, its exponential nuclear form factor
-F_N = 1 / (1 + f_A p^2 u)^2, scattering on atomic electrons up to the angle that transfers the delta cut
-(ComputeMaxElectronScattering, larger transfers are Moller/Bhabha deltas), and a Mott factor R(u) on hard
+F_N = 1 / (1 + f_A p^2 u)^2 above FF_TMIN = 100 MeV (WentzelVI; Goudsmit-Saunderson below uses a point nucleus),
+scattering on atomic electrons up to the angle that transfers the delta cut (ComputeMaxElectronScattering, larger
+transfers are Moller/Bhabha deltas), and a Mott factor R(u) on hard
 collisions: for e- the fitted Mott/Rutherford ratio of G4ScreeningMottCrossSection (G4MottData coefficients, bundled
 in data/mott_G4MottData_11.3.2.npz), for e+ the McKinley-Feshbach form R(u) = 1 - beta^2 u / 2 - (pi alpha Z / 2)
 beta sqrt(u / 2) (2 - u) of its single-scattering sampler.
@@ -36,7 +37,7 @@ ALPHA = 1 / 137.035999
 COEFF = 2 * np.pi * (ME * ebrem.RE_MM) ** 2      # MeV2 mm2
 SCREEN_A0 = 0.5 * ALPHA ** 2 * (ME / 0.88534) ** 2   # ScreenRSquareElec / Z^(2/3) [MeV2]
 FORM_FACTOR = 6.937e-6                           # MeV-2, times A^0.54 (G4WentzelOKandVIxSection::InitialiseA)
-FF_TMIN = 0.0          # MeV: nuclear form factor on hard collisions above this T (100: only in option 4's WentzelVI range)
+FF_TMIN = 100.0        # MeV: nuclear form factor on hard collisions above this T (option 4's WentzelVI range)
 MF_MAX = 0.7698003589195010                      # max of sqrt(u/2)(2 - u) on [0, 2] (u = 2/3)
 C1 = 0.05                                        # hard mean free path / lambda_1
 STEP_LAMBDA1 = 0.1                               # step limit in units of lambda_1

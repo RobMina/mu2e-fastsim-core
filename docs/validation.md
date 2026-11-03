@@ -19,7 +19,7 @@ This page lists the checks of core components on their own. "Commit" is the core
 ## Electrons
 
 Electron and positron physics (Seltzer-Berger bremsstrahlung, Moller/Bhabha ionisation, mixed screened-Rutherford
-multiple scattering, two-photon annihilation, slab stepping; NumPy, opt-in, `eslab`). Geant4 reference: electron-gun
+multiple scattering, two-photon annihilation, slab stepping; NumPy, `eslab`). Geant4 reference: electron-gun
 slabs with EM option 4, 1M events per case (200k for 1 X0 W); merged 2026-11-01:
 
 | Check | Reference | Result | Verdict |
@@ -33,9 +33,9 @@ slabs with EM option 4, 1M events per case (200k for 1 X0 W); merged 2026-11-01:
 | exit angle, 20 and 50 MeV in 1 mm Al | Geant4 | chi2/ndf 0.9 / 2.0 | pass |
 | exit angle, 105 MeV in thin layers | Geant4 | chi2/ndf 7.4-91 (Geant4 WentzelVI condensed stepping vs exact sampling of the same cross section) | explained |
 | exit angle, 95 MeV (Geant4 GS regime), 1 mm / 0.1 mm Al | Geant4 | chi2/ndf 2.1 / 9.9 (22.3 / 91 at 105 MeV); only Geant4 breaks the 1/(p beta) scaling across 100 MeV | pass / open (0.1 mm: fast core 2 % wider) |
-| stopped / reflected fraction, 1 X0 W (tabulated e- Mott ratio) | Geant4 | 18.41 vs 18.29 +- 0.09 % / 0.35 vs 0.28 +- 0.013 % (McKinley-Feshbach: 17.90 / 0.24 %) | stopped pass, reflected low with the default form factor |
+| stopped / reflected fraction, 1 X0 W (tabulated e- Mott ratio, form factor above 100 MeV) | Geant4 | 18.28 / 18.28 vs 18.41 +- 0.09 % stopped; 0.336 / 0.336 vs 0.347 +- 0.013 % reflected (two seeds; form factor at all energies: 0.28 %, McKinley-Feshbach: 0.24 %) | pass |
 | reflected fraction vs msc step settings, 1 X0 W | Geant4 | step cap 0.35 / 0.1 / 0.035 / 0.012 mm and 2 / 10 hard collisions per cap: 0.265-0.285 % (G4 0.347 +- 0.013); the deficit is in reflected electrons above 10 MeV (0.044 vs 0.081 %) | not a step artefact |
-| nuclear form factor only above 100 MeV (`emsc.FF_TMIN = 100`: Geant4 option 4 uses Goudsmit-Saunderson below 100 MeV, screened Rutherford times the point-nucleus Mott ratio, no form factor) | Geant4, 1 X0 W, two seeds | reflected 0.336 / 0.336 vs 0.347 +- 0.013 %, above 10 MeV 0.086 / 0.083 vs 0.081 %; stopped, loss, angle and displacement unchanged (chi2/ndf 1.0-1.3); 0.35 mm W reflected 0.042 vs 0.040 % (default 0.036); the other slab cases: loss chi2/ndf 0.6-1.4 (default 0.5-1.1), exit angle at 20-95 MeV 1.3-2.4 (default 1.6-2.9) | pass, opt-in |
+| nuclear form factor only above 100 MeV (`emsc.FF_TMIN = 100`, the default since 2026-11-03: Geant4 option 4 uses Goudsmit-Saunderson below 100 MeV, screened Rutherford times the point-nucleus Mott ratio, no form factor) | Geant4, the eleven slab cases, 1 X0 W with two seeds | 1 X0 W reflected 0.336 / 0.336 vs 0.347 +- 0.013 % (form factor everywhere: 0.28 %), loss chi2/ndf 1.0 / 1.3; 0.35 mm W reflected 0.042 vs 0.040 %; loss chi2/ndf 0.6-1.4 in the other cases (0.1 mm Al at 95 MeV 4.6, the Geant4 model change below); the conversion-electron chain (umbrella `cechain`, 108 k paired electrons) unchanged: one electron of 108 k changes fate, paired momentum and time differences identical | pass, default |
 | transmitted loss, 0.1 mm Al, Geant4 95 vs 105 MeV (same slab) | Geant4 against itself; fast against itself | Geant4 chi2/ndf 4.9, pulls +5.5 / +7.2 / -5.3 at 13-31 keV (low side of the peak); fast 1.1; Geant4 vs fast 5.1 at 95 MeV, 0.9 at 105 MeV | explained: Geant4 model change at 100 MeV |
 | helix step in a uniform field | analytic circle and pitch; composition of steps; zero field | exact to 1e-9 mm | pass |
 | RK4 in a uniform field | the exact helix | fourth-order convergence | pass |
