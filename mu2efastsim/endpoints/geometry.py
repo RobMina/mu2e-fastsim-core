@@ -25,6 +25,9 @@ DECLARATION = re.compile(r"\s*(double|bool|vector<\s*double\s*>)\s+([A-Za-z][A-Z
 HEX = re.compile(r"[0-9a-f]{64}")
 
 
+GEOMETRY_TASKS = ("beam_point", "beam_sob")   # tasks that take one target-geometry FileRef
+
+
 def reference(files, inputs, params):
     """Validate the descriptor without reading it; retries can reuse the bound bytes."""
     if not isinstance(files, list) or not isinstance(inputs, list):
@@ -32,10 +35,10 @@ def reference(files, inputs, params):
     refs = files + inputs
     if not refs:
         return None
-    if params.get("task") != "beam_point":
-        raise ValueError("fastsimkit: files and inputs support only beam_point target geometry")
+    if params.get("task") not in GEOMETRY_TASKS:
+        raise ValueError(f"fastsimkit: files and inputs support only {' / '.join(GEOMETRY_TASKS)} target geometry")
     if len(refs) != 1:
-        raise ValueError("fastsimkit: beam_point accepts exactly one geometry FileRef across files and inputs")
+        raise ValueError(f"fastsimkit: {params['task']} accepts exactly one geometry FileRef across files and inputs")
     if "geom" in params:
         raise ValueError("fastsimkit: geom parameter conflicts with geometry FileRef")
     ref = refs[0]
