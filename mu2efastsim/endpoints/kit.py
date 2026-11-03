@@ -388,7 +388,7 @@ class FastsimKit:
         rt = self.ep.runtime() if hasattr(self.ep, "runtime") else APPTAINER_RUNTIME
         body = t.body.replace("@runtime_a@", rt["a"]).replace("@runtime_t@", rt["t"])
         if geometry is not None:
-            if params["task"] != "beam_point" or "@geometry_setup@" not in body:
+            if params["task"] not in geometry_artifacts.GEOMETRY_TASKS or "@geometry_setup@" not in body:
                 raise ValueError("fastsimkit: task does not support geometry handoff")
             setup = geometry_artifacts.stage_shell(geometry) + 'GEOM="$M2FS_GEOMETRY"\n'
         else:
@@ -618,7 +618,7 @@ class FastsimKit:
             "validation_scope": "admission only; not physics certification"}
         for name, extra in capabilities.describe_tasks(TASKS, chainpoint).items():
             tasks[name].update(extra)
-            if name == "beam_point":
+            if name in geometry_artifacts.GEOMETRY_TASKS:
                 tasks[name].update(inputs_supported=True, geometry_contract={
                     "format": geometry_artifacts.FORMAT, "schema_version": 1,
                     "base_include": geometry_artifacts.BASE, "max_bytes": geometry_artifacts.MAX_BYTES,
