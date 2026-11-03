@@ -193,3 +193,17 @@ def test_supplied_mean():
     c = np.asarray(EJ.sample_loss(k, M.ALUMINIUM, p, L, 1.0, mean=1.1 * m0))
     assert abs(c.mean() / a.mean() - 1.1) < 0.005
     assert np.isfinite(c).all() and (c >= 0).all()
+
+
+def test_unrolled_sampler_same_draws():
+    """unroll=True (opt-in) unrolls the fixed-trip loops: same keys and arithmetic, so the same losses up to the
+    compiler's floating-point contraction; every branch (Gauss, Gamma, Urban) is exercised."""
+    c = EJ.consts(GAS)
+    p = jnp.asarray(np.geomspace(30.0, 1e5, 8192))
+    for L in (0.01, 5.0, 2000.0):
+        a = EJ._sample(jax.random.key(7), c, p, jnp.full(p.shape, L), 990e-6, E.MMU)
+        b = EJ._sample(jax.random.key(7), c, p, jnp.full(p.shape, L), 990e-6, E.MMU, unroll=True)
+        np.testing.assert_allclose(np.asarray(b), np.asarray(a), rtol=1e-12, atol=1e-15)
+    g = [np.asarray(EJ._gamma_fixed(jax.random.key(5), jnp.full(4096, a), EJ.GAMMA_ROUNDS, u)) for u in (False, True)
+         for a in (0.3,)]
+    np.testing.assert_allclose(g[1], g[0], rtol=1e-12)

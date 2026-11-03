@@ -113,8 +113,9 @@ def _gauss_clipped(u, eav, sig2):
     return jnp.where(flat, eav + (2 * u - 1) * eav, jnp.where(sig2 > 0, eav + sig * z, 0.0))
 
 
-def _gamma_fixed(key, alpha, rounds):
-    """Gamma(alpha, 1) by Marsaglia-Tsang with a fixed number of rounds; alpha < 1 via the U^(1/alpha) boost."""
+def _gamma_fixed(key, alpha, rounds, unroll=False):
+    """Gamma(alpha, 1) by Marsaglia-Tsang with a fixed number of rounds; alpha < 1 via the U^(1/alpha) boost.
+    unroll: unroll the rounds in the compiled kernel (same draws; no device loop)."""
     kb, kr = jax.random.split(key)
     a1 = jnp.where(alpha < 1, alpha + 1, alpha)
     d = a1 - 1.0 / 3.0
@@ -130,7 +131,7 @@ def _gamma_fixed(key, alpha, rounds):
         take = ok & ~done
         return jnp.where(take, d * v, val), done | ok
 
-    val, _ = lax.fori_loop(0, rounds, body, (d, jnp.zeros(alpha.shape, bool)))
+    val, _ = lax.fori_loop(0, rounds, body, (d, jnp.zeros(alpha.shape, bool)), **({"unroll": True} if unroll else {}))
     ub = jax.random.uniform(kb, alpha.shape, alpha.dtype, minval=dprec.tiny_of(alpha.dtype))
     return jnp.where(alpha < 1, val * ub ** (1 / jnp.where(alpha > 0, alpha, 1.0)), val)
 
@@ -152,9 +153,12 @@ def _ion_split(a3, w1):
     return alfa, alfa1, namean, p3
 
 
-@partial(jax.jit, static_argnames=("K", "gamma_rounds", "gaussian"))   # shared kernel: dtype of its inputs
+@partial(jax.jit, static_argnames=("K", "gamma_rounds", "gaussian", "unroll"))   # shared kernel: dtype of its inputs
 def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUNDS, mean=None, tmax=None,
-            gaussian=True):
+            gaussian=True, unroll=False):
+    """Urban/Gaussian/Gamma loss sample. unroll (opt-in): the fixed-trip Poisson and Gamma loops are unrolled in the
+    compiled kernel, the same draws and arithmetic; on a GPU a loop inside an iterated kernel otherwise runs one
+    device launch per trip."""
     dt = dprec.float_of(p)
     p = jnp.asarray(p, dt)
     p, length, tcut = jnp.broadcast_arrays(p, jnp.asarray(length, dt), jnp.asarray(tcut, dt))
@@ -177,7 +181,7 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
     gm = bohr & (sn < 2)
     x_gs = _gauss_clipped(jax.random.uniform(ks[0], sh, dt), mean, siga ** 2)
     neff = jnp.where(gm, sn * sn, 1.0)
-    x_gm = mean * _gamma_fixed(ks[1], neff, gamma_rounds) / neff
+    x_gm = mean * _gamma_fixed(ks[1], neff, gamma_rounds, unroll) / neff
     # Urban model for the rest (inputs made safe outside u so every lane stays finite)
     u = ~bohr & (mean >= _MINLOSS) & (cut > c.e0)
     tc = jnp.where(u, cut, 1.0)
@@ -228,7 +232,8 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
         return pmf, cdf + pmf, k + above, ion
 
     pmf0 = jnp.exp(-lams)
-    _, _, kk, ion = lax.fori_loop(0, K, body, (pmf0, pmf0, jnp.zeros((3,) + sh, jnp.int32), jnp.zeros(sh)))
+    _, _, kk, ion = lax.fori_loop(0, K, body, (pmf0, pmf0, jnp.zeros((3,) + sh, jnp.int32), jnp.zeros(sh)),
+                                  **({"unroll": True} if unroll else {}))
     rx = jax.random.uniform(ks[4], (2,) + sh, dt)
     loss = jnp.where(kk[0] > 0, ((kk[0] + 1) - 2 * rx[0]) * e1, 0.0)
     loss = loss + jnp.where(kk[1] > 0, ((kk[1] + 1) - 2 * rx[1]) * e2, 0.0)
