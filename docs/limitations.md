@@ -5,8 +5,8 @@
   stepping (`ehelix`, `eslab(field=...)`, `eslab_jax(field=...)`) is checked against analytic helices, RK4 and the
   NumPy model, and end to end in the umbrella's conversion-electron chain against Geant4. Inside a slab the field is
   constant per track (taken at the entry or step start). The device stepper returns secondaries as per-track counts
-  and energy sums. Open differences from Geant4: with the default form factor the reflected fraction in 1 X0 W is low
-  (0.28 vs 0.35 %; `emsc.FF_TMIN = 100` closes it, opt-in); the transmitted-loss shape in 0.1 mm Al at 95 MeV
+  and energy sums. Open differences from Geant4: the reflected fraction in 1 X0 W is 0.336 vs 0.347 +- 0.013 %; the
+  transmitted-loss shape in 0.1 mm Al at 95 MeV
   (chi2/ndf 5.1, low side of the Landau peak) is Geant4's change of multiple-scattering model at 100 MeV, not the
   fast model (Geant4 95 vs 105 MeV differs there, fast 95 vs 105 does not).
 - **No magnetic field** in the core muon transport: straight segments with multiple scattering, for the field-free
