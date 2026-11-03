@@ -212,7 +212,7 @@ TK_STOP = 1.0       # MeV: kinetic energy below which a muon is stopped (the rem
 MAX_SLICES_PER_SLAB = 4   # slices for a muon with > 3x the energy the remaining slab takes (flat dE/dx regime)
 
 
-def slab_loss(rng, mat, p, length, radiative=False):
+def slab_loss(rng, mat, p, length, radiative=True):
     """Energy loss [MeV] through `length` [mm] of `mat`, integrated in slices so dE/dx follows the slowing muon.
 
     radiative=True (opt-in) adds bremsstrahlung, pair production and photonuclear losses (muradiative.sample_loss) at
