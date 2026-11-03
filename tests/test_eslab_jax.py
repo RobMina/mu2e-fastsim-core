@@ -252,3 +252,71 @@ def test_boundary_starts_exit_outward_and_transport_inward(dtype, msc, chunk):
         assert not (r.n_photons[:2] + r.n_deltas[:2] + r.n_annihilation[:2]).any()
         assert (r.path[2:] > 0).all()
         assert ((r.position[:, 2] >= -1e-6) & (r.position[:, 2] <= 1.0 + 1e-6)).all()
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+@pytest.mark.parametrize("msc,field", [(True, None), (True, [0.4, 0.0, 1.0]), (False, [0.0, 1.0, 0.0])])
+def test_lane_step_with_mixed_layer_types_equals_one_slab_call_per_type(dtype, msc, field):
+    # Al foil, polyethylene and W lanes interleaved in one loop of lane_step: each lane ends as the lane in the same
+    # slot of electron_slab run on all lanes with that lane's material (same key): discrete outcomes identical,
+    # continuous ones to rounding (XLA fuses the two graphs differently)
+    jnp = jax.numpy
+    pe = M.BY_NAME["G4_POLYETHYLENE"]
+    layers = [(AL, 0.1056, *CUTS["G4_Al"]), (pe, 0.5, 0.015, 0.00099), (W, 0.35, *CUTS["G4_W"])]
+    n = 96
+    rng = np.random.default_rng(5)
+    ct = rng.uniform(-1, 1, n)
+    ph = rng.uniform(0, 2 * np.pi, n)
+    d = np.stack([np.sqrt(1 - ct ** 2) * np.cos(ph), np.sqrt(1 - ct ** 2) * np.sin(ph), ct], axis=1).astype(dtype)
+    T = rng.uniform(20.0, 105.0, n).astype(dtype)
+    mi = np.arange(n) % 3
+    z0 = np.array([0.5 * layers[m][1] for m in mi])
+    lt = SJ.lane_tables(layers, msc=msc)
+    Bf = None if field is None else np.broadcast_to(np.asarray(field, float), (n, 3)).astype(dtype)
+    key = jax.random.PRNGKey(11)
+
+    @jax.jit
+    def loop(st):
+        def cond(s):
+            return jnp.any(~s["stopped"] & ~s["exited"])
+        return jax.lax.while_loop(cond, lambda s: SJ.lane_step(key, lt, jnp.asarray(mi), s, Bf, msc=msc), st)
+    st = jax.tree_util.tree_map(np.asarray, loop(SJ.lane_state(T, d, z0, lt.length[mi])))
+    for m, (mat, L, tc, kc) in enumerate(layers):
+        r = jax.tree_util.tree_map(np.asarray, SJ.electron_slab(key, mat, T, d, L, tc, kc, msc=msc,
+                                                                z0=np.full(n, 0.5 * L), field=field))
+        j = mi == m
+        for a, b in ((st["stopped"], r.stopped), (st["exited"] & (st["d"][:, 2] < 0), r.reflected),
+                     (st["nph"], r.n_photons), (st["nde"], r.n_deltas)):
+            assert np.array_equal(a[j], b[j])
+        tol = 1e-11 if dtype == np.float64 else 2e-5
+        for a, b in ((st["T"], r.T), (st["d"], r.direction), (st["x"], r.position), (st["path"], r.path),
+                     (st["eph"], r.photon_energy), (st["ede"], r.delta_energy)):
+            assert np.allclose(a[j], b[j], rtol=tol, atol=tol)
+
+
+def test_lane_step_unroll_gives_the_same_draws():
+    # unroll (opt-in) unrolls the fixed-trip loops of the step: same keys and arithmetic, so the same outcomes
+    jnp = jax.numpy
+    layers = [(AL, 0.1056, *CUTS["G4_Al"]), (W, 0.35, *CUTS["G4_W"])]
+    n = 64
+    rng = np.random.default_rng(6)
+    ct = rng.uniform(-1, 1, n)
+    ph = rng.uniform(0, 2 * np.pi, n)
+    d = np.stack([np.sqrt(1 - ct ** 2) * np.cos(ph), np.sqrt(1 - ct ** 2) * np.sin(ph), ct], axis=1)
+    T = rng.uniform(5.0, 105.0, n)
+    mi = jnp.asarray(np.arange(n) % 2)
+    lt = SJ.lane_tables(layers)
+    Bf = np.tile([0.3, 0.0, 1.0], (n, 1))
+    key = jax.random.PRNGKey(12)
+    outs = []
+    for unroll in (False, True):
+        @jax.jit
+        def loop(st):
+            return jax.lax.while_loop(lambda s: jnp.any(~s["stopped"] & ~s["exited"]),
+                                      lambda s: SJ.lane_step(key, lt, mi, s, Bf, unroll=unroll), st)
+        outs.append(jax.tree_util.tree_map(np.asarray, loop(SJ.lane_state(T, d, np.full(n, 0.05), lt.length[mi]))))
+    a, b = outs
+    for k in ("stopped", "exited", "nph", "nde", "it"):
+        assert np.array_equal(a[k], b[k])
+    for k in ("T", "d", "x", "path", "eph", "ede"):
+        assert np.allclose(a[k], b[k], rtol=1e-11, atol=1e-11)

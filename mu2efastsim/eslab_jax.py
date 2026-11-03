@@ -33,6 +33,13 @@ REJECT_ROUNDS = 24            # fixed rounds of the rejection samplers
 C_POWER = 3.0                 # brem CDF nodes C = 1 - (1 - u)^C_POWER, u uniform on [0, 1]
 C_NODES = 1.0 - (1.0 - np.linspace(0.0, 1.0, NX)) ** C_POWER
 _CACHE = {}
+SCAN_UNROLL = 4               # with unroll: sub-arcs of _to_plane taken before its scan loop
+UNROLL = 8                    # with unroll=True: loop iterations per trip of the fixed-trip loops
+
+
+def _unroll(on):
+    """fori_loop keyword for unroll: off (False / 0), True (UNROLL per trip) or an integer factor."""
+    return {"unroll": UNROLL if on is True else int(on)} if on else {}
 
 
 class Tables(NamedTuple):
@@ -173,8 +180,9 @@ def _helix(x, u, p, q, B, s):
     return xn, un / jnp.linalg.norm(un, axis=1, keepdims=True)
 
 
-def _to_plane(x, u, p, q, B, zp, smax):
-    """Scan sub-arcs of at most 0.5 rad for the first s in (0, smax] reaching z = zp, inf where none does."""
+def _to_plane(x, u, p, q, B, zp, smax, unroll=False):
+    """Scan sub-arcs of at most 0.5 rad for the first s in (0, smax] reaching z = zp, inf where none does. unroll
+    (opt-in): the first SCAN_UNROLL sub-arcs and the bisection are unrolled (same arithmetic, fewer device loops)."""
     bh, bm, upar, uperp, w = _hframe(u, B)
     k = K_FIELD * q * bm / p
     smax = jnp.where(jnp.isfinite(smax), smax, 0.0)
@@ -202,7 +210,10 @@ def _to_plane(x, u, p, q, B, zp, smax):
         cross = on & ((jnp.sign(fj) != jnp.sign(f0)) | (fj == 0)) & (f0 != 0)
         return (j + 1, jnp.where(on & ~cross, sj, lo), jnp.where(on & ~cross, fj, f0), jnp.where(cross, sj, hi),
                 found | cross)
-    _, lo, f0, hi, found = lax.while_loop(scanning, scan, (jnp.int32(1), lo, f0, lo, jnp.zeros(smax.shape, bool)))
+    c = (jnp.int32(1), lo, f0, lo, jnp.zeros(smax.shape, bool))
+    for _ in range(SCAN_UNROLL if unroll else 0):
+        c = scan(c)
+    _, lo, f0, hi, found = lax.while_loop(scanning, scan, c)
     hi = jnp.where(found, hi, lo)
 
     def bis(_, c):
@@ -211,7 +222,7 @@ def _to_plane(x, u, p, q, B, zp, smax):
         fm = z_of(mid)
         same = jnp.sign(fm) == jnp.sign(flo)
         return jnp.where(same, mid, lo), jnp.where(same, fm, flo), jnp.where(same, hi, mid)
-    lo, _, hi = lax.fori_loop(0, 40, bis, (lo, z_of(lo), hi))
+    lo, _, hi = lax.fori_loop(0, 40, bis, (lo, z_of(lo), hi), **_unroll(unroll))
     s = 0.5 * (lo + hi)
     for _ in range(2):
         d = dz_of(s)
@@ -220,12 +231,16 @@ def _to_plane(x, u, p, q, B, zp, smax):
     return jnp.where(found, jnp.clip(s, 0.0, smax), jnp.inf)
 
 
+helix = _helix            # device helix step and plane crossing for callers' own loops (ehelix twins)
+to_plane = _to_plane
+
+
 def _pick(cum, u):
     """Row index of cumulative fractions cum (m, n) for uniforms u (n,)."""
     return jnp.minimum((u[None, :] > cum).sum(axis=0), cum.shape[0] - 1)
 
 
-def _sample_delta(key, T, tcut, positron, dt):
+def _sample_delta(key, T, tcut, positron, dt, unroll=False):
     """G4MollerBhabhaModel transfer with REJECT_ROUNDS rejection rounds (the last trial if none is accepted)."""
     tmax = T if positron else 0.5 * T
     ok = tcut < tmax
@@ -263,11 +278,11 @@ def _sample_delta(key, T, tcut, positron, dt):
         acc = grej * u[1] <= zfun(x)
         return jnp.where(done, val, x), done | acc
 
-    x, _ = lax.fori_loop(0, REJECT_ROUNDS, body, (xmin, jnp.zeros(T.shape, bool)))
+    x, _ = lax.fori_loop(0, REJECT_ROUNDS, body, (xmin, jnp.zeros(T.shape, bool)), **_unroll(unroll))
     return x * Ts
 
 
-def _cos_2bs(key, T, k, z, dt):
+def _cos_2bs(key, T, k, z, dt, unroll=False):
     """G4Generator2BS photon polar cosine with REJECT_ROUNDS rounds (ebrem.sample_cos_theta)."""
     energy = T + ME
     ratio = (energy - k) / energy
@@ -292,7 +307,7 @@ def _cos_2bs(key, T, k, z, dt):
         acc = (u[1] * gmax <= rej(yy)) & (yy <= ymax)
         return jnp.where(done, val, yy), done | acc
 
-    y, _ = lax.fori_loop(0, REJECT_ROUNDS, body, (jnp.zeros_like(T), jnp.zeros(T.shape, bool)))
+    y, _ = lax.fori_loop(0, REJECT_ROUNDS, body, (jnp.zeros_like(T), jnp.zeros(T.shape, bool)), **_unroll(unroll))
     return 1 - 2 * y / ymax
 
 
@@ -328,40 +343,12 @@ class SlabOut(NamedTuple):
     steps: object        # loop iterations used (all tracks)
 
 
-@partial(jax.jit, static_argnames=("positron", "msc", "annihilation", "max_steps", "mott", "return_state"))
-def _run(key, tab, mc, T0, d0, L, tcut, kcut, dsmax, positron, msc, annihilation, max_steps, mott, x0=None, B=None,
-         st_in=None, it_end=None, return_state=False):
-    """The step loop. Optional: start positions x0, per-track constant fields B (helix steps, faces along the
-    helix), a state st_in to resume from (lane compaction) and a traced iteration bound it_end."""
-    dt = dprec.float_of(T0)
-    tab = Tables(*(jnp.asarray(v, dt) for v in tab))
-    mc = eloss_jax.MatConsts(*(jnp.asarray(v, dt) for v in mc))
-    n = T0.shape[0]
-    L, tcut, kcut, dsmax = (jnp.asarray(v, dt) for v in (L, tcut, kcut, dsmax))
-    nel = tab.z.shape[0]
-    anni = positron and annihilation
+def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni, mott, B, unroll=False):
+    """One step of the slab loop as a function of the state dict (used by _run and by callers that embed the slab
+    step in their own loop, e.g. with per-lane materials: tab / I from lane_tables). B: per-track fields or None.
+    unroll (opt-in): the fixed-trip loops inside the step are unrolled (same draws, to rounding)."""
     field = B is not None
-    if field:
-        B = jnp.asarray(B, dt)
-    if st_in is None:
-        f32z = jnp.zeros(n, dt)
-        st0 = dict(T=jnp.asarray(T0, dt), d=jnp.asarray(d0, dt), x=jnp.zeros((n, 3), dt), path=f32z, pend=f32z,
-                   cont=f32z, stopped=T0 <= eslab.T_STOP, exited=jnp.zeros(n, bool), annih=jnp.zeros(n, bool),
-                   nph=jnp.zeros(n, jnp.int32), eph=f32z, nde=jnp.zeros(n, jnp.int32), ede=f32z,
-                   nan=jnp.zeros(n, jnp.int32), ean=f32z, it=jnp.int32(0))
-        if x0 is not None:
-            st0["x"] = jnp.asarray(x0, dt)
-        z, dz = st0["x"][:, 2], st0["d"][:, 2]
-        st0["exited"] = ~st0["stopped"] & (((z == 0) & (dz < 0)) | ((z == L) & (dz > 0)))
-        st0["cont"] = jnp.where(st0["stopped"], st0["T"], 0.0)
-        if anni:
-            st0["nan"] = jnp.where(st0["stopped"], 2, 0)
-            st0["ean"] = jnp.where(st0["stopped"], 2 * ME, 0.0)
-        st0["T"] = jnp.where(st0["stopped"], 0.0, st0["T"])
-    else:
-        st0 = st_in
-    stop_at = max_steps if it_end is None else jnp.minimum(it_end, max_steps)
-    I = lambda tabv, T: _interp(tabv, tab.lnt0, tab.dlnt, T)
+    nel = tab.z.shape[0]
 
     def to_face(z, dz):
         return jnp.where(dz > 0, (L - z) / jnp.where(dz > 0, dz, 1.0), jnp.where(dz < 0, -z / jnp.where(dz < 0, dz, -1.0),
@@ -369,9 +356,6 @@ def _run(key, tab, mc, T0, d0, L, tcut, kcut, dsmax, positron, msc, annihilation
 
     def expo(k):
         return -jnp.log(jax.random.uniform(k, (n,), dt, minval=dprec.tiny_of(dt)))
-
-    def cond(st):
-        return jnp.any(~st["stopped"] & ~st["exited"]) & (st["it"] < stop_at)
 
     def body(st):
         live = ~st["stopped"] & ~st["exited"]
@@ -404,7 +388,8 @@ def _run(key, tab, mc, T0, d0, L, tcut, kcut, dsmax, positron, msc, annihilation
             q = 1.0 if positron else -1.0
 
             def hface(xx, uu, smax):
-                return jnp.minimum(_to_plane(xx, uu, pm, q, B, L, smax), _to_plane(xx, uu, pm, q, B, 0.0, smax))
+                return jnp.minimum(_to_plane(xx, uu, pm, q, B, L, smax, unroll),
+                                   _to_plane(xx, uu, pm, q, B, 0.0, smax, unroll))
         if msc and field:
             tau = jax.random.uniform(ks[3], (n,), dt)
             leg1 = tau * plan
@@ -464,7 +449,8 @@ def _run(key, tab, mc, T0, d0, L, tcut, kcut, dsmax, positron, msc, annihilation
         path = st["path"] + step
         app = live & apply
         loss = eloss_jax.sample_loss_electron(ks[6], mc, T, jnp.where(app, pend, 1e-6), tcut,
-                                              jnp.where(app, dedx * pend, 0.0), positron).astype(dt)
+                                              jnp.where(app, dedx * pend, 0.0), positron,
+                                              **({"unroll": True} if unroll else {})).astype(dt)
         out = app & (loss >= T - eslab.T_STOP)
         cont = st["cont"] + jnp.where(app, jnp.where(out, T, loss), 0.0)
         Tn = jnp.where(app, jnp.where(out, 0.0, T - loss), st["T"])
@@ -494,13 +480,13 @@ def _run(key, tab, mc, T0, d0, L, tcut, kcut, dsmax, positron, msc, annihilation
         kph = jnp.where(brem, kcut * jnp.exp(xb * jnp.log(jnp.maximum(Tp, kcut) / kcut)), 0.0)
         kph = jnp.minimum(kph, Tp)
         zb = tab.z[_pick(I(tab.brem_cum, Tp), jax.random.uniform(ks[10], (n,), dt))]
-        cg = _cos_2bs(ks[11], Tp, jnp.where(brem, kph, 0.5 * Tp), zb, dt)
+        cg = _cos_2bs(ks[11], Tp, jnp.where(brem, kph, 0.5 * Tp), zb, dt, unroll)
         dg = _rotate_uz(dn, cg, 2 * jnp.pi * jax.random.uniform(ks[12], (n,), dt))
         pp = jnp.sqrt(Tp * (Tp + 2 * ME))
         db = pp[:, None] * dn - kph[:, None] * dg
         db = db / jnp.linalg.norm(db, axis=1, keepdims=True)
         # delta ray
-        w = jnp.where(ioni, _sample_delta(ks[13], Tp, tcut, positron, dt), 0.0)
+        w = jnp.where(ioni, _sample_delta(ks[13], Tp, tcut, positron, dt, unroll), 0.0)
         pd = jnp.sqrt(w * (w + 2 * ME))
         cd = jnp.minimum(w * (Tp + 2 * ME) / jnp.where(ioni, pd * pp, 1.0), 1.0)
         ddl = _rotate_uz(dn, cd, 2 * jnp.pi * jax.random.uniform(ks[14], (n,), dt))
@@ -550,6 +536,46 @@ def _run(key, tab, mc, T0, d0, L, tcut, kcut, dsmax, positron, msc, annihilation
         stopped = stopped | low
         return dict(T=Tn, d=dn, x=xn, path=path, pend=pend, cont=cont, stopped=stopped, exited=exited, annih=annih,
                     nph=nph, eph=eph, nde=nde, ede=ede, nan=nan, ean=ean, it=st["it"] + 1)
+    return body
+
+
+@partial(jax.jit, static_argnames=("positron", "msc", "annihilation", "max_steps", "mott", "return_state"))
+def _run(key, tab, mc, T0, d0, L, tcut, kcut, dsmax, positron, msc, annihilation, max_steps, mott, x0=None, B=None,
+         st_in=None, it_end=None, return_state=False):
+    """The step loop. Optional: start positions x0, per-track constant fields B (helix steps, faces along the
+    helix), a state st_in to resume from (lane compaction) and a traced iteration bound it_end."""
+    dt = dprec.float_of(T0)
+    tab = Tables(*(jnp.asarray(v, dt) for v in tab))
+    mc = eloss_jax.MatConsts(*(jnp.asarray(v, dt) for v in mc))
+    n = T0.shape[0]
+    L, tcut, kcut, dsmax = (jnp.asarray(v, dt) for v in (L, tcut, kcut, dsmax))
+    anni = positron and annihilation
+    field = B is not None
+    if field:
+        B = jnp.asarray(B, dt)
+    if st_in is None:
+        f32z = jnp.zeros(n, dt)
+        st0 = dict(T=jnp.asarray(T0, dt), d=jnp.asarray(d0, dt), x=jnp.zeros((n, 3), dt), path=f32z, pend=f32z,
+                   cont=f32z, stopped=T0 <= eslab.T_STOP, exited=jnp.zeros(n, bool), annih=jnp.zeros(n, bool),
+                   nph=jnp.zeros(n, jnp.int32), eph=f32z, nde=jnp.zeros(n, jnp.int32), ede=f32z,
+                   nan=jnp.zeros(n, jnp.int32), ean=f32z, it=jnp.int32(0))
+        if x0 is not None:
+            st0["x"] = jnp.asarray(x0, dt)
+        z, dz = st0["x"][:, 2], st0["d"][:, 2]
+        st0["exited"] = ~st0["stopped"] & (((z == 0) & (dz < 0)) | ((z == L) & (dz > 0)))
+        st0["cont"] = jnp.where(st0["stopped"], st0["T"], 0.0)
+        if anni:
+            st0["nan"] = jnp.where(st0["stopped"], 2, 0)
+            st0["ean"] = jnp.where(st0["stopped"], 2 * ME, 0.0)
+        st0["T"] = jnp.where(st0["stopped"], 0.0, st0["T"])
+    else:
+        st0 = st_in
+    stop_at = max_steps if it_end is None else jnp.minimum(it_end, max_steps)
+    I = lambda tabv, T: _interp(tabv, tab.lnt0, tab.dlnt, T)
+    body = _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni, mott, B)
+
+    def cond(st):
+        return jnp.any(~st["stopped"] & ~st["exited"]) & (st["it"] < stop_at)
 
     st = lax.while_loop(cond, body, st0)
     if return_state:
@@ -629,6 +655,116 @@ def _compacted(key, args, x0, B, chunk, min_bucket):
     return SlabOut(final["T"], final["d"], final["x"], final["path"], final["cont"], final["stopped"], refl,
                    final["annih"], final["nph"], final["eph"], final["nde"], final["ede"], final["nan"], final["ean"],
                    np.int32(it))
+
+
+class LaneTables(NamedTuple):
+    """Slab tables of several layer types stacked on a leading axis (lane_tables), for per-lane materials."""
+    tab: Tables       # (M, ...) arrays; elements padded to the largest count (zero-width picks), common ln T grid
+    mc: object        # eloss_jax.MatConsts of (M,) arrays
+    length: object    # (M,) slab thickness [mm]
+    tcut: object      # (M,)
+    kcut: object      # (M,)
+    dsmax: object     # (M,) msc step cap
+
+
+def lane_tables(layers, positron=False, msc=True, hard_per_step=eslab.HARD_PER_STEP):
+    """LaneTables of layer types given as (material, length, tcut, kcut) or (..., max_step), with the tables and step
+    caps electron_slab would build for each of them on its own."""
+    tabs, mcs, rows = [], [], []
+    for spec in layers:
+        mat, length, tcut, kcut = spec[:4]
+        dsmax = length / eslab.MSC_SLAB_STEPS if len(spec) < 5 or spec[4] is None else float(spec[4])
+        tabs.append(build_tables(mat, tcut, kcut, positron, dsmax / hard_per_step if msc else np.inf))
+        mcs.append(eloss_jax.consts(mat))
+        rows.append((length, tcut, kcut, dsmax))
+    nmax = max(t.z.size for t in tabs)
+
+    def pad_el(a, fill):                       # (nel, ...) -> (nmax, ...), extra rows `fill` or a copy of the last
+        extra = nmax - a.shape[0]
+        if extra == 0:
+            return np.asarray(a, float)
+        rep = np.repeat(a[-1:], extra, axis=0) if fill is None else np.full((extra,) + a.shape[1:], fill, float)
+        return np.concatenate([a, rep], axis=0)
+    out = {}
+    for f in Tables._fields:
+        vals = [getattr(t, f) for t in tabs]
+        if f in ("lnt0", "dlnt", "ff_tmin"):
+            if len(set(float(v) for v in vals)) != 1:
+                raise ValueError(f"lane_tables: {f} differs between layer types")
+            out[f] = float(vals[0])
+        elif f == "hard_cum":                  # nuclei block, then electrons block: pad each with its last row
+            out[f] = np.stack([np.concatenate([pad_el(v[:v.shape[0] // 2], None), pad_el(v[v.shape[0] // 2:], None)])
+                               for v in vals])
+        elif f in ("scr", "env", "z"):
+            out[f] = np.stack([pad_el(np.asarray(v, float), 1.0) for v in vals])
+        elif f == "brem_cum":
+            out[f] = np.stack([pad_el(v, None) for v in vals])
+        elif f == "ffa":
+            out[f] = np.stack([pad_el(np.asarray(v, float), 0.0) for v in vals])
+        elif f == "mott":
+            out[f] = np.stack([pad_el(v, None) for v in vals])
+        else:
+            out[f] = np.stack([np.asarray(v, float) for v in vals])
+    mc = eloss_jax.MatConsts(*(np.array([getattr(c, f) for c in mcs], float) for f in eloss_jax.MatConsts._fields))
+    return LaneTables(Tables(**out), mc, *(np.array(c, float) for c in zip(*rows)))
+
+
+class _Lanes:
+    """A stacked table seen through the per-lane layer index: a[i] -> stack[mi, i] (shape without the layer axis)."""
+
+    def __init__(self, a, mi):
+        self.a, self.mi = a, mi
+        self.shape = a.shape[1:]
+
+    def __getitem__(self, idx):
+        return self.a[(self.mi,) + (idx if isinstance(idx, tuple) else (idx,))]
+
+
+def _interp_lanes(tab, lnt0, dlnt, T):
+    """_interp of a _Lanes table: lane j reads its own layer's row."""
+    f = jnp.clip((jnp.log(jnp.maximum(T, 1e-30)) - lnt0) / dlnt, 0.0, NT - 1.000001)
+    i = f.astype(jnp.int32)
+    w = f - i
+    a, mi = tab.a, tab.mi
+    if a.ndim == 2:
+        return a[mi, i] * (1 - w) + a[mi, i + 1] * w
+    return (a[mi, :, i] * (1 - w)[:, None] + a[mi, :, i + 1] * w[:, None]).T
+
+
+def lane_state(T, d, z0, length, positron=False, annihilation=True):
+    """Slab loop state for lanes starting at depth z0 in direction d (local frame) with kinetic energy T, as
+    electron_slab starts them (below T_STOP: stopped; on a face pointing outward: exited). Device arrays."""
+    dt = dprec.float_of(T)
+    T = jnp.asarray(T, dt)
+    n = T.shape[0]
+    zero = jnp.zeros(n, dt)
+    x = jnp.zeros((n, 3), dt).at[:, 2].set(jnp.asarray(z0, dt))
+    d = jnp.asarray(d, dt)
+    stopped = T <= eslab.T_STOP
+    z, dz = x[:, 2], d[:, 2]
+    anni = positron and annihilation
+    return dict(T=jnp.where(stopped, 0.0, T), d=d, x=x, path=zero, pend=zero, cont=jnp.where(stopped, T, 0.0),
+                stopped=stopped, exited=~stopped & (((z == 0) & (dz < 0)) | ((z == length) & (dz > 0))),
+                annih=jnp.zeros(n, bool), nph=jnp.zeros(n, jnp.int32), eph=zero, nde=jnp.zeros(n, jnp.int32), ede=zero,
+                nan=jnp.where(stopped, 2, 0).astype(jnp.int32) if anni else jnp.zeros(n, jnp.int32),
+                ean=jnp.where(stopped, 2 * ME, 0.0).astype(dt) if anni else zero, it=jnp.int32(0))
+
+
+def lane_step(key, lt, mi, st, B=None, positron=False, msc=True, annihilation=True, mott=None, unroll=False):
+    """One slab step for every lane of the state dict st (lane_state), lane j in layer type mi[j] of the LaneTables
+    lt, with per-lane constant fields B (n, 3) [T] in the slab frame or None; finished lanes (stopped or exited) are
+    left as they are. Traceable (call inside a jitted loop); the random stream is key folded with st["it"]. unroll
+    (opt-in): fixed-trip loops unrolled (fewer device launches per step on a GPU)."""
+    dt = dprec.float_of(st["T"])
+    tab = Tables(*(v if isinstance(v, float) else _Lanes(jnp.asarray(v, dt), mi) for v in lt.tab))
+    mc = eloss_jax.MatConsts(*(jnp.asarray(v, dt)[mi] for v in lt.mc))
+    n = st["T"].shape[0]
+    L, tcut, kcut, dsmax = (jnp.asarray(v, dt)[mi] for v in (lt.length, lt.tcut, lt.kcut, lt.dsmax))
+    I = lambda tabv, T: _interp_lanes(tabv, tab.lnt0, tab.dlnt, T)
+    body = _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, bool(positron), bool(msc),
+                      bool(positron and annihilation), emsc.MOTT if mott is None else mott,
+                      None if B is None else jnp.asarray(B, dt), unroll)
+    return body(st)
 
 
 def compare_numpy(mat, T0, length, tcut, kcut, positron=False, msc=True, n=100_000, seed=1, z0=None, field=None,
