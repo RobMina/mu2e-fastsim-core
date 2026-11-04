@@ -220,7 +220,7 @@ def test_body_is_valid_bash_and_keeps_inputs_off_disk(tmp_path):
     assert res.gpus == 1 and res.minutes == 45
 
 
-@pytest.mark.parametrize("tier1b,lib", [(0, "tier1b_strict_v5/library.root"), (1, "tier1b_strict_v2/library.root")])
+@pytest.mark.parametrize("tier1b,lib", [(0, "tier1b_strict_v5/library.root")])
 def test_library_streamed_once_per_node(tmp_path, tier1b, lib):
     site, ep, kit, streamed = make(tmp_path)
     kit.submit("pt4", {**P, "shards": 3, "files_per_job": 1, "tier1b": tier1b}, [], [])
@@ -240,23 +240,20 @@ def test_body_shares_and_releases_the_node_library(tmp_path):
     assert "/dev/shm/crvfs_lib_${USER}_" in body and "flock 9" in body and "lib_release" in body
     assert body.count("trap '") >= 1 and "deleted node library" in body
     assert '--tier1b strict_v5 --tier1b-dir "$S"' in body and "--library" not in body
-    body, _ = kit.chain_point.render(CP.validate({**P, "tier1b": 1}), 0)
-    assert '--tier1b strict_v4 --tier1b-dir "$S"' in body
     with pytest.raises(ValueError, match="no tier-1b library"):        # named configurations: no library
         kit.chain_point.render(CP.validate({**P, "gen_set": 3, "run_config": 3, "shard_offset": 0}), 0)
 
 
 def test_tier1b_sets():
-    assert CP.tier1b_set(CP.validate(P)) == "strict_v5" and sorted(CP.TIER1B_SETS) == ["strict_v4", "strict_v5"]
+    assert CP.tier1b_set(CP.validate(P)) == "strict_v5" and sorted(CP.TIER1B_SETS) == ["strict_v5"]
     assert CP.library_files(CP.validate(P)) == ["tier1b_strict_v5/library.root", "tier1b_strict_v5/topology.npz",
                                                 "tier1b_strict_v5/topology.npz.json", "tier1b_strict_v5/templates_v3.npz",
                                                 "tier1b_strict_v5/templates_v3.npz.json"]
-    v4 = CP.validate({**P, "tier1b": 1})                            # the previous default, unchanged
-    assert CP.tier1b_set(v4) == "strict_v4" and CP.library_files(v4)[0] == "tier1b_strict_v2/library.root"
-    assert CP.library_files(v4)[1] == "tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz"
+    with pytest.raises(ValueError):                                 # tier1b 1 (strict_v4) is parked
+        CP.validate({**P, "tier1b": 1})
     with pytest.raises(ValueError, match="no tier-1b asset set"):                                # older records
         CP.tier1b_set({k: v for k, v in CP.validate(P).items() if k != "tier1b"})
-    for retired in (2, 3, 4):                                       # no set behind these values
+    for retired in (1, 2, 3, 4):                                       # no set behind these values
         with pytest.raises(ValueError):
             CP.validate({**P, "tier1b": retired})
 
@@ -296,7 +293,7 @@ def test_check_refuses_wall_too_short_for_wait_and_chain(tmp_path):
     _, _, kit, _ = make(tmp_path)
     cg = {**P, "gen_set": 1, "shards": 4, "shard_offset": 0}
     assert kit.check("a", {**cg, "files_per_job": 4, "wall_minutes": 50}, [], [])["ok"]      # kitcg03
-    # the strict_v4 set needs ~46.3 min of wait + chain for this point
+    # the strict_v5 set needs ~46 min of wait + chain for this point
     assert not kit.check("a2", {**cg, "files_per_job": 4, "wall_minutes": 45}, [], [])["ok"]
     r = kit.check("b", {**cg, "files_per_job": 20, "wall_minutes": 45}, [], [])             # kitcg02 at 45 min
     assert not r["ok"] and "wall_minutes" in r["message"] and "GB streamed" in r["message"]
