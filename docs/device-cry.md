@@ -106,6 +106,19 @@ includes source init, kernels, copies and DataFrame packing. Independent
 benchmark results must state hardware, shapes, warm/cold scope and full-chain
 boundary; no speed-up is implied merely by using a GPU.
 
+## Validation against the stock generator tables (A40, 2026-11-03)
+
+One hundred independent device shards of 50,000 accepted events against the 100 stock extracted gen-table shards of the
+same size (5 M events each; `cry_validate --backend device`, independent-shard standard errors): accepted rate per live
+second **1.00014 +- 0.00063**; mean multiplicity 1.00005 +- 0.00005; multiprimary fraction 1.006 +- 0.009, multimuon
+fraction 1.020 +- 0.012; rates of mu- 1.0012 +- 0.0011, mu+ 0.9993 +- 0.0010, e- 1.001 +- 0.004, e+ 0.997 +- 0.003,
+gamma 1.001 +- 0.002, neutrons 0.999 +- 0.002, protons 1.000 +- 0.007, charged pions 0.92-0.96 +- 0.06-0.07; lateral
+extent p90 1.004 +- 0.003, target-plane pair separation p90 1.007 +- 0.003, world-plane p90 0.999 +- 0.010. The
+smallest Bonferroni p over all 2,534 populated spectrum bins is 0.51 (no flag). Warm generation 0.84 s per 50,000
+accepted events on the A40 (the first shard 60 s with compilation). Downstream, the CRV chain on device-CRY primaries
+against the same chain on stock primaries gives digis, pulses and clusters per live second equal to 0.1 % (errors 0.3 %)
+(CRV `docs/native-cry.md`).
+
 ## Measured implementation checks (A100, 2026-10-30)
 
 Ten independent 50k-event device shards versus ten stock 50k-event shards give
