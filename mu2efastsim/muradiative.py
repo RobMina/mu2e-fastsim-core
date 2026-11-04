@@ -1,4 +1,4 @@
-"""Radiative energy loss of muons: bremsstrahlung, e+e- pair production and photonuclear interaction (opt-in).
+"""Radiative energy loss of muons: bremsstrahlung, e+e- pair production and photonuclear interaction.
 
 Differential cross sections per atom, as in Geant4 11.3:
   * bremsstrahlung: G4MuBremsstrahlungModel::ComputeDMicroscopicCrossSection (Kelner, Kokoulin, Petrukhin; nuclear
@@ -13,7 +13,7 @@ fractional transfer v = eps / E below V_CUT (applied as a continuous loss), the 
 cumulative distribution of v there. `sample_loss` draws the discrete transfers (Poisson count, v by inverse CDF at an
 energy node chosen with the linear interpolation weight in ln E) and adds the continuous part. Below 1 GeV kinetic the
 loss is zero (Geant4's lowest model energies are 1 GeV for bremsstrahlung and 0.85 GeV for pairs; radiative losses
-are below 0.1 % of ionisation there). Nothing here is used unless asked for (transport.slab_loss radiative=True).
+are below 0.1 % of ionisation there). transport.slab_loss adds it by default; muradiative_jax is the device twin.
 """
 import numpy as np
 
