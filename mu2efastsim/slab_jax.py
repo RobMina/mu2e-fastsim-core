@@ -529,22 +529,23 @@ def _path_kernel(k0, k1, p, L, f1, f2, mean, *refs):
 def path_radiative(k, p, cum, L, f1, f2, mean, rad, rad_mat):
     """Radiative losses added to a path_loss result: per segment j in order, the draw of slab j (pair key
     fold_in(fold_in(k, f1[j]), f2[j]), radiative()) at the |p| entering it (ionisation and radiative losses of the
-    segments before), for muons still above TK_STOP; cumulative loss capped at the kinetic energy. The ionisation of
-    later segments keeps the |p| without the earlier radiative losses (a change of their dE/dx below 1e-4)."""
+    segments before), for muons still above TK_STOP; a slab's ionisation plus radiative loss is capped at the kinetic
+    energy entering it. The ionisation of later segments keeps the |p| without the earlier radiative losses (a change
+    of their dE/dx below 1e-4)."""
     J = L.shape[0]
     tk0 = jnp.sqrt(p * p + MMU * MMU) - MMU
     extra, out, prev = jnp.zeros_like(p), [], jnp.zeros_like(p)
     for j in range(J):
         ion_j = cum[j] - prev
         prev = cum[j]
-        entry = jnp.minimum(cum[j] - ion_j + extra, tk0)
+        entry = cum[j] - ion_j + extra
         pin = p_after(p, entry)
         hit = (L[j] > 0) & ~mean[j]
+        ion_c = jnp.minimum(ion_j, jnp.maximum(tk0 - entry, 0.0))
         kj = fold_in(fold_in(k, f1[j]), f2[j])
-        tot = radiative(kj, rad, pin, jnp.where(hit, L[j], 0.0), jnp.minimum(ion_j, tk0 - entry),
-                        jnp.full(p.shape, rad_mat[j], jnp.int32))
-        extra = extra + jnp.where(hit, tot - jnp.minimum(ion_j, tk0 - entry), 0.0)
-        out.append(jnp.minimum(cum[j] + extra, tk0))
+        tot = radiative(kj, rad, pin, jnp.where(hit, L[j], 0.0), ion_c, jnp.full(p.shape, rad_mat[j], jnp.int32))
+        extra = extra + jnp.where(hit, tot - ion_c, 0.0)
+        out.append(cum[j] + extra)        # as the ionisation-only path: mean segments are not capped at the stop
     return jnp.stack(out)
 
 
