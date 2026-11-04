@@ -32,3 +32,30 @@ def test_device_zero_below_threshold_and_capped():
     s = np.asarray(RJ.sample_loss(jax.random.PRNGKey(1), RJ.table(M.LEAD), p, L))
     tk = np.sqrt(np.asarray(p) ** 2 + R.MMU ** 2) - R.MMU
     assert s[0] == 0 and s[1] == 0 and (s <= tk).all()
+
+
+def test_stacked_per_lane_matches_single_tables():
+    mats = [M.COPPER, M.CONCRETE_MARS, M.ALUMINIUM_6061]
+    tab = RJ.stack(mats)
+    n = 60_000
+    mat = jax.numpy.asarray(np.repeat(np.arange(3), n // 3))
+    p = jax.numpy.full(n, 50_000.0)
+    L = jax.numpy.full(n, 1000.0)
+    keys = jax.vmap(lambda i: jax.random.fold_in(jax.random.PRNGKey(5), i))(jax.numpy.arange(n))
+    s = np.asarray(RJ.sample_loss(keys, tab, p, L, mat))
+    for i, m in enumerate(mats):
+        ref = np.asarray(RJ.sample_loss(jax.random.PRNGKey(9), RJ.table(m), p[: n // 3], L[: n // 3]))
+        a = s[i * n // 3:(i + 1) * n // 3]
+        assert abs(a.mean() - ref.mean()) < 4 * np.sqrt(a.var() / a.size + ref.var() / ref.size)
+
+
+def test_after_ionisation_follows_slab_loss_rules():
+    from mu2efastsim import transport as T
+    tab = RJ.table(M.CONCRETE_MARS)
+    p = jax.numpy.array([500.0, 20_000.0, 20_000.0, 20_000.0])
+    L = jax.numpy.array([1000.0, 1000.0, 0.0, 1000.0])
+    tk0 = np.sqrt(np.asarray(p) ** 2 + R.MMU ** 2) - R.MMU
+    ion = jax.numpy.array([tk0[0], 500.0, 0.0, 500.0])
+    out = np.asarray(RJ.after_ionisation(jax.random.PRNGKey(2), tab, p, L, ion))
+    assert out[0] == tk0[0] and out[2] == 0.0 and out[1] >= 500.0 and out[3] >= 500.0 and (out <= tk0).all()
+    assert T.TK_STOP > 0
