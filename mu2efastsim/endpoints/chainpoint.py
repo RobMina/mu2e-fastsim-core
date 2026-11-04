@@ -17,8 +17,8 @@ runconfig; it picks the GDML world, the lookup tables and the response/cuts; oth
 with nominal CRVCalib constants, no CSVs streamed). A gen set belongs to one CRY configuration: extracted gen sets
 (0, 1) only with run_config 0, the default-CRY sets (2, 3) only with the others. tier1b (optional; crvfastsim
 tier1b_assets): 0 = strict_v5, the default (the strict library with step-tree roots, its topology and v3 template
-sidecars, placement options, chord placement and root-coherent draws); 1 = strict_v4, the previous default (the strict
-library, hard-muon draws instead of root-coherent ones). The named configurations have no tier-1b library, so
+sidecars, placement options, chord placement and root-coherent draws), the only set (the previous default strict_v4,
+parameter 1, is on crv branch park/tier1b-strict-v4). The named configurations have no tier-1b library, so
 ``check`` and ``submit`` refuse run_config 1-3 until one exists. The set's files are streamed once per node into the shared library dir.
 
 Generated gen_sets 4/5 require run_config=0, files_per_job=1, shard_offset=max_events=0 and no prefetch flag.
@@ -77,11 +77,8 @@ CHAIN_SETUP_S, CHAIN_S_PER_MEVENT = 60.0, 180.0
 # tier-1b asset sets (crvfastsim.tier1b_assets.SETS; crv tests keep the two equal): directory under the FNAL data root,
 # files (library first), bytes of the whole set
 TIER1B_SETS = {"strict_v5": ("tier1b_strict_v5", ("library.root", "topology.npz", "topology.npz.json", "templates_v3.npz",
-                                                  "templates_v3.npz.json"), 1.1792e9),
-               "strict_v4": ("tier1b_strict_v2", ("library.root", "topology_sidecar_strict_v2_v2.npz",
-                                                  "topology_sidecar_strict_v2_v2.npz.json", "templates_v3.npz",
-                                                  "templates_v3.npz.json"), 1.1699e9)}
-TIER1B_PARAM = ("strict_v5", "strict_v4")                  # parameter tier1b -> set
+                                                  "templates_v3.npz.json"), 1.1792e9)}
+TIER1B_PARAM = ("strict_v5",)                              # parameter tier1b -> set
 CALIB = "geometry/crvcalib_sim_best_v1_5_run1400.csv"
 DEVIATION = "geometry/crvphoton_sim_best_v1_5_run1400.csv"
 GDML = "geometry/mu2e_extracted_v04.gdml"
@@ -205,8 +202,7 @@ def validate(params: Dict[str, Any]) -> Dict[str, int]:
 
 
 def tier1b_set(p: Dict[str, int]) -> str:
-    """Asset set of a point: strict_v5 (tier1b 0, extracted) or strict_v4 (1). Named configurations have no tier-1b
-    library."""
+    """Asset set of a point: strict_v5 (tier1b 0, extracted). Named configurations have no tier-1b library."""
     if p.get("run_config", 0) != 0:
         raise ValueError(f"fastsimkit: chain_point run_config {p['run_config']} ({RUN_CONFIGS[p['run_config']][0]}) "
                          f"has no tier-1b library; only run_config=0 (extracted_v04) runs")

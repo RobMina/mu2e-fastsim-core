@@ -6,7 +6,7 @@
 # when it starts (srun --overlap), never stored on UVA; outputs (stats only) go back to the GPVM and are removed.
 # Then throughput_uva.py: accepted events per GPU-hour, per SU, and per hour of campaign wall time.
 # usage: [N=8] [FPP=4] [GRES=gpu:a100:1] [CONSTRAINT=a100] [CPUS=16] [MEM=110G] [WALL=00:45:00] [REF=main] \
-#        [T1B=strict_v5|strict_v4] [MU2EFS_DEVICE_FLOAT=float32|float64] chain_array_uva.sh [gpvm]
+#        [T1B=strict_v5] [MU2EFS_DEVICE_FLOAT=float32|float64] chain_array_uva.sh [gpvm]
 #        (T1B: tier-1b asset set, crvfastsim.tier1b_assets; device float of the jobs, default float32)
 # Site settings (site.env.example): FASTSIMKIT_FNAL_HOST, FASTSIMKIT_SLURM_HOST, FASTSIMKIT_SLURM_ACCOUNT, FASTSIMKIT_SCRATCH,
 # the FNAL input dir (FASTSIMKIT_FNAL_DATA) and M2FS_CODE (umbrella checkout on the FNAL host, for throughput_uva.py).
@@ -24,10 +24,7 @@ case $T1B in
   strict_v5) LIBSET=("$D/tier1b_strict_v5/library.root" "$D/tier1b_strict_v5/topology.npz"
              "$D/tier1b_strict_v5/topology.npz.json" "$D/tier1b_strict_v5/templates_v3.npz"
              "$D/tier1b_strict_v5/templates_v3.npz.json") ;;
-  strict_v4) LIBSET=("$D/tier1b_strict_v2/library.root" "$D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz"
-             "$D/tier1b_strict_v2/topology_sidecar_strict_v2_v2.npz.json" "$D/tier1b_strict_v2/templates_v3.npz"
-             "$D/tier1b_strict_v2/templates_v3.npz.json") ;;
-  *) echo "T1B must be strict_v5 or strict_v4"; exit 2 ;;
+  *) echo "T1B must be strict_v5 (strict_v4 is on crv branch park/tier1b-strict-v4)"; exit 2 ;;
 esac
 COMMON=("${LIBSET[@]}" "$D/geometry/crvcalib_sim_best_v1_5_run1400.csv"
         "$D/geometry/crvphoton_sim_best_v1_5_run1400.csv" "$D/geometry/mu2e_extracted_v04.gdml")

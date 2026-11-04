@@ -13,7 +13,7 @@
 # library, CRVCalib/CRVPhoton CSVs, GDML: all streamed by kpp_stream.sh into tmpfs and deleted on exit (the lookup
 # tables come from CVMFS, also into tmpfs). Never on Flare; per-shard JSONs and the merge go back to the GPVM.
 # usage (from the laptop): EXTRA_V=NPROC=12,RUNS=1 kpp_stream.sh "$FASTSIMKIT_FNAL_HOST" chain_node_aurora.sh <files...>
-# Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v5 (default) or strict_v4 (previous default); stream that set's
+# Tier 1b (crvfastsim.tier1b_assets): T1B=strict_v5 (the only set); stream that set's
 # library.root, topology sidecar and
 # templates_v3.npz, each with its .json).
 # (RUNS: space-separated files-per-process passes; qsub -v cannot carry spaces or commas, so set RUNSFILE instead)
@@ -54,8 +54,7 @@ echo "gen files ${#GEN[@]}; library $(basename $LIB); calib $(basename $CAL); gd
 T1B=${T1B:-strict_v5}
 case $T1B in
   strict_v5) T1BF="library.root topology.npz topology.npz.json templates_v3.npz templates_v3.npz.json" ;;
-  strict_v4) T1BF="library.root topology_sidecar_strict_v2_v2.npz topology_sidecar_strict_v2_v2.npz.json templates_v3.npz templates_v3.npz.json" ;;
-  *) echo "T1B must be strict_v5 or strict_v4"; exit 2 ;;
+  *) echo "T1B must be strict_v5 (strict_v4 is on crv branch park/tier1b-strict-v4)"; exit 2 ;;
 esac
 for f in $T1BF; do
   [ -f $L/$f ] || { echo "tier-1b set $T1B: $f not streamed"; exit 3; }; done; TIER1B="--tier1b $T1B --tier1b-dir $L"
