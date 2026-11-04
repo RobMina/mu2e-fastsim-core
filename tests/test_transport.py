@@ -44,7 +44,7 @@ def test_world_loss_slab_and_air_bands():
     d = np.tile([0.0, -1.0, 0.0], (n, 1))
     p = np.full(n, 5000.0)
     pp, xx0, alive, bxx0, bh = T.world_loss(rng, o, d, p, world, [10000.0, 3000.0, 2000.0, 0.0])
-    assert alive.all()
+    assert alive.mean() > 0.999                 # a hard radiative transfer (P ~ 3e-5 here) can range a muon out
     x0c = E.radiation_length_mm(M.CONCRETE_MARS)
     assert np.allclose(bxx0[:, 1], 1000.0 / x0c) and np.allclose(bh[:, 1], 2500.0)
     assert 400.0 < (p - pp).mean() < 650.0

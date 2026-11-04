@@ -1,4 +1,4 @@
-"""Unit tests: muon radiative losses (bremsstrahlung, pair production, photonuclear) and the slab_loss opt-in."""
+"""Unit tests: muon radiative losses (bremsstrahlung, pair production, photonuclear) and their slab_loss default."""
 import sys
 from pathlib import Path
 
@@ -53,14 +53,14 @@ def test_sampled_mean_matches_table_and_zero_below_threshold():
     assert (R.sample_loss(rng, mat, np.full(100, 500.0), np.full(100, L)) == 0).all()
 
 
-def test_slab_loss_default_unchanged_and_opt_in_adds():
+def test_slab_loss_default_adds_radiative_after_the_ionisation_draws():
     p = np.full(20_000, 20_000.0)
     L = np.full(p.size, 50.0)
     r1, r2 = np.random.default_rng(7), np.random.default_rng(7)
-    a = T.slab_loss(r1, M.COPPER, p, L)
-    b = T.slab_loss(r2, M.COPPER, p, L, radiative=False)
-    assert np.array_equal(a, b) and r1.random() == r2.random()     # same values, same draws
-    r3 = np.random.default_rng(7)
-    c = T.slab_loss(r3, M.COPPER, p, L, radiative=True)
+    a = T.slab_loss(r1, M.COPPER, p, L, radiative=False)            # ionisation only
+    c = T.slab_loss(r2, M.COPPER, p, L)                              # default: with radiative losses
     d = c - a                                                        # same ionisation draws first
     assert (d >= -1e-9).all() and 0.7 < d.mean() / (_b(M.COPPER, 20_000.0 - R.MMU) * 20_000.0 * 50.0 * M.COPPER.rho / 10) < 1.3
+    r3, r4 = np.random.default_rng(7), np.random.default_rng(7)
+    lo = np.full(1000, 800.0)                                        # below 1 GeV kinetic: identical values
+    assert np.array_equal(T.slab_loss(r3, M.COPPER, lo, L[:1000]), T.slab_loss(r4, M.COPPER, lo, L[:1000], radiative=False))

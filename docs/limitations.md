@@ -11,15 +11,18 @@
   fast model (Geant4 95 vs 105 MeV differs there, fast 95 vs 105 does not).
 - **No magnetic field** in the core muon transport: straight segments with multiple scattering, for the field-free
   extracted configuration. The beam stage has its own field-map stepping (umbrella `beam/`).
-- **Muon radiative losses are off by default.** `transport.slab_loss` integrates ionisation only (the extracted-chain
-  default); `slab_loss(..., radiative=True)` adds bremsstrahlung, pair production and photonuclear losses
-  (`muradiative`, Geant4 11.3 differential cross sections, drawn at the slab-entry energy, none below 1 GeV kinetic).
-  Its radiative b agrees with the published muon tables (Cu at 100 GeV 6.2e-6 cm2/g); in the tracker it moves the
-  mean first-passage loss above 5 GeV/c by about 0.3 MeV/c. No device port.
+- **Muon radiative losses: NumPy only.** `transport.slab_loss` adds bremsstrahlung, pair production and
+  photonuclear losses by default (`muradiative`, Geant4 11.3 differential cross sections, drawn once per slab at the
+  slab-entry energy, none below 1 GeV kinetic; `radiative=False` for ionisation only). The device slab samplers
+  (`slab_jax`, the CRV and tracker device transports) are ionisation-only; `muradiative_jax` is the tested device
+  twin of the radiative draw, not yet wired into them. The measured effect on every tracker and CRV gate is below
+  the draw noise (validation.md).
 - **Density effect of gases.** Materials without a NIST table use the solid branch of the Sternheimer
   parametrisation unless they are built with `state="gas"` (Geant4's gas branch). The tracker's straw gas is a gas in
   the Geant4 geometry; the solid branch puts the restricted ionisation of 100 MeV electrons in it about 2.4 % high and
-  that of muons above about 10 GeV/c 1.5-2 % high (below 10 GeV/c the two branches agree). The default is unchanged.
+  that of muons above about 10 GeV/c 1.5-2 % high (below 10 GeV/c the two branches agree). The tracker builds
+  its straw gas with `state="gas"`; `Material` itself still defaults to the solid branch, so a new gas material
+  must say so.
 - `eloss_jax` does not port delta-ray sampling (`sample_deltas`); the CRV transport has its own device sampler for it.
 - The Geant4 match is to 11.3.2 with the production cuts of the extracted configuration; other cuts or Geant4
   versions are not validated.

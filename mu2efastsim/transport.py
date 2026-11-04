@@ -212,11 +212,12 @@ TK_STOP = 1.0       # MeV: kinetic energy below which a muon is stopped (the rem
 MAX_SLICES_PER_SLAB = 4   # slices for a muon with > 3x the energy the remaining slab takes (flat dE/dx regime)
 
 
-def slab_loss(rng, mat, p, length, radiative=False):
+def slab_loss(rng, mat, p, length, radiative=True):
     """Energy loss [MeV] through `length` [mm] of `mat`, integrated in slices so dE/dx follows the slowing muon.
 
-    radiative=True (opt-in) adds bremsstrahlung, pair production and photonuclear losses (muradiative.sample_loss) at
-    the slab-entry energy, drawn after the ionisation slices; the default draws nothing extra.
+    radiative (default True, as Geant4): bremsstrahlung, pair production and photonuclear losses
+    (muradiative.sample_loss) at the slab-entry energy, drawn after the ionisation slices; none below 1 GeV kinetic.
+    radiative=False gives the ionisation-only loss (what the device slab samplers compute).
 
     Each slice loses at most ~SLICE_FRAC of the current kinetic energy (mean); fluctuations are sampled per slice.
     Range-out follows the mean range (CSDA), not a single fluctuation: if a slice's sampled loss would exceed the
