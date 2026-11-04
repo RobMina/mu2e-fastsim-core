@@ -11,12 +11,13 @@
   fast model (Geant4 95 vs 105 MeV differs there, fast 95 vs 105 does not).
 - **No magnetic field** in the core muon transport: straight segments with multiple scattering, for the field-free
   extracted configuration. The beam stage has its own field-map stepping (umbrella `beam/`).
-- **Muon radiative losses: NumPy only.** `transport.slab_loss` adds bremsstrahlung, pair production and
-  photonuclear losses by default (`muradiative`, Geant4 11.3 differential cross sections, drawn once per slab at the
-  slab-entry energy, none below 1 GeV kinetic; `radiative=False` for ionisation only). The device slab samplers
-  (`slab_jax`, the CRV and tracker device transports) are ionisation-only; `muradiative_jax` is the tested device
-  twin of the radiative draw, not yet wired into them. The measured effect on every tracker and CRV gate is below
-  the draw noise (validation.md).
+- **Muon radiative losses.** `transport.slab_loss` adds bremsstrahlung, pair production and photonuclear losses by
+  default (`muradiative`, Geant4 11.3 differential cross sections, drawn once per slab at the slab-entry energy,
+  none below 1 GeV kinetic; `radiative=False` for ionisation only). On the device, `slab_jax.slab_loss` and
+  `path_loss` add the same draw (`muradiative_jax`) when given the materials' radiative tables (`rad=`), as the CRV
+  and tracker device transports do; without them they are ionisation-only. In `path_loss` the ionisation of a later
+  segment does not see the earlier segments' radiative loss (a dE/dx change below 1e-4); up to 8 discrete
+  transfers per slab (P(more) < 1e-9 for the transport's slabs).
 - **Density effect of gases.** Materials without a NIST table use the solid branch of the Sternheimer
   parametrisation unless they are built with `state="gas"` (Geant4's gas branch). The tracker's straw gas is a gas in
   the Geant4 geometry; the solid branch puts the restricted ionisation of 100 MeV electrons in it about 2.4 % high and

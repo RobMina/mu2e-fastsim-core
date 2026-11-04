@@ -11,6 +11,7 @@ call, and a slow lane costs only its block.
   * `sample`: eloss_jax._sample on raw keys (Gaussian/Gamma/Urban regimes, mean and tmax from |p|), the same draws;
   * `slab_loss(keys, consts, p, length)`: transport.slab_loss per lane with the slice keys fold_in(key, slice), as the
     tracker's device slab sampler; `path_loss`: a sequence of slabs and mean-loss segments (a world column) in one call.
+    With `rad=` (muradiative_jax tables) both add transport.slab_loss's default radiative losses after the kernel.
     impl "xla" (a vmapped while loop: the reference, and the path on CPU and non-NVIDIA GPUs), "pallas" (the Triton
     kernel, NVIDIA CUDA only) or "interpret" (the kernel run by the Pallas interpreter, for CPU tests of its code);
     `default_impl()` picks the kernel on a CUDA backend and the XLA path elsewhere (MU2EFS_SLAB_KERNEL=auto, default;
@@ -445,11 +446,28 @@ def work_order(c, p, length):
     return jnp.argsort(-r, stable=True)
 
 
+RAD_FOLD = 0x52414401   # radiative stream of a slab: fold_in(slab key, RAD_FOLD), apart from the slice keys
+
+
+def radiative(k, rad, p, length, loss, mat=None):
+    """transport.slab_loss's radiative step after the ionisation slices (muradiative_jax.after_ionisation): raw keys
+    k [N], RadTable rad (muradiative_jax.table, or stack with per-lane index mat), slab-entry |p|, length, ionisation
+    loss [N]. The draw uses the typed key fold_in(k, RAD_FOLD) per lane."""
+    from . import muradiative_jax as RJ
+    keys = jax.random.wrap_key_data(jnp.stack(fold_in(k, RAD_FOLD), -1))
+    return RJ.after_ionisation(keys, rad, p, length, loss, mat)
+
+
 @partial(jax.jit, static_argnames=("impl", "block", "sort"))
-def slab_loss(k, c, p, length, impl="pallas", block=BLOCK, sort=True):
+def slab_loss(k, c, p, length, impl="pallas", block=BLOCK, sort=True, rad=None, rad_mat=None):
     """transport.slab_loss per lane: raw keys k = (k0, k1) [N] (slice keys fold_in(k, slice)), MatConsts c (fields
     scalars or [N]), |p| and length [N]. Returns (loss [N], slices taken [N]); lanes with length 0 lose nothing.
-    sort (kernel only): run the lanes in work_order (each lane's result does not depend on its position)."""
+    sort (kernel only): run the lanes in work_order (each lane's result does not depend on its position).
+    rad: RadTable of the material(s) (rad_mat: per-lane index into a stacked table) for transport.slab_loss's default
+    radiative losses, drawn after the kernel (radiative()); None gives the ionisation-only loss (radiative=False)."""
+    if rad is not None:
+        loss, slices = slab_loss(k, c, p, length, impl, block, sort)
+        return radiative(k, rad, p, jnp.asarray(length, p.dtype), loss, rad_mat), slices
     dt = p.dtype
     length = jnp.asarray(length, dt)
     c = MatConsts(*(jnp.broadcast_to(jnp.asarray(v, dt), p.shape) for v in c))
@@ -508,13 +526,41 @@ def _path_kernel(k0, k1, p, L, f1, f2, mean, *refs):
     lax.fori_loop(0, L.shape[0], seg, jnp.zeros_like(pp))
 
 
+def path_radiative(k, p, cum, L, f1, f2, mean, rad, rad_mat):
+    """Radiative losses added to a path_loss result: per segment j in order, the draw of slab j (pair key
+    fold_in(fold_in(k, f1[j]), f2[j]), radiative()) at the |p| entering it (ionisation and radiative losses of the
+    segments before), for muons still above TK_STOP; cumulative loss capped at the kinetic energy. The ionisation of
+    later segments keeps the |p| without the earlier radiative losses (a change of their dE/dx below 1e-4)."""
+    J = L.shape[0]
+    tk0 = jnp.sqrt(p * p + MMU * MMU) - MMU
+    extra, out, prev = jnp.zeros_like(p), [], jnp.zeros_like(p)
+    for j in range(J):
+        ion_j = cum[j] - prev
+        prev = cum[j]
+        entry = jnp.minimum(cum[j] - ion_j + extra, tk0)
+        pin = p_after(p, entry)
+        hit = (L[j] > 0) & ~mean[j]
+        kj = fold_in(fold_in(k, f1[j]), f2[j])
+        tot = radiative(kj, rad, pin, jnp.where(hit, L[j], 0.0), jnp.minimum(ion_j, tk0 - entry),
+                        jnp.full(p.shape, rad_mat[j], jnp.int32))
+        extra = extra + jnp.where(hit, tot - jnp.minimum(ion_j, tk0 - entry), 0.0)
+        out.append(jnp.minimum(cum[j] + extra, tk0))
+    return jnp.stack(out)
+
+
 @partial(jax.jit, static_argnames=("impl", "block"))
-def path_loss(k, p, L, c, f1, f2, mean, impl="pallas", block=32):
+def path_loss(k, p, L, c, f1, f2, mean, impl="pallas", block=32, rad=None, rad_mat=None):
     """Kinetic energy lost along a path of J segments crossed in order (the momentum carried from one to the next):
     lanes k = (k0, k1) raw keys [N], |p| at the start [N], lengths L [J, N]; per segment MatConsts c (fields [J]),
     key folds f1, f2 [J] (slab pair key fold_in(fold_in(k, f1), f2)) and `mean` [J] (mean dE/dx at max(|p|, 1) instead
     of a sliced, sampled slab). Returns the cumulative loss after each segment [J, N]. Segment by segment this is
-    slab_loss / a mean step; one kernel runs the whole path (no host step between segments)."""
+    slab_loss / a mean step; one kernel runs the whole path (no host step between segments).
+    rad, rad_mat: a stacked RadTable and the material index per segment [J] for transport.slab_loss's default
+    radiative losses (path_radiative, after the kernel); None gives the ionisation-only path."""
+    if rad is not None:
+        cum = path_loss(k, p, L, c, f1, f2, mean, impl, block)
+        return path_radiative(k, p, cum, jnp.asarray(L, p.dtype), jnp.asarray(f1, jnp.uint32),
+                              jnp.asarray(f2, jnp.uint32), jnp.asarray(mean, bool), rad, jnp.asarray(rad_mat))
     dt = p.dtype
     J, n = L.shape
     L = jnp.asarray(L, dt)

@@ -150,11 +150,54 @@ def test_slab_matches_numpy_in_distribution(mat, p, L):
     keys = _keys(n, 13)
     cc = EJ.consts(mat)
     dev = np.asarray(S.slab_loss(S.raw(keys), cc, jnp.full(n, p), jnp.full(n, L), impl="xla")[0])
-    ref = tr.slab_loss(np.random.default_rng(13), mat, np.full(n, p), np.full(n, L))
+    ref = tr.slab_loss(np.random.default_rng(13), mat, np.full(n, p), np.full(n, L), radiative=False)
     err = np.hypot(dev.std(), ref.std()) / np.sqrt(n)
     assert abs(dev.mean() - ref.mean()) < 4 * err
     qd, qr = np.quantile(dev, [0.1, 0.5, 0.9]), np.quantile(ref, [0.1, 0.5, 0.9])
     assert np.all(np.abs(qd / qr - 1) < 0.02)
+
+
+@pytest.mark.parametrize("mat, p, L", [(M.COPPER, 100_000.0, 200.0), (M.CONCRETE_MARS, 20_000.0, 2000.0),
+                                       (M.MILD_STEEL, 300_000.0, 500.0)])
+def test_slab_with_radiative_matches_numpy_default(mat, p, L):
+    from mu2efastsim import muradiative_jax as RJ
+    n = 60_000
+    keys = _keys(n, 31)
+    dev = np.asarray(S.slab_loss(S.raw(keys), EJ.consts(mat), jnp.full(n, p), jnp.full(n, L), impl="xla",
+                                 rad=RJ.table(mat))[0])
+    ion = np.asarray(S.slab_loss(S.raw(keys), EJ.consts(mat), jnp.full(n, p), jnp.full(n, L), impl="xla")[0])
+    ref = tr.slab_loss(np.random.default_rng(31), mat, np.full(n, p), np.full(n, L))
+    assert (dev >= ion - 1e-9).all() and (dev - ion).mean() > 0
+    err = np.hypot(dev.std(), ref.std()) / np.sqrt(n)
+    assert abs(dev.mean() - ref.mean()) < 4 * err
+    for x in np.quantile(ref, [0.5, 0.9, 0.99, 0.999]):         # tail fractions (quantiles of the tail are noisy)
+        fd, fr = (dev > x).mean(), (ref > x).mean()
+        assert abs(fd - fr) < 5 * np.sqrt((fd + fr) / n) + 1e-4
+
+
+def test_path_with_radiative_matches_numpy_world_loss():
+    from mu2efastsim import muradiative_jax as RJ
+    mats = [M.CONCRETE_MARS, M.MILD_STEEL, M.ALUMINIUM_6061]
+    n, J = 40_000, 3
+    cs = [EJ.consts(m) for m in mats]
+    c = EJ.MatConsts(*(jnp.asarray(np.array([getattr(cc, f) for cc in cs])) for f in EJ.MatConsts._fields))
+    L = jnp.asarray(np.tile(np.array([[2000.0], [300.0], [500.0]]), (1, n)))
+    p = jnp.full(n, 50_000.0)
+    f1, f2 = jnp.zeros(J, jnp.uint32), jnp.arange(J, dtype=jnp.uint32)
+    mean = jnp.zeros(J, bool)
+    out = np.asarray(S.path_loss(S.raw(_keys(n, 41)), p, L, c, f1, f2, mean, impl="xla", rad=RJ.stack(mats),
+                                 rad_mat=jnp.arange(J)))
+    rng = np.random.default_rng(41)
+    lost = np.zeros(n)
+    for j, m in enumerate(mats):
+        lost += tr.slab_loss(rng, m, tr._p_after(np.full(n, 50_000.0), lost), np.asarray(L[j]))
+    err = np.hypot(out[-1].std(), lost.std()) / np.sqrt(n)
+    assert abs(out[-1].mean() - lost.mean()) < 4 * err
+    for x in np.quantile(lost, [0.5, 0.9, 0.99, 0.999]):
+        fd, fr = (out[-1] > x).mean(), (lost > x).mean()
+        assert abs(fd - fr) < 5 * np.sqrt((fd + fr) / n) + 1e-4
+    ion = np.asarray(S.path_loss(S.raw(_keys(n, 41)), p, L, c, f1, f2, mean, impl="xla"))
+    assert (out >= ion - 1e-9).all()
 
 
 def _path_case(n, J, seed):
