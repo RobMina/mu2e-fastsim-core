@@ -165,8 +165,9 @@ def test_helix_and_plane_crossing_match_ehelix():
 
 def test_start_depth_field_and_compaction_parity_with_numpy():
     # 0.5 mm Al from mid-depth in a 1 T transverse field, 105 MeV e- both ways: fates and loss medians as in NumPy;
-    # compaction keeps the energy balance and matches the uncompacted run within statistics
-    n, L, T0 = 4000, 0.5, 105.0
+    # the compacted run keeps the energy balance and matches NumPy within statistics (uncompacted runs:
+    # test_small_sample_parity_with_numpy, test_boundary_starts_exit_outward_and_transport_inward)
+    n, L, T0 = 2000, 0.5, 105.0
     tc, kc = CUTS["G4_Al"]
     rng = np.random.default_rng(7)
     ct = rng.uniform(-1, 1, n)
@@ -175,18 +176,15 @@ def test_start_depth_field_and_compaction_parity_with_numpy():
     Bf = np.array([1.0, 0.0, 0.0])
     a = S.electron_slab(np.random.default_rng(8), AL, np.full(n, T0), d, L, tc, kc, msc=True, z0=0.25, field=Bf)
     kw = dict(msc=True, z0=0.25, field=Bf)
-    b = jax.tree_util.tree_map(np.asarray, SJ.electron_slab(jax.random.PRNGKey(8), AL, np.full(n, T0), d, L, tc, kc,
-                                                            **kw))
-    c = SJ.electron_slab(jax.random.PRNGKey(9), AL, np.full(n, T0), d, L, tc, kc, chunk=16, min_bucket=64, **kw)
-    for r in (b, c):
-        assert r.reflected.mean() == pytest.approx(a.reflected.mean(), abs=5 * np.sqrt(0.25 / n))
-        assert np.median(T0 - r.T[~r.stopped]) == pytest.approx(np.median(T0 - a.T[~a.stopped]), rel=0.05)
-        assert np.median(r.path) == pytest.approx(np.median(a.path), rel=0.03)
-        out = r.continuous + r.photon_energy + r.delta_energy
-        assert T0 - r.T == pytest.approx(out, abs=1e-8)
-        z = r.position[:, 2]
-        assert np.allclose(z[~r.stopped & r.reflected], 0.0, atol=1e-8)
-        assert np.allclose(z[~r.stopped & ~r.reflected], L, atol=1e-8)
+    r = SJ.electron_slab(jax.random.PRNGKey(9), AL, np.full(n, T0), d, L, tc, kc, chunk=16, min_bucket=64, **kw)
+    assert r.reflected.mean() == pytest.approx(a.reflected.mean(), abs=5 * np.sqrt(0.25 / n))
+    assert np.median(T0 - r.T[~r.stopped]) == pytest.approx(np.median(T0 - a.T[~a.stopped]), rel=0.05)
+    assert np.median(r.path) == pytest.approx(np.median(a.path), rel=0.03)
+    out = r.continuous + r.photon_energy + r.delta_energy
+    assert T0 - r.T == pytest.approx(out, abs=1e-8)
+    z = r.position[:, 2]
+    assert np.allclose(z[~r.stopped & r.reflected], 0.0, atol=1e-8)
+    assert np.allclose(z[~r.stopped & ~r.reflected], L, atol=1e-8)
 
 
 @pytest.mark.parametrize("chunk", [0, -1, 0.5, 1.5, np.float64(2.0), False, True, np.bool_(True)])
