@@ -695,7 +695,66 @@ def _move(pieces, R, t):
     return out
 
 
-def signed_local(solid, solids, ngon=NGON):
+def _frustum_wedge(r0, r1, a0, w, z0, z1, ngon, flat=False):
+    """Planes [K, 4] and box of one wedge (w <= 90 deg from a0) of a solid frustum: radius r0 at z0, r1 at z1.
+    flat=True: one facet whose plane is at distance r from the axis (a polyhedra side)."""
+    m = 1 if flat else max(2, int(np.ceil(ngon * w / (2 * np.pi))))
+    ang = a0 + w * np.arange(m + 1) / m
+    f = 1.0 / np.cos(0.5 * w) if flat else np.sqrt((w / m) / np.sin(w / m))
+    c, s = np.cos(ang), np.sin(ang)
+    A = np.c_[r0 * f * c, r0 * f * s, np.full(m + 1, z0)]
+    B = np.c_[r1 * f * c, r1 * f * s, np.full(m + 1, z1)]
+    verts = np.vstack([A, B, [[0.0, 0.0, z0], [0.0, 0.0, z1]]])
+    inside = verts.mean(0)
+    planes = [[0.0, 0.0, 1.0, z1], [0.0, 0.0, -1.0, -z0]]
+    for k in range(m):                                      # outer facets
+        quad = (A[k], A[k + 1], B[k], B[k + 1])
+        best = None
+        for i, j, l in ((0, 1, 2), (0, 2, 3), (1, 3, 2), (0, 1, 3)):
+            n = np.cross(quad[j] - quad[i], quad[l] - quad[i])
+            if best is None or np.linalg.norm(n) > np.linalg.norm(best[0]):
+                best = (n, quad[i])
+        n = best[0] / np.linalg.norm(best[0])
+        planes.append([*n, n @ best[1]])
+    for a in (ang[0], ang[-1]):                             # radial sides through the axis
+        planes.append([np.sin(a), -np.cos(a), 0.0, 0.0])
+    P = np.array(planes)
+    flip = P[:, :3] @ inside > P[:, 3]
+    P[flip] *= -1
+    return P, verts.min(0), verts.max(0)
+
+
+def _cone_sector(rmin0, rmax0, rmin1, rmax1, phi0, dphi, z0, z1, ngon=NGON):
+    """Signed pieces of a cone section: per wedge of <= 90 deg, + frustum(rmax) - frustum(rmin)."""
+    out = []
+    nw = max(1, int(np.ceil(dphi / (np.pi / 2) - 1e-9)))
+    for k in range(nw):
+        a0, w = phi0 + k * dphi / nw, dphi / nw
+        for sign, r0, r1 in ((1, rmax0, rmax1), (-1, rmin0, rmin1)):
+            if max(r0, r1) > 0:
+                out.append((sign, *_frustum_wedge(r0, r1, a0, w, z0, z1, ngon)))
+    return out
+
+
+def _polyhedra_sides(solid, ang):
+    """Signed pieces of a polyhedra (radii to the flat sides): per side and z section, + outer - inner wedge."""
+    nside = int(solid.get("numsides"))
+    phi0 = float(solid.get("startphi", 0)) * ang
+    dphi = float(solid.get("deltaphi", 360)) * ang
+    zp = sorted((float(z.get("z")), float(z.get("rmin", 0)), float(z.get("rmax"))) for z in solid.findall("zplane"))
+    out = []
+    w = dphi / nside
+    for (z0, a0, b0), (z1, a1, b1) in zip(zp[:-1], zp[1:]):
+        if z1 <= z0:
+            continue
+        for k in range(nside):
+            for sign, r0, r1 in ((1, b0, b1), (-1, a0, a1)):
+                if max(r0, r1) > 0:
+                    out.append((sign, *_frustum_wedge(r0, r1, phi0 + k * w, w, z0, z1, 0, flat=True)))
+    return out
+
+
+def signed_local(solid, solids, ngon=NGON, cones=False):
     """Signed convex pieces [(sign, P local, lo, hi)] of a GDML solid; None if a part is not supported.
 
     box, xtru (two unscaled sections), tube/cutTube (cut planes ignored), polycone (each z section as a tube from its
@@ -725,9 +784,16 @@ def signed_local(solid, solids, ngon=NGON):
                 out += _annulus_sector(min(a0, a1), max(b0, b1), float(solid.get("startphi", 0)) * ang,
                                        float(solid.get("deltaphi", 360)) * ang, z0, z1, ngon)
         return out
+    if tag == "polyhedra" and cones:
+        return _polyhedra_sides(solid, ang)
+    if tag == "cone" and cones:
+        hz = 0.5 * float(solid.get("z"))
+        g = lambda k: float(solid.get(k, 0))
+        return _cone_sector(g("rmin1"), g("rmax1"), g("rmin2"), g("rmax2"), float(solid.get("startphi", 0)) * ang,
+                            float(solid.get("deltaphi", 360)) * ang, -hz, hz, ngon)
     if tag in ("subtraction", "union", "intersection"):
-        A = signed_local(solids[solid.find("first").get("ref")], solids, ngon)
-        B = signed_local(solids[solid.find("second").get("ref")], solids, ngon)
+        A = signed_local(solids[solid.find("first").get("ref")], solids, ngon, cones)
+        B = signed_local(solids[solid.find("second").get("ref")], solids, ngon, cones)
         if A is None or B is None or solid.find("rotationref") is not None or solid.find("positionref") is not None:
             return None
         p = solid.find("position")
@@ -742,13 +808,15 @@ def signed_local(solid, solids, ngon=NGON):
     return None
 
 
-def signed_subtree(gdml_path, mother, bbox=None, labels=False, ngon=NGON):
+def signed_subtree(gdml_path, mother, bbox=None, labels=False, ngon=NGON, skip=(), cones=False):
     """Signed global convex pieces [(sign, material, P, lo, hi)] of every non-vacuum volume below `mother` (logical
     volume name without its pointer suffix), and the skipped placements {(name, solid tag, material): count}.
 
     Each volume adds its solid in its material, and its solid with the opposite sign in its mother's material when the
     mother is not vacuum, so mother minus daughters is exact. bbox: (lo, hi) global corners; keep only pieces whose box
-    overlaps it. labels: material keys 'volume|material' (volume = leaf name without copy indices)."""
+    overlaps it. labels: material keys 'volume|material' (volume = leaf name without copy indices).
+    skip: volume-name prefixes dropped with their daughters (opt-in, e.g. a detector another module transports;
+    the mother still loses their solid when it is not vacuum). cones: as signed_local."""
     root = ET.parse(gdml_path).getroot()
     vols = {v.get("name"): v for v in root.find("structure").findall("volume")}
     solids = {s.get("name"): s for s in root.find("solids")}
@@ -770,10 +838,16 @@ def signed_subtree(gdml_path, mother, bbox=None, labels=False, ngon=NGON):
             R2, t2 = R @ _rot(pv.find("rotation")), R @ pos + t
             ins = inside or n == mother
             key = None
+            if skip and ins and n.startswith(tuple(skip)):
+                solid = solids[vols[child].find("solidref").get("ref")]
+                local = signed_local(solid, solids, ngon, cones)
+                if mkey is not None and local is not None:
+                    emit(local, R2, t2, mkey, -1)
+                continue
             if ins and n != mother:
                 mat = _strip(vols[child].find("materialref").get("ref"))
                 solid = solids[vols[child].find("solidref").get("ref")]
-                local = signed_local(solid, solids, ngon)
+                local = signed_local(solid, solids, ngon, cones)
                 key = None if vac.search(mat) else (f"{re.sub(r'(_[0-9]+)+$', '', n)}|{mat}" if labels else mat)
                 if local is None:
                     if key is not None or mkey is not None:

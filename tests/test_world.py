@@ -153,3 +153,50 @@ def test_build_grid_cells_match_reference_loop():
                 cells[ix * ng[1] + iz].append(ip)
     assert np.array_equal(ps.cell_start, np.r_[0, np.cumsum([len(x) for x in cells])])
     assert np.array_equal(ps.cell_items, [i for x in cells for i in x])
+
+
+def test_signed_cone_chords_match_frustum():
+    import xml.etree.ElementTree as ET
+    xml = """<solids><cone name="C" rmin1="20" rmax1="100" rmin2="10" rmax2="50" z="200" startphi="0" deltaphi="360"
+             aunit="deg" lunit="mm"/></solids>"""
+    sol = {s.get("name"): s for s in ET.fromstring(xml)}
+    assert W.signed_local(sol["C"], sol) is None                       # opt-in: off by default
+    local = W.signed_local(sol["C"], sol, ngon=512, cones=True)
+    z = np.array([-50.0, 0.0, 60.0])
+    rmax, rmin = 75.0 - 0.25 * z, 15.0 - 0.05 * z                      # linear radii at those z
+    o = np.c_[np.zeros(3), np.full(3, 300.0), z]
+    d = np.array([[0.0, -1, 0]] * 3)
+    got = _signed_column(local, o, d, np.full(3, 1000.0))
+    assert np.allclose(got, 2 * (rmax - rmin), rtol=2e-3)
+    o2 = np.array([[30.0, 0.0, -150.0]])                                # along z at r = 30: inside only where rmin < 30 < rmax
+    got2 = _signed_column(local, o2, np.array([[0.0, 0, 1]]), np.array([300.0]))
+    assert np.isclose(got2[0], 200.0, rtol=1e-3)
+
+
+def test_signed_subtree_skip_drops_daughters(tmp_path):
+    g = """<gdml><materials/><solids><box name="W" x="1000" y="1000" z="1000"/><box name="A" x="100" y="100" z="100"/>
+           <box name="B" x="10" y="10" z="10"/></solids><structure>
+           <volume name="Bv"><materialref ref="Fe"/><solidref ref="B"/></volume>
+           <volume name="Av"><materialref ref="Al"/><solidref ref="A"/><physvol><volumeref ref="Bv"/></physvol></volume>
+           <volume name="Hv"><materialref ref="G4_AIR"/><solidref ref="W"/><physvol><volumeref ref="Av"/></physvol></volume>
+           <volume name="Wv"><materialref ref="G4_AIR"/><solidref ref="W"/><physvol><volumeref ref="Hv"/></physvol></volume>
+           </structure><setup name="Default" version="1.0"><world ref="Wv"/></setup></gdml>"""
+    f = tmp_path / "t.gdml"
+    f.write_text(g)
+    full, _ = W.signed_subtree(str(f), "Hv")
+    cut, _ = W.signed_subtree(str(f), "Hv", skip=("Bv",))
+    assert {p[1] for p in full} == {"Al", "Fe"} and {p[1] for p in cut} == {"Al"}
+    ps = W.SignedPieceSet(cut, cell=50.0)
+    col = ps.column(np.array([[0.0, 200, 0]]), np.array([[0.0, -1, 0]]), np.array([400.0]))
+    assert np.isclose(col["Al"][0], 90.0)                              # mother minus the skipped daughter
+
+
+def test_signed_polyhedra_flat_sides():
+    import xml.etree.ElementTree as ET
+    xml = """<solids><polyhedra name="P" numsides="4" startphi="-45" deltaphi="360" aunit="deg" lunit="mm">
+             <zplane z="-10" rmin="5" rmax="20"/><zplane z="10" rmin="5" rmax="20"/></polyhedra></solids>"""
+    sol = {s.get("name"): s for s in ET.fromstring(xml)}
+    local = W.signed_local(sol["P"], sol, cones=True)            # a square tube: outer half-width 20, inner 5
+    o = np.array([[0.0, 100.0, 0.0], [12.0, 100.0, 0.0], [19.0, 100.0, 9.0]])
+    got = _signed_column(local, o, np.array([[0.0, -1, 0]] * 3), np.full(3, 300.0))
+    assert np.allclose(got, [30.0, 40.0, 40.0], atol=1e-6)

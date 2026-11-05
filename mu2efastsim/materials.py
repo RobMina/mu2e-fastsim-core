@@ -178,3 +178,72 @@ def get(name):
         return BY_NAME[name]
     except KeyError:
         raise KeyError(f"material {name!r} has no constants: add it to mu2efastsim.materials from the GDML") from None
+
+
+def from_gdml(gdml_path, names=None):
+    """Materials of a GDML export by name (pointer suffixes stripped): {name: Material}. A name with constants above
+    (BY_NAME) returns that entry; any other is built from its <material> block: density, MEE and the element mass
+    fractions (fractions of other materials expanded), with the Sternheimer 1971 density effect for its state (no NIST
+    table). Elements of the file that ELEMENTS lacks are added to it with the file's Z and A (isotope-weighted).
+    names: optional subset; vacuum and air-like names are returned like any other."""
+    import re
+    import xml.etree.ElementTree as ET
+    strip = lambda n: re.sub(r"0x[0-9a-f]+$", "", n)
+    root = ET.parse(gdml_path).getroot()
+    mats = root.find("materials")
+    iso = {}
+    for e in mats.findall("isotope"):
+        a = e.find("atom")
+        iso[e.get("name")] = (int(e.get("Z")), float(a.get("value")))
+    elem = {}
+    by_z = {z: s for s, (z, _) in ELEMENTS.items()}
+    for e in mats.findall("element"):
+        fr = [(float(f.get("n")), iso[f.get("ref")]) for f in e.findall("fraction")]
+        if fr:
+            z = fr[0][1][0]
+            a = sum(n * aa for n, (_, aa) in fr) / sum(n for n, _ in fr)
+        else:
+            z, a = int(float(e.get("Z"))), float(e.find("atom").get("value"))
+        sym = by_z.get(z) or e.get("formula") or strip(e.get("name"))
+        if sym not in ELEMENTS:
+            ELEMENTS[sym] = (z, a)
+            by_z[z] = sym
+        elem[e.get("name")] = sym
+    blocks = {m.get("name"): m for m in mats.findall("material")}
+
+    def frac(ref):
+        m = blocks[ref]
+        if m.find("fraction") is None and m.find("composite") is None:
+            z = int(float(m.get("Z")))
+            sym = by_z.get(z)
+            if sym is None:
+                sym = strip(ref)
+                ELEMENTS[sym] = (z, float(m.find("atom").get("value")))
+                by_z[z] = sym
+            return {sym: 1.0}
+        out = {}
+        if m.find("composite") is not None:
+            parts = [(int(c.get("n")), elem[c.get("ref")]) for c in m.findall("composite")]
+            tot = sum(n * ELEMENTS[s][1] for n, s in parts)
+            for n, s in parts:
+                out[s] = out.get(s, 0.0) + n * ELEMENTS[s][1] / tot
+            return out
+        for f in m.findall("fraction"):
+            w, r = float(f.get("n")), f.get("ref")
+            sub = {elem[r]: 1.0} if r in elem else frac(r)
+            for s, v in sub.items():
+                out[s] = out.get(s, 0.0) + w * v
+        return out
+
+    out = {}
+    for ref, m in blocks.items():
+        name = strip(ref)
+        if names is not None and name not in names:
+            continue
+        if name in BY_NAME:
+            out[name] = BY_NAME[name]
+            continue
+        mee = m.find("MEE")
+        out[name] = Material(name, float(m.find("D").get("value")), float(mee.get("value")) if mee is not None else 0.0,
+                             frac(ref), state=m.get("state", "solid") if m.get("state") == "gas" else "solid")
+    return out
