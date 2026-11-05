@@ -8,7 +8,8 @@ Same physics and step logic as eslab; how the NumPy constructs map to JAX:
     (the node picked with the linear-interpolation weight) instead of rejection sampling;
   * rejection samplers (Moller/Bhabha transfer, 2BS photon angle) run a fixed number of rounds;
   * the step loop is a lax.while_loop over all tracks, finished tracks masked; photons, deltas and annihilation photons
-    are returned as per-track counts and energy sums, not as lists;
+    are returned as per-track counts and energy sums, not as lists (lane_step_photons optionally records each step's
+    bremsstrahlung emission only; lane_step_emissions also records annihilation births, without photon transport);
   * hard elastic collisions need no thinning: the energy does not change between loss points, so the rate at the
     pre-step energy is exact; annihilation is thinned against its value at half the pre-step energy as in eslab.
 The kernel computes in the dtype of T (shared kernel, mu2efastsim.precision.float_of): float64 from host code,
@@ -343,12 +344,116 @@ class SlabOut(NamedTuple):
     steps: object        # loop iterations used (all tracks)
 
 
-def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni, mott, B, unroll=False):
+class BremsPhotonRecord(NamedTuple):
+    """At most one bremsstrahlung emission per lane per step, not a propagated photon or flux-exit record.
+
+    energy (n,) [MeV], position (n, 3) [mm] and direction (n, 3) are at emission in the slab frame;
+    path (n,) [mm] is the parent's accumulated path at emission. valid (n,) marks emissions; all other
+    entries are zero (including direction). Excludes annihilation photons, delta cascades and showers.
+    """
+    energy: object
+    position: object
+    direction: object
+    path: object
+    valid: object
+
+
+class EMPhotonRecord(NamedTuple):
+    """Fixed three-slot photon births per parent, not photon transport or exit flux.
+
+    Slot 0 is bremsstrahlung; slots 1 and 2 are an annihilation pair. energy (n, 3) is in MeV,
+    position and direction (n, 3, 3) are in the slab frame (position in mm), path (n, 3) is the
+    parent's accumulated path in mm. valid (n, 3) is boolean; mechanism (n, 3) is int32:
+    1 = bremsstrahlung, 2 = in-flight annihilation, 3 = at-rest annihilation. Every invalid value
+    is zero, including direction and mechanism. Floating fields follow the parent's T dtype.
+    No delta cascades or showers are recorded.
+    Annihilation directions inherit eannihil's isotropic COM boost / isotropic back-to-back rest
+    convention; this interface does not constitute new Geant4 validation of that convention.
+    """
+    energy: object
+    position: object
+    direction: object
+    path: object
+    valid: object
+    mechanism: object
+
+
+def _annihilation_pair(ks, T, d, flight):
+    """eannihil's inherited two-photon convention, using only the four supplied secondary keys."""
+    n, dt = T.shape[0], T.dtype
+
+    def isotropic(kc, kp):
+        c = 2 * jax.random.uniform(kc, (n,), dt) - 1
+        s = jnp.sqrt(jnp.maximum((1 - c) * (1 + c), 0.0))
+        phi = 2 * jnp.pi * jax.random.uniform(kp, (n,), dt)
+        return jnp.stack([s * jnp.cos(phi), s * jnp.sin(phi), c], axis=1)
+
+    Ts = jnp.where(flight, T, 1.0)
+    ds = jnp.where(flight[:, None], d, jnp.array([0.0, 0.0, 1.0], dt))
+    etot = Ts + 2 * ME
+    p = jnp.sqrt(Ts * (Ts + 2 * ME))
+    half = 0.5 * jnp.sqrt(etot * etot - p * p)
+    u = isotropic(ks[0], ks[1])
+    beta, gam = p / etot, etot / (2 * half)
+    e1 = gam * half * (1 + beta * u[:, 2])
+    x, y, z = half * u[:, 0], half * u[:, 1], gam * half * (u[:, 2] + beta)
+    u1, u2, u3 = ds[:, 0], ds[:, 1], ds[:, 2]
+    up = u1 * u1 + u2 * u2
+    s = jnp.sqrt(jnp.where(up > 0, up, 1.0))
+    k1 = jnp.stack([jnp.where(up > 0, (u1 * u3 * x - u2 * y) / s + u1 * z, jnp.where(u3 > 0, x, -x)),
+                    jnp.where(up > 0, (u2 * u3 * x + u1 * y) / s + u2 * z, jnp.where(u3 > 0, y, -y)),
+                    jnp.where(up > 0, -s * x + u3 * z, jnp.where(u3 > 0, z, -z))], axis=1)
+    k2 = p[:, None] * ds - k1
+    e2 = etot - e1
+    dirs = jnp.stack([k1 / e1[:, None], k2 / jnp.linalg.norm(k2, axis=1, keepdims=True)], axis=1)
+    rest = isotropic(ks[2], ks[3])
+    return (jnp.where(flight[:, None], jnp.stack([e1, e2], axis=1), jnp.full((n, 2), ME, dt)),
+            jnp.where(flight[:, None, None], dirs, jnp.stack([rest, -rest], axis=1)))
+
+
+def _emission_record(energy, x, direction, path, valid, mechanism):
+    """Mask every field, including inactive directions, to exact zeros."""
+    return EMPhotonRecord(jnp.where(valid, energy, 0.0), jnp.where(valid[:, :, None], x[:, None, :], 0.0),
+                          jnp.where(valid[:, :, None], direction, 0.0), jnp.where(valid, path[:, None], 0.0),
+                          valid, jnp.where(valid, mechanism, 0).astype(jnp.int32))
+
+
+def initial_annihilation_photons(key, st):
+    """Initial stopped-positron births as an EMPhotonRecord; consume once, immediately after lane_state.
+
+    Selects only stopped lanes with nan == 2, ean == 2*ME and ~annih, as initialized when positron
+    annihilation is enabled. Slot 0 is invalid; slots 1 and 2 are isotropic back-to-back ME photons
+    at st['x']/st['path']. This stateless helper neither advances nor marks the state: the caller must
+    consume it once, not after steps or on each navigation iteration. lane_step_emissions never re-emits
+    already-stopped lanes. Directions inherit eannihil's convention, not new Geant4 validation.
+    """
+    dt = dprec.float_of(st["T"])
+    n = st["T"].shape[0]
+    on = st["stopped"] & (st["nan"] == 2) & (st["ean"] == jnp.asarray(2 * ME, dt)) & ~st["annih"]
+    zero = jnp.zeros(n, dt)
+    ks = jax.random.split(jax.random.fold_in(key, st["it"]), 24)[20:24]
+    energy, direction = _annihilation_pair(ks, zero, st["d"], jnp.zeros(n, bool))
+    valid = jnp.stack([jnp.zeros(n, bool), on, on], axis=1)
+    return _emission_record(jnp.concatenate([zero[:, None], energy], axis=1), st["x"],
+                            jnp.concatenate([jnp.zeros((n, 1, 3), dt), direction], axis=1), st["path"], valid,
+                            jnp.broadcast_to(jnp.array([0, 3, 3], jnp.int32), (n, 3)))
+
+
+def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni, mott, B, unroll=False,
+               return_photons=False, return_emissions=False, *, first_exit=None, finite_lanes=None):
     """One step of the slab loop as a function of the state dict (used by _run and by callers that embed the slab
     step in their own loop, e.g. with per-lane materials: tab / I from lane_tables). B: per-track fields or None.
-    unroll (opt-in): the fixed-trip loops inside the step are unrolled (same draws, to rounding)."""
+    unroll (opt-in): the fixed-trip loops inside the step are unrolled (same draws, to rounding).
+    return_photons is a static Python flag: False returns the existing state only; True returns
+    (next_state, BremsPhotonRecord), using the same draws and pre-recoil photon direction. No extra RNG draws.
+    return_emissions adds annihilation births as EMPhotonRecord, drawing only from unused ks[20:24]."""
     field = B is not None
     nel = tab.z.shape[0]
+    if first_exit is not None:
+        finite_lanes = jnp.asarray(True if finite_lanes is None else finite_lanes, bool)
+
+        def extra_face(xx, uu, pm, q, smax):
+            return jnp.where(finite_lanes, first_exit(xx, uu, pm, q, B, smax), jnp.inf)
 
     def to_face(z, dz):
         return jnp.where(dz > 0, (L - z) / jnp.where(dz > 0, dz, 1.0), jnp.where(dz < 0, -z / jnp.where(dz < 0, dz, -1.0),
@@ -375,6 +480,8 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
         if msc:
             zl = x[:, 2]
             trapped = I(tab.rng, T) < jnp.minimum(zl, L - zl)
+            if first_exit is not None:
+                trapped = trapped & ~finite_lanes
             mcap = jnp.where(trapped, jnp.inf, jnp.minimum(jnp.maximum(emsc.STEP_LAMBDA1 * I(tab.lam1, T),
                                                                         eslab.MSC_MIN_STEP), dsmax))
             sh = jnp.where(trapped, 0.0, I(tab.hard, T))
@@ -383,13 +490,17 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             mcap = free_h = jnp.full(n, jnp.inf, dt)
         limit = jnp.minimum(rem, mcap)
         plan = jnp.minimum(jnp.minimum(free, limit), jnp.minimum(free_a, free_h))
-        if field:
+        if field or first_exit is not None:
             pm = jnp.sqrt(T * (T + 2 * ME))
             q = 1.0 if positron else -1.0
+        if field:
 
             def hface(xx, uu, smax):
-                return jnp.minimum(_to_plane(xx, uu, pm, q, B, L, smax, unroll),
-                                   _to_plane(xx, uu, pm, q, B, 0.0, smax, unroll))
+                g = jnp.minimum(_to_plane(xx, uu, pm, q, B, L, smax, unroll),
+                                _to_plane(xx, uu, pm, q, B, 0.0, smax, unroll))
+                if first_exit is not None:
+                    g = jnp.minimum(g, extra_face(xx, uu, pm, q, smax))
+                return g
         if msc and field:
             tau = jax.random.uniform(ks[3], (n,), dt)
             leg1 = tau * plan
@@ -414,6 +525,8 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             tau = jax.random.uniform(ks[3], (n,), dt)
             leg1 = tau * plan
             g1 = to_face(x[:, 2], d[:, 2])
+            if first_exit is not None:
+                g1 = jnp.minimum(g1, extra_face(x, d, pm, q, leg1))
             out1 = leg1 >= g1
             p1 = x + jnp.where(out1, g1, leg1)[:, None] * d
             tmid = jnp.maximum(T - dedx * (st["pend"] + 0.5 * plan), 0.5 * T)
@@ -423,6 +536,8 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             dn = jnp.where(out1[:, None], d, _rotate_uz(d, 1 - u, 2 * jnp.pi * jax.random.uniform(ks[5], (n,), dt)))
             leg2 = plan - leg1
             g2 = to_face(p1[:, 2], dn[:, 2])
+            if first_exit is not None:
+                g2 = jnp.minimum(g2, extra_face(p1, dn, pm, q, leg2))
             out2 = ~out1 & (leg2 >= g2)
             step = jnp.where(out1, g1, jnp.where(out2, leg1 + g2, plan))
             xn = p1 + jnp.where(out1, 0.0, jnp.where(out2, g2, leg2))[:, None] * dn
@@ -438,6 +553,8 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             apply = jnp.ones(n, bool)
         else:
             g = to_face(x[:, 2], d[:, 2])
+            if first_exit is not None:
+                g = jnp.minimum(g, extra_face(x, d, pm, q, plan))
             left = g <= plan
             step = jnp.where(left, g, plan)
             xn, dn = x + step[:, None] * d, d
@@ -502,6 +619,10 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
         if anni:
             ah = act & (free_a < jnp.minimum(jnp.minimum(limit, free), free_h))
             acc = ah & (jax.random.uniform(ks[15], (n,), dt) * sa_max <= I(tab.sig_a, jnp.where(ah, Tn, 1.0)))
+            if return_emissions:
+                annih_flight = acc
+                annih_T = jnp.where(acc, Tn, 1.0)
+                annih_d = jnp.where(acc[:, None], dn, jnp.array([0.0, 0.0, 1.0], dt))
             nan = jnp.where(acc, nan + 2, nan)
             ean = jnp.where(acc, ean + Tn + 2 * ME, ean)
             Tn = jnp.where(acc, 0.0, Tn)
@@ -534,8 +655,31 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             ean = jnp.where(low, ean + 2 * ME, ean)
         Tn = jnp.where(low, 0.0, Tn)
         stopped = stopped | low
-        return dict(T=Tn, d=dn, x=xn, path=path, pend=pend, cont=cont, stopped=stopped, exited=exited, annih=annih,
-                    nph=nph, eph=eph, nde=nde, ede=ede, nan=nan, ean=ean, it=st["it"] + 1)
+        next_state = dict(T=Tn, d=dn, x=xn, path=path, pend=pend, cont=cont, stopped=stopped, exited=exited, annih=annih,
+                          nph=nph, eph=eph, nde=nde, ede=ede, nan=nan, ean=ean, it=st["it"] + 1)
+        if return_emissions:
+            if anni:
+                pair = annih_flight | out | low
+                pair_e, pair_d = _annihilation_pair(ks[20:24], annih_T, annih_d, annih_flight)
+                code = jnp.where(annih_flight, 2, 3)
+            else:
+                pair = jnp.zeros(n, bool)
+                pair_e, pair_d = jnp.zeros((n, 2), dt), jnp.zeros((n, 2, 3), dt)
+                code = jnp.zeros(n, jnp.int32)
+            valid = jnp.stack([brem, pair, pair], axis=1)
+            brems_e = jnp.where(brem, kph, jnp.zeros(n, dt))
+            brems_d = jnp.where(brem[:, None], dg, jnp.zeros((n, 3), dt))
+            photons = _emission_record(jnp.concatenate([brems_e[:, None], pair_e], axis=1), xn,
+                                       jnp.concatenate([brems_d[:, None, :], pair_d], axis=1), path, valid,
+                                       jnp.stack([jnp.ones(n, jnp.int32), code, code], axis=1))
+            return next_state, photons
+        if return_photons:
+            zero = jnp.zeros((n,), dt)
+            zero3 = jnp.zeros((n, 3), dt)
+            photons = BremsPhotonRecord(jnp.where(brem, kph, zero), jnp.where(brem[:, None], xn, zero3),
+                                        jnp.where(brem[:, None], dg, zero3), jnp.where(brem, path, zero), brem)
+            return next_state, photons
+        return next_state
     return body
 
 
@@ -755,6 +899,51 @@ def lane_step(key, lt, mi, st, B=None, positron=False, msc=True, annihilation=Tr
     lt, with per-lane constant fields B (n, 3) [T] in the slab frame or None; finished lanes (stopped or exited) are
     left as they are. Traceable (call inside a jitted loop); the random stream is key folded with st["it"]. unroll
     (opt-in): fixed-trip loops unrolled (fewer device launches per step on a GPU)."""
+    return _lane_step(key, lt, mi, st, B, positron, msc, annihilation, mott, unroll, False)
+
+
+def lane_step_photons(key, lt, mi, st, B=None, positron=False, msc=True, annihilation=True, mott=None, unroll=False):
+    """lane_step with a fixed-shape bremsstrahlung-only emission record: (next_state, BremsPhotonRecord).
+
+    Traceable inside jitted loops, with the same arguments, random keys and next state as lane_step. The record
+    contains at most one photon per lane: its energy, emission position, pre-recoil direction, parent path and
+    valid mask. Finished lanes and non-emitting steps have invalid, zero records (direction is also zero).
+    This does not record annihilation photons or delta cascades, propagate a shower, or report flux at an exit.
+    """
+    return _lane_step(key, lt, mi, st, B, positron, msc, annihilation, mott, unroll, True)
+
+
+def lane_step_emissions(key, lt, mi, st, B=None, positron=False, msc=True, annihilation=True, mott=None, unroll=False,
+                        *, first_exit=None, finite_lanes=None):
+    """lane_step with full photon births: (next_state, EMPhotonRecord), with identical primary draws/state.
+
+    Same arguments as lane_step; traceable inside jitted loops. Slot 0 matches lane_step_photons to rounding;
+    slots 1 and 2 use the existing accepted in-flight / newly-stopped annihilation masks. In flight,
+    energy and direction are captured before the primary energy is zeroed. At rest the pair has total
+    energy 2*ME at the step-end position/path, including range-out and low-energy stops. Only unused
+    ks[20:24] generate secondary directions, inheriting eannihil's isotropic COM boost and isotropic
+    back-to-back rest convention (not new Geant4 validation). Finished lanes never emit again.
+    Already-stopped lane_state positrons are initialization births, not new steps: consume
+    initial_annihilation_photons once immediately after initialization if those births are needed.
+    This records births only, not photon transport, delta cascades, showers or exit flux.
+    first_exit (optional static, traceable closure) takes (xx, uu, pm, q, B, smax) for each actual leg
+    in local slab coordinates and returns per-lane path to the first EXTRA material exit, or inf.
+    B is None for straight legs; pm and q are the actual momentum magnitude and charge sign.
+    The caller guarantees nonnegative distances and externally flags unresolved geometry searches.
+    Existing z faces still compete; boundary exits flush pending loss and suppress endpoint hard events,
+    but do not override range-out. finite_lanes selects extra-boundary lanes and disables their z-only
+    trapped shortcut (defaults to all lanes with a hook); other lanes retain slab behavior.
+    This hook is not finite-foil navigation or lateral state integration and adds no return fields.
+    The recorder replays the shared step behind a compiler barrier to keep primary arithmetic byte-identical;
+    this costs extra computation, not extra primary random draws. Defaults do not replay the step.
+    """
+    return _lane_step(key, lt, mi, st, B, positron, msc, annihilation, mott, unroll, False, True,
+                      first_exit=first_exit, finite_lanes=finite_lanes)
+
+
+def _lane_step(key, lt, mi, st, B, positron, msc, annihilation, mott, unroll, return_photons,
+               return_emissions=False, *, first_exit=None, finite_lanes=None):
+    """Shared lane setup for the state-only and photon-recording forms of the same slab step."""
     dt = dprec.float_of(st["T"])
     tab = Tables(*(v if isinstance(v, float) else _Lanes(jnp.asarray(v, dt), mi) for v in lt.tab))
     mc = eloss_jax.MatConsts(*(jnp.asarray(v, dt)[mi] for v in lt.mc))
@@ -763,7 +952,17 @@ def lane_step(key, lt, mi, st, B=None, positron=False, msc=True, annihilation=Tr
     I = lambda tabv, T: _interp_lanes(tabv, tab.lnt0, tab.dlnt, T)
     body = _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, bool(positron), bool(msc),
                       bool(positron and annihilation), emsc.MOTT if mott is None else mott,
-                      None if B is None else jnp.asarray(B, dt), unroll)
+                      None if B is None else jnp.asarray(B, dt), unroll, return_photons, return_emissions,
+                      first_exit=first_exit, finite_lanes=finite_lanes)
+    if return_emissions:
+        # Replay only the optional recorder so secondary outputs cannot alter primary compiler fusion.
+        primary = _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, bool(positron), bool(msc),
+                             bool(positron and annihilation), emsc.MOTT if mott is None else mott,
+                             None if B is None else jnp.asarray(B, dt), unroll,
+                             first_exit=first_exit, finite_lanes=finite_lanes)
+        next_state = primary(st)
+        _, record = body(lax.optimization_barrier(st))
+        return next_state, record
     return body(st)
 
 

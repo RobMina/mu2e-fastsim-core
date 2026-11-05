@@ -47,7 +47,7 @@ More: [`docs/running.md`](docs/running.md) (install, input verification, the kit
 |---|---|
 | `mu2efastsim/eloss.py`, `eloss_jax.py`, `materials.py`, `transport.py` | energy loss, fluctuations, materials, multiple scattering and slab loss |
 | `mu2efastsim/ebrem.py`, `eioni.py`, `emsc.py`, `eannihil.py`, `eslab.py`, `eslab_g4.py`, `data/` | electrons and positrons: bremsstrahlung (Seltzer-Berger tables), ionisation, multiple scattering, annihilation, slab crossing, Geant4 comparison |
-| `mu2efastsim/eslab_jax.py` | device (JAX) twin of the slab stepper: tables from the NumPy models, fixed-shape lanes, follows the input float |
+| `mu2efastsim/eslab_jax.py` | device (JAX) twin of the slab stepper: tables from the NumPy models, fixed-shape lanes, follows the input float; optional `lane_step_photons` records bremsstrahlung births; `lane_step_emissions` also records in-flight and at-rest annihilation pairs (births only, not showers or exit flux); its optional first-exit hook truncates actual legs before loss/events using caller-supplied geometry, not a finite-volume navigator |
 | `mu2efastsim/ehelix.py` | charged-track stepping in a magnetic field: exact helix, RK4, path to a plane, G4BL field-map lookup, vacuum propagation |
 | `mu2efastsim/world.py`, `worldcensus.py`, `crossings.py` | GDML world, its census, ray-box crossings (NumPy or JAX) |
 | `mu2efastsim/tables.py`, `match.py`, `stats.py`, `plots.py` | table I/O in the art dumper layout, key joins, statistics, plots |

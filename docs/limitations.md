@@ -1,5 +1,17 @@
 # Core: limitations
 
+## R5 archival checkpoint — 2026-11-05
+
+R5 is paused on `archive/r5-pause-20261105`. The optional photon-emission and
+first-exit hooks are experimental prerequisites, not validated target-exit flux,
+a material navigator or a transaction/rollback interface. The rejected
+transactional prototype is not present. No new source edit, build or runtime
+validation accompanies this pause. The matching umbrella branch contains
+`beam/docs/r5-pause-20261105.md` with the physics status and resumption gates.
+Historical no-hook arithmetic regressions apply to their exercised compilation
+contexts, not arbitrary enclosing JAX programs. This archive predates current
+main and requires reconciliation before any integration PR.
+
 - **Electrons: slab physics, field stepping checked against itself and through the conversion-electron chain.**
   Electron and positron modules (`eslab` and its parts, `eslab_jax`) are validated in slabs against Geant4; field
   stepping (`ehelix`, `eslab(field=...)`, `eslab_jax(field=...)`) is checked against analytic helices, RK4 and the
@@ -9,6 +21,16 @@
   transmitted-loss shape in 0.1 mm Al at 95 MeV
   (chi2/ndf 5.1, low side of the Landau peak) is Geant4's change of multiple-scattering model at 100 MeV, not the
   fast model (Geant4 95 vs 105 MeV differs there, fast 95 vs 105 does not).
+- **Optional electron extra-boundary hook is a transport prerequisite, not a navigator.**
+  `lane_step_emissions(first_exit=..., finite_lanes=...)` competes a caller-supplied first exit with the slab faces on
+  both random-hinge MSC legs or the single unscattered leg. It flushes pending loss and suppresses hard events beyond
+  the boundary while retaining legitimate stopping on the shortened path. The caller owns finite-volume geometry,
+  re-entry/depth/frame mapping, nonnegative first-exit distances and unresolved-search accounting. No-hook paths are
+  unchanged. The hook does not resolve stochastic first passage or the endpoint convention for stopping/annihilation;
+  geometry integration and step-refinement/reference validation remain required.
+  There is no transactional refusal-status API yet. Callers must not encode unresolved navigation as a resolved
+  no-hit infinity. A separate tested status/rollback contract is required before wiring a refusing geometry search
+  into transport; it must retain default arithmetic and reject ambiguous trajectories without publishing births.
 - **No magnetic field** in the core muon transport: straight segments with multiple scattering, for the field-free
   extracted configuration. The beam stage has its own field-map stepping (umbrella `beam/`).
 - **Muon radiative losses are off by default.** `transport.slab_loss` integrates ionisation only (the extracted-chain
