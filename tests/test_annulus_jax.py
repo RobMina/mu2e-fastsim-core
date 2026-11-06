@@ -262,6 +262,65 @@ def test_tiny_axial_velocity_is_not_classified_as_stationary():
     np.testing.assert_allclose(got.distance, [1e11])
 
 
+@pytest.mark.parametrize('compiled', [False, True])
+@pytest.mark.parametrize('entering', [False, True])
+@pytest.mark.parametrize('k', [0., -.2, .2, -2., 2.])
+def test_near_axial_radial_boundary_starts_resolve_or_fail_closed(compiled, entering, k):
+    radius, radial_sign, axial_sign, transverse = np.meshgrid(
+        [1., 5.], [-1., 1.], [-1., 1.], [1e-10, 1e-12, 1e-13, 1e-14, 1e-15], indexing='ij')
+    radius, radial_sign, axial_sign, transverse = (
+        a.ravel() for a in (radius, radial_sign, axial_sign, transverse))
+    x = np.column_stack((radius, np.zeros_like(radius), np.zeros_like(radius)))
+    u = np.column_stack((radial_sign * transverse, np.zeros_like(radius), axial_sign))
+    u /= np.linalg.norm(u, axis=1, keepdims=True)
+    field = None if k == 0 else [0., 0., -100. * k / SJ.K_FIELD]
+    run = lambda xx, uu: A.crossing(xx, uu, 100., -1., field, 4., 0., 2., 1., 5., entering=entering)
+    got = (jax.jit(run) if compiled else run)(jnp.asarray(x), jnp.asarray(u))
+    material_directed = (radius == 1.) == (radial_sign > 0)
+    radial_face = np.where(radius == 1., 4, 3)
+    axial_face = np.where(axial_sign > 0, 2, 1)
+    axial_exit = 2. / np.abs(u[:, 2])
+    # The second boundary root is analytic even when its displacement rounds away.
+    returning = (np.full_like(radius, np.inf) if k == 0 else
+                 np.mod(2 * np.arctan(-abs(k) * radius / u[:, 0]), 2 * np.pi) / abs(k))
+    if entering:
+        distance = np.where(material_directed, 0., np.where(returning <= axial_exit, returning, np.inf))
+        surface = np.where(np.isfinite(distance), radial_face, 0)
+    else:
+        distance = np.where(material_directed, np.minimum(returning, axial_exit), 0.)
+        surface = np.where(material_directed & (axial_exit < returning), axial_face, radial_face)
+    supported = np.asarray(got.supported)
+    np.testing.assert_allclose(np.asarray(got.distance)[supported], distance[supported], rtol=1e-12, atol=1e-12)
+    np.testing.assert_array_equal(np.asarray(got.surface)[supported], surface[supported])
+    assert np.all(np.isnan(np.asarray(got.distance)[~supported]))
+    assert np.all(np.asarray(got.surface)[~supported] == 0)
+    assert np.all(supported[transverse == 1e-10])
+
+
+@pytest.mark.parametrize('radius', [1., 5.])
+@pytest.mark.parametrize('transverse', [1e-8, 2. ** -26])
+def test_small_transverse_boundary_tangent_resolves_or_fails_closed(radius, transverse):
+    got = query([radius, 0., 0.], [0., transverse, 1.], half=10000., limit=20000.)
+    if got.supported[0]:
+        expected = 0. if radius == 5. else 10000. * np.sqrt(1. + transverse ** 2)
+        np.testing.assert_allclose(got.distance, [expected], atol=1e-12, rtol=1e-12)
+        assert got.surface[0] == (3 if radius == 5. else 2)
+    else:
+        assert np.isnan(got.distance[0]) and got.surface[0] == 0
+
+
+@pytest.mark.parametrize('entering', [False, True])
+@pytest.mark.parametrize('k', [0., -.2, .2])
+def test_exact_axial_radial_boundary_starts_stay_supported(entering, k):
+    x = [[1., 0., 0.], [1., 0., 0.], [5., 0., 0.], [5., 0., 0.]]
+    u = [[0., 0., -1.], [0., 0., 1.], [0., 0., -1.], [0., 0., 1.]]
+    field = None if k == 0 else [0., 0., k / SJ.K_FIELD]
+    got = query(x, u, field=field, entering=entering, limit=4.)
+    assert np.all(got.supported)
+    np.testing.assert_array_equal(got.distance, np.full(4, 0. if entering else 2.))
+    np.testing.assert_array_equal(got.surface, [4, 4, 3, 3] if entering else [1, 2, 1, 2])
+
+
 def test_numerically_extreme_curvature_and_phase_are_unsupported():
     for field, limit in ((1e-160 / SJ.K_FIELD, 100.), (1 / SJ.K_FIELD, 2e11)):
         got = query([3., 0., 0.], [1., 0., 0.], field=[0., 0., field], limit=limit)

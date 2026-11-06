@@ -43,9 +43,10 @@ are not transitions; motion confined to a surface remains in the closed volume.
 A clear, supported query returns `distance=+inf`, `surface=0`, `supported=True`.
 Unsupported or numerically unresolved queries instead return `distance=NaN`,
 `surface=0`, `supported=False`. Tilted fields, invalid inputs, incompatible start
-regions, nearly repeated roots within the roundoff bound, nonzero curvature
-outside `[1e-150, 1e100]/mm`, and proposed phase above `1e6` rad are not clear
-paths. This is not an arbitrary-field or arbitrary-coordinate-range solver.
+regions, nearly repeated roots within the roundoff bound, boundary starts whose
+first nonzero radial derivative falls below its classification threshold, nonzero
+curvature outside `[1e-150, 1e100]/mm`, and proposed phase above `1e6` rad are not
+clear paths. A small discarded derivative is unresolved, not stationary motion. This is not an arbitrary-field or arbitrary-coordinate-range solver.
 
 **Never turn unsupported/unresolved results into infinity.** Resolve/refine the
 geometry decision, or stop with an explicit failure, before committing physics.

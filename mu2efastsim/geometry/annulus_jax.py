@@ -59,8 +59,10 @@ def crossing(x, u, p, q, B, smax, z, half, inner, outer, axis_x=0., *, entering=
     No-hit is inf with surface 0. Unsupported/unresolved is NaN with surface 0.
     Callers must inspect supported before transport. Nearly repeated roots whose
     nonzero discriminant is within the roundoff bound are unresolved; exact
-    repeated roots use the tangent convention. Nonzero curvature must be in
-    [1e-150,1e100]/mm with proposed phase <=1e6 rad; other cases are unsupported.
+    repeated roots use the tangent convention. Boundary starts whose first nonzero
+    radial derivative is below its classification threshold are unresolved, not
+    stationary. Nonzero curvature must be in [1e-150,1e100]/mm with proposed phase
+    <=1e6 rad; other cases are unsupported.
     This API cannot silently supply a core callback for unrestricted fields.
     Finite path limits are required. This remains a development solver, not a
     certified arbitrary-magnitude geometry or field-map navigation interface.
@@ -176,6 +178,11 @@ def crossing(x, u, p, q, B, smax, z, half, inner, outer, axis_x=0., *, entering=
     closed = jnp.all((f[:, 0, :] >= -tol * scale).at[:, 3].set(
         (f[:, 0, 3] >= -tol * scale[:, 3]) | (inner == 0)), axis=1)
     active_on = on.at[:, :, 3].set(on[:, :, 3] & (inner > 0)[:, None])
+    # A discarded nonzero boundary derivative is unresolved, not surface-following motion.
+    lost_motion = (~moving[:, 0, 2:]
+                   & ((df[:, 0, 2:] != 0)
+                      | ((ddf[:, 0, 2:] != 0) & (acceleration[:, 0, 2:] == 0))))
+    valid = valid & ~jnp.any(active_on[:, 0, 2:] & lost_motion, axis=1)
     at_boundary = jnp.any(active_on[:, 0, :], axis=1)
     if entering:
         valid = valid & (~closed | at_boundary)
