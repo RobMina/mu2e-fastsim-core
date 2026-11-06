@@ -8,7 +8,8 @@ Same physics and step logic as eslab; how the NumPy constructs map to JAX:
     (the node picked with the linear-interpolation weight) instead of rejection sampling;
   * rejection samplers (Moller/Bhabha transfer, 2BS photon angle) run a fixed number of rounds;
   * the step loop is a lax.while_loop over all tracks, finished tracks masked; photons, deltas and annihilation photons
-    are returned as per-track counts and energy sums, not as lists;
+    are returned as per-track counts and energy sums, not as lists (lane_step_photons optionally records each step's
+    bremsstrahlung emission only, without photon transport);
   * hard elastic collisions need no thinning: the energy does not change between loss points, so the rate at the
     pre-step energy is exact; annihilation is thinned against its value at half the pre-step energy as in eslab.
 The kernel computes in the dtype of T (shared kernel, mu2efastsim.precision.float_of): float64 from host code,
@@ -343,10 +344,27 @@ class SlabOut(NamedTuple):
     steps: object        # loop iterations used (all tracks)
 
 
-def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni, mott, B, unroll=False):
+class BremsPhotonRecord(NamedTuple):
+    """At most one bremsstrahlung emission per lane per step, not a propagated photon or flux-exit record.
+
+    energy (n,) [MeV], position (n, 3) [mm] and direction (n, 3) are at emission in the slab frame;
+    path (n,) [mm] is the parent's accumulated path at emission. valid (n,) marks emissions; all other
+    entries are zero (including direction). Excludes annihilation photons, delta cascades and showers.
+    """
+    energy: object
+    position: object
+    direction: object
+    path: object
+    valid: object
+
+
+def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni, mott, B, unroll=False,
+               return_photons=False, boundary=None, safety=None):
     """One step of the slab loop as a function of the state dict (used by _run and by callers that embed the slab
     step in their own loop, e.g. with per-lane materials: tab / I from lane_tables). B: per-track fields or None.
-    unroll (opt-in): the fixed-trip loops inside the step are unrolled (same draws, to rounding)."""
+    unroll (opt-in): the fixed-trip loops inside the step are unrolled (same draws, to rounding).
+    return_photons is a static Python flag: False returns the existing state only; True returns
+    (next_state, BremsPhotonRecord), using the same draws and pre-recoil photon direction. No extra RNG draws."""
     field = B is not None
     nel = tab.z.shape[0]
 
@@ -374,7 +392,8 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
         x, d = st["x"], st["d"]
         if msc:
             zl = x[:, 2]
-            trapped = I(tab.rng, T) < jnp.minimum(zl, L - zl)
+            safe = jnp.minimum(zl, L - zl) if safety is None else safety(x)
+            trapped = I(tab.rng, T) < safe
             mcap = jnp.where(trapped, jnp.inf, jnp.minimum(jnp.maximum(emsc.STEP_LAMBDA1 * I(tab.lam1, T),
                                                                         eslab.MSC_MIN_STEP), dsmax))
             sh = jnp.where(trapped, 0.0, I(tab.hard, T))
@@ -383,17 +402,24 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             mcap = free_h = jnp.full(n, jnp.inf, dt)
         limit = jnp.minimum(rem, mcap)
         plan = jnp.minimum(jnp.minimum(free, limit), jnp.minimum(free_a, free_h))
-        if field:
+        if boundary is not None:
+            plan = jnp.where(live, jnp.maximum(plan, 0.0), 0.0)
+        if field or boundary is not None:
             pm = jnp.sqrt(T * (T + 2 * ME))
             q = 1.0 if positron else -1.0
-
+        if boundary is not None:
+            def material_face(xx, uu, smax, on):
+                proposed = jnp.where(on, jnp.maximum(smax, 0.0), 0.0)
+                distance = boundary(xx, uu, pm, q, B, proposed)
+                return jnp.where(on, distance, jnp.inf)
+        if field:
             def hface(xx, uu, smax):
                 return jnp.minimum(_to_plane(xx, uu, pm, q, B, L, smax, unroll),
                                    _to_plane(xx, uu, pm, q, B, 0.0, smax, unroll))
         if msc and field:
             tau = jax.random.uniform(ks[3], (n,), dt)
             leg1 = tau * plan
-            g1 = hface(x, d, leg1)
+            g1 = hface(x, d, leg1) if boundary is None else material_face(x, d, leg1, live)
             out1 = leg1 >= g1
             p1, d1 = _helix(x, d, pm, q, B, jnp.where(out1, g1, leg1))
             tmid = jnp.maximum(T - dedx * (st["pend"] + 0.5 * plan), 0.5 * T)
@@ -402,7 +428,7 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             u = jnp.minimum(expo(ks[4]) * m1, emsc.U_MAX)
             dn = jnp.where(out1[:, None], d1, _rotate_uz(d1, 1 - u, 2 * jnp.pi * jax.random.uniform(ks[5], (n,), dt)))
             leg2 = plan - leg1
-            g2 = hface(p1, dn, leg2)
+            g2 = hface(p1, dn, leg2) if boundary is None else material_face(p1, dn, leg2, live & ~out1)
             out2 = ~out1 & (leg2 >= g2)
             step = jnp.where(out1, g1, jnp.where(out2, leg1 + g2, plan))
             xn, dn = _helix(p1, dn, pm, q, B, jnp.where(out1, 0.0, jnp.where(out2, g2, leg2)))
@@ -413,7 +439,7 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
         elif msc:
             tau = jax.random.uniform(ks[3], (n,), dt)
             leg1 = tau * plan
-            g1 = to_face(x[:, 2], d[:, 2])
+            g1 = to_face(x[:, 2], d[:, 2]) if boundary is None else material_face(x, d, leg1, live)
             out1 = leg1 >= g1
             p1 = x + jnp.where(out1, g1, leg1)[:, None] * d
             tmid = jnp.maximum(T - dedx * (st["pend"] + 0.5 * plan), 0.5 * T)
@@ -422,7 +448,7 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             u = jnp.minimum(expo(ks[4]) * m1, emsc.U_MAX)
             dn = jnp.where(out1[:, None], d, _rotate_uz(d, 1 - u, 2 * jnp.pi * jax.random.uniform(ks[5], (n,), dt)))
             leg2 = plan - leg1
-            g2 = to_face(p1[:, 2], dn[:, 2])
+            g2 = to_face(p1[:, 2], dn[:, 2]) if boundary is None else material_face(p1, dn, leg2, live & ~out1)
             out2 = ~out1 & (leg2 >= g2)
             step = jnp.where(out1, g1, jnp.where(out2, leg1 + g2, plan))
             xn = p1 + jnp.where(out1, 0.0, jnp.where(out2, g2, leg2))[:, None] * dn
@@ -431,13 +457,13 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             sub = (free_h < jnp.minimum(jnp.minimum(free, limit), free_a)) | (mcap < jnp.minimum(other, free_h))
             apply = left | ~sub
         elif field:
-            g = hface(x, d, plan)
+            g = hface(x, d, plan) if boundary is None else material_face(x, d, plan, live)
             left = g <= plan
             step = jnp.where(left, g, plan)
             xn, dn = _helix(x, d, pm, q, B, step)
             apply = jnp.ones(n, bool)
         else:
-            g = to_face(x[:, 2], d[:, 2])
+            g = to_face(x[:, 2], d[:, 2]) if boundary is None else material_face(x, d, plan, live)
             left = g <= plan
             step = jnp.where(left, g, plan)
             xn, dn = x + step[:, None] * d, d
@@ -534,8 +560,15 @@ def _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, positron, msc, anni
             ean = jnp.where(low, ean + 2 * ME, ean)
         Tn = jnp.where(low, 0.0, Tn)
         stopped = stopped | low
-        return dict(T=Tn, d=dn, x=xn, path=path, pend=pend, cont=cont, stopped=stopped, exited=exited, annih=annih,
-                    nph=nph, eph=eph, nde=nde, ede=ede, nan=nan, ean=ean, it=st["it"] + 1)
+        next_state = dict(T=Tn, d=dn, x=xn, path=path, pend=pend, cont=cont, stopped=stopped, exited=exited, annih=annih,
+                          nph=nph, eph=eph, nde=nde, ede=ede, nan=nan, ean=ean, it=st["it"] + 1)
+        if return_photons:
+            zero = jnp.zeros((n,), dt)
+            zero3 = jnp.zeros((n, 3), dt)
+            photons = BremsPhotonRecord(jnp.where(brem, kph, zero), jnp.where(brem[:, None], xn, zero3),
+                                        jnp.where(brem[:, None], dg, zero3), jnp.where(brem, path, zero), brem)
+            return next_state, photons
+        return next_state
     return body
 
 
@@ -750,11 +783,43 @@ def lane_state(T, d, z0, length, positron=False, annihilation=True):
                 ean=jnp.where(stopped, 2 * ME, 0.0).astype(dt) if anni else zero, it=jnp.int32(0))
 
 
-def lane_step(key, lt, mi, st, B=None, positron=False, msc=True, annihilation=True, mott=None, unroll=False):
+def lane_step(key, lt, mi, st, B=None, positron=False, msc=True, annihilation=True, mott=None, unroll=False,
+              *, boundary=None, safety=None):
     """One slab step for every lane of the state dict st (lane_state), lane j in layer type mi[j] of the LaneTables
     lt, with per-lane constant fields B (n, 3) [T] in the slab frame or None; finished lanes (stopped or exited) are
     left as they are. Traceable (call inside a jitted loop); the random stream is key folded with st["it"]. unroll
-    (opt-in): fixed-trip loops unrolled (fewer device launches per step on a GPU)."""
+    (opt-in): fixed-trip loops unrolled (fewer device launches per step on a GPU).
+
+    Optional keyword-only boundary and safety must be supplied together; their complete-material contract is
+    identical to lane_step_photons. No photon record is allocated. Omitting both retains the slab geometry.
+    """
+    if (boundary is None) != (safety is None):
+        raise ValueError("lane_step: boundary and safety must be supplied together")
+    return _lane_step(key, lt, mi, st, B, positron, msc, annihilation, mott, unroll, False, boundary, safety)
+
+
+def lane_step_photons(key, lt, mi, st, B=None, positron=False, msc=True, annihilation=True, mott=None, unroll=False,
+                      *, boundary=None, safety=None):
+    """lane_step with a fixed-shape bremsstrahlung-only emission record: (next_state, BremsPhotonRecord).
+
+    Traceable inside jitted loops, with the same arguments, random keys and next state as lane_step. The record
+    contains at most one photon per lane: its energy, emission position, pre-recoil direction, parent path and
+    valid mask. Finished lanes and non-emitting steps have invalid, zero records (direction is also zero).
+    This does not record annihilation photons or delta cascades, propagate a shower, or report flux at an exit.
+
+    Optional keyword-only boundary(x, d, p, q, B, smax) replaces every leg's axial query with the earliest
+    complete material exit in [0, smax], or inf. safety(x) replaces planar MSC trapping distance; both hooks
+    must be supplied together. Hooks are deterministic, vectorized and JAX-traceable. B is None for straight
+    legs, p is the leg momentum and q is +/-1. Inactive/completed legs receive zero proposed paths.
+    """
+    if (boundary is None) != (safety is None):
+        raise ValueError("lane_step_photons: boundary and safety must be supplied together")
+    return _lane_step(key, lt, mi, st, B, positron, msc, annihilation, mott, unroll, True, boundary, safety)
+
+
+def _lane_step(key, lt, mi, st, B, positron, msc, annihilation, mott, unroll, return_photons,
+               boundary=None, safety=None):
+    """Shared lane setup for the state-only and bremsstrahlung-recording forms of the same slab step."""
     dt = dprec.float_of(st["T"])
     tab = Tables(*(v if isinstance(v, float) else _Lanes(jnp.asarray(v, dt), mi) for v in lt.tab))
     mc = eloss_jax.MatConsts(*(jnp.asarray(v, dt)[mi] for v in lt.mc))
@@ -763,7 +828,7 @@ def lane_step(key, lt, mi, st, B=None, positron=False, msc=True, annihilation=Tr
     I = lambda tabv, T: _interp_lanes(tabv, tab.lnt0, tab.dlnt, T)
     body = _slab_body(key, tab, mc, I, n, dt, L, tcut, kcut, dsmax, bool(positron), bool(msc),
                       bool(positron and annihilation), emsc.MOTT if mott is None else mott,
-                      None if B is None else jnp.asarray(B, dt), unroll)
+                      None if B is None else jnp.asarray(B, dt), unroll, return_photons, boundary, safety)
     return body(st)
 
 

@@ -25,6 +25,7 @@ and the test tooling of all four repositories. The detector stages import it; th
 |---|---|---|
 | energy loss and scattering | `eloss`, `eloss_jax`, `materials`, `transport` | CRV and tracker transport, beam (`eloss_jax`) |
 | world and crossings | `world`, `worldcensus`, `crossings` | CRV and tracker stage-C transport |
+| detector-independent geometry kernels | `geometry/` (`annulus_jax`, explicitly imported JAX backend) | finite-material transport callers; detector navigation remains stage-owned |
 | tables and comparisons | `tables`, `match`, `stats`, `plots` | every fast-vs-stock comparison |
 | CRY cosmic generator | `cry_native`, `cry_device`, `cosmic_cry`, `cry_tables`, `cry_validate`, `cry_receipts` | CRV `runchain --gen native|device` (opt-in) |
 | public files over HTTP | `cvmfsget` | geometry and conditions on hosts without a CVMFS mount |
@@ -43,3 +44,21 @@ Some CRV-specific kit task code still lives in `endpoints/`; it is being moved t
 - Inputs are Mu2e-internal and never committed; `inputs` verifies a release against a checksum manifest.
 - One Mu2eBO point = one job; tasks that read Fermilab-resident inputs in place run only on EAF, other tasks stream
   them into node memory and delete them at exit, and the kit refuses results without the deletion record.
+
+## Geometry and transport contracts
+
+`geometry/` owns detector-independent kernels; importing its namespace does not
+load JAX. Detector stages own layout parameters, frame transforms, identity and
+vacuum/material handoffs. The restricted `geometry.annulus_jax` solver supports
+straight and axial-field annular queries, not arbitrary-field navigation.
+Unsupported/unresolved results are explicit failures (`supported=False`, NaN),
+never clear paths (infinity); callers must resolve them before committing physics.
+
+Both state-only `eslab_jax.lane_step` and `lane_step_photons` expose paired
+keyword-only boundary/safety callbacks on the same transport path. The state-only
+specialization does not construct photon records; absent hooks preserve slab
+behavior and RNG semantics. Hooks and recording choices specialize JAX tracing;
+callbacks must be deterministic and cover the complete material volume on every
+actual leg. `electron_slab` remains unchanged. See [geometry-kernels.md](geometry-kernels.md)
+and [photon-records.md](photon-records.md) for supported domains and contracts.
+Component tests do not establish integrated detector or Geant4 physics agreement.
