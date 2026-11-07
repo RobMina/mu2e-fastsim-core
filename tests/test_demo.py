@@ -37,7 +37,7 @@ def fake(shift=0.0, fail=()):
         log.write_text("synthetic")
         if chain in fail:
             return 6, "", 0.1
-        ref = demo.REFERENCES[chain].value * (1 + shift)
+        ref = (demo.REFERENCES[chain].value or 0.7) * (1 + shift)
         n = int(cmd[cmd.index("--n" if chain != "crv" else "--max-events") + 1])
         if chain == "beam":
             d = Path(cmd[cmd.index("--out") + 1]); d.mkdir(parents=True)
@@ -55,14 +55,19 @@ def fake(shift=0.0, fail=()):
 
 def test_references_are_filled():
     for name, ref in demo.REFERENCES.items():
-        assert ref.value > 0 and ref.error > 0 and ref.source, name
+        assert ref.source, name
+        if ref.value is None:
+            assert name == "ce", f"only the CE reference may be pending, not {name}"
+        else:
+            assert ref.value > 0 and ref.error > 0, name
 
 
 def test_all_chains_pass_at_the_reference(release, capsys):
     run = fake()
     assert demo.main([], runner=run) == 0
     out = capsys.readouterr().out
-    assert out.count(" ok ") == 3 and "reference" in out
+    pending = sum(r.value is None for r in demo.REFERENCES.values())
+    assert out.count(" ok ") == 3 - pending and out.count("reference pending") == pending
     s = json.loads((release / "data/demo/demo_summary.json").read_text())
     assert s["passed"] and [r["chain"] for r in s["chains"]] == ["beam", "ce", "crv"]
     assert {int(c[c.index("--n") + 1]) for c in run.calls if "--n" in c} == {20000, 2000}
@@ -77,6 +82,7 @@ def test_quick_uses_a_quarter(release):
 
 def test_outside_tolerance_and_failed_chain(release, capsys):
     assert demo.main(["--only", "beam"], runner=fake(shift=0.5)) == 1
+    assert demo.main(["--only", "crv"], runner=fake(shift=0.5)) == 1
     assert "OUTSIDE" in capsys.readouterr().out
     assert demo.main(["--only", "ce"], runner=fake(fail=("ce",))) == 3
 

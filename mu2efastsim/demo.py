@@ -43,7 +43,7 @@ CRV_FILES = ("crv_fastsim/tier1b_strict_v5/library.root", "crv_fastsim/geometry/
 
 @dataclass(frozen=True)
 class Reference:
-    value: float
+    value: float | None        # None: not measured yet; the line is printed without a pass/fail verdict
     error: float
     source: str
 
@@ -52,7 +52,7 @@ class Reference:
 REFERENCES = {
     "beam": Reference(0.35919, 0.00148, "Geant4 DS stage on all 105,350 muons of the table (docs/validation.md); "
                       "the fast chain gives 0.35834"),
-    "ce": Reference(0.0, 0.0, "fast chain, 100,000 electrons from the same stops (QUICKSTART.md)"),
+    "ce": Reference(None, 0.0, "fast chain on 40,000 electrons from the same stops (pending)"),
     "crv": Reference(0.05822, 0.00108, "stock chain (Geant4 + digi + reco) on all 50,000 events of the same shard, "
                      "2,911 clusters (crv_fastsim/v2_fastC_v1/ref.001400_00000011.root); the fast chain gives 0.0576"),
 }
@@ -157,6 +157,11 @@ def main(argv=None, runner: Callable = run_chain) -> int:
             worst = 3
             continue
         v, e, size = headline(c, out, stdout)
+        if ref.value is None:
+            rows.append(dict(chain=c, value=v, stat_error=e, sample=size, reference=None, passed=None,
+                             seconds=round(sec, 1), reference_source=ref.source))
+            print(f"{c:5s} {LABELS[c]:44s} {v:.4f} +- {e:.4f}  reference pending  ({size:,} {UNITS[c]}, {sec:.0f} s)")
+            continue
         tol = TOLERANCE_SIGMA * math.hypot(e, ref.error)
         ok = abs(v - ref.value) <= tol
         worst = max(worst, 0 if ok else 1)
