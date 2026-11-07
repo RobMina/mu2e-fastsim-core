@@ -1,0 +1,25 @@
+# Export retained reference products only; no G4, digitization, geometry service or reconstruction.
+#include "Offline/fcl/minimalMessageService.fcl"
+process_name: dumpSavedG4
+source: { module_type: RootInput }
+services: {
+  message: @local::default_message
+  TFileService: { fileName: "saved_g4.root" }
+}
+physics: {
+  analyzers: {
+    dump: {
+      module_type: SavedG4TableDumper
+      simParticles: [ "compressDetStepMCs::Primary" ]
+      genParticles: [ "compressDetStepMCs::Primary", "cosmicTimeOffset::Primary" ]
+      crvSteps: [ "compressDetStepMCs::Primary" ]
+      stepPoints: [ "compressDetStepMCs:virtualdetector:Primary" ]
+      trajectories: [ "compressDetStepMCs::Primary" ]
+      surfaces: [ "compressDetStepMCs::Primary" ]
+      status: [ "g4run::Primary" ]
+      allowMissing: false
+    }
+  }
+  extract: [ dump ]
+  end_paths: [ extract ]
+}

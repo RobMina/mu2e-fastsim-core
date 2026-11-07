@@ -25,6 +25,16 @@ repository holds code only: no Mu2e-internal conditions, tables, data or results
 
 Details: [`docs/validation.md`](docs/validation.md), [`docs/limitations.md`](docs/limitations.md).
 
+## Geometry-portable interaction libraries (experimental)
+
+The opt-in [`component_response`](docs/component-response.md) prototype replays complete local interactions in
+rigidly placed finite components: correlated deposits, particle ancestry and first-boundary exits. It includes
+field-free vacuum handoff tests for translated/rotated components, not a trained physics bank or production
+navigator. Existing nominal-detector shower templates cannot be assumed portable merely because primary transport
+accepts a new geometry. No current simulation default uses this prototype.
+The opt-in [`saved G4 exporter`](art/README.md) recovers retained trajectories, raw step states and ancestry from
+existing art files without rerunning simulation; extraction does not imply complete boundary-response coverage.
+
 ## Quickstart
 
 ```bash

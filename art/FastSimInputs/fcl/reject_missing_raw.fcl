@@ -1,0 +1,3 @@
+# Negative smoke test: a missing configured raw collection must fail extraction.
+#include "FastSimInputs/fcl/dump_saved_g4.fcl"
+physics.analyzers.dump.stepPoints: [ "g4run:CRV:Primary" ]

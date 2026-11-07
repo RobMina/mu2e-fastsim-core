@@ -19,6 +19,14 @@ and the test tooling of all four repositories. The detector stages import it; th
    crv (stage 1)            tracker (stage 2)          beam (umbrella beam/)
 ```
 
+## Component-local interaction replay (opt-in)
+
+`component_response` provides an experimental detector-independent entrance/interaction/exit interface:
+proper rigid frames, complete correlated local trials, receiving-volume mapping and identity-preserving first-exit
+handoff. Its small box navigator is explicitly field-free vacuum-only; material/field navigation remains with callers.
+No trained bank or production chain uses it yet. See [component-response.md](component-response.md) for support limits,
+record semantics and the staged path from synthetic tests to geometry-variation validation.
+
 ## Who owns what
 
 | Area | Modules | Used by |

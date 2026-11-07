@@ -1,0 +1,10 @@
+# Missing-product inventory only: absent raw collections are unknown, never zero-response trials.
+#include "FastSimInputs/fcl/dump_saved_g4.fcl"
+physics.analyzers.dump.stepPoints: [
+  "compressDetStepMCs:virtualdetector:Primary",
+  "g4run:CRV:Primary",
+  "g4run:tracker:Primary",
+  "g4run:protonabsorber:Primary",
+  "g4run:stoppingtarget:Primary"
+]
+physics.analyzers.dump.allowMissing: true

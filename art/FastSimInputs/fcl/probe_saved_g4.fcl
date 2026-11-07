@@ -1,0 +1,7 @@
+# Inventory retained products using the existing art output module; no simulation runs.
+#include "Offline/fcl/minimalMessageService.fcl"
+process_name: probeSavedG4
+source: { module_type: RootInput }
+services: { message: @local::default_message }
+outputs: { products: { module_type: DataProductDump wantResolvedOnly: false } }
+physics: { inspect: [ products ] end_paths: [ inspect ] }
