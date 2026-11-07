@@ -37,7 +37,7 @@ def fake(shift=0.0, fail=()):
         log.write_text("synthetic")
         if chain in fail:
             return 6, "", 0.1
-        ref = (demo.REFERENCES[chain].value or 0.7) * (1 + shift)
+        ref = demo.REFERENCES[chain].value * (1 + shift)
         n = int(cmd[cmd.index("--n" if chain != "crv" else "--max-events") + 1])
         if chain == "beam":
             d = Path(cmd[cmd.index("--out") + 1]); d.mkdir(parents=True)
@@ -56,18 +56,14 @@ def fake(shift=0.0, fail=()):
 def test_references_are_filled():
     for name, ref in demo.REFERENCES.items():
         assert ref.source, name
-        if ref.value is None:
-            assert name == "ce", f"only the CE reference may be pending, not {name}"
-        else:
-            assert ref.value > 0 and ref.error > 0, name
+        assert ref.value > 0 and ref.error > 0, name
 
 
 def test_all_chains_pass_at_the_reference(release, capsys):
     run = fake()
     assert demo.main([], runner=run) == 0
     out = capsys.readouterr().out
-    pending = sum(r.value is None for r in demo.REFERENCES.values())
-    assert out.count(" ok ") == 3 - pending and out.count("reference pending") == pending
+    assert out.count(" ok ") == 3
     s = json.loads((release / "data/demo/demo_summary.json").read_text())
     assert s["passed"] and [r["chain"] for r in s["chains"]] == ["beam", "ce", "crv"]
     assert {int(c[c.index("--n") + 1]) for c in run.calls if "--n" in c} == {20000, 2000}
@@ -85,6 +81,21 @@ def test_outside_tolerance_and_failed_chain(release, capsys):
     assert demo.main(["--only", "crv"], runner=fake(shift=0.5)) == 1
     assert "OUTSIDE" in capsys.readouterr().out
     assert demo.main(["--only", "ce"], runner=fake(fail=("ce",))) == 3
+
+
+def test_ce_headline_ignores_other_output():
+    out = 'jax: {"not": "it"}\n' + json.dumps({"n": 10, "fates": {"plane": 7}}, indent=1) + "\n"
+    v, e, n = demo.headline("ce", Path("/unused"), out)
+    assert (v, n) == (0.7, 10) and e > 0
+    with pytest.raises(ValueError):
+        demo.headline("ce", Path("/unused"), "no json here")
+
+
+def test_only_checks_the_selected_chains_files(release, capsys):
+    (release / "release" / demo.CRV_GEN).unlink()
+    assert demo.main(["--only", "beam"], runner=fake()) == 0
+    assert demo.main(["--only", "crv"], runner=fake()) == 2
+    assert "demo skipped: missing" in capsys.readouterr().out
 
 
 def test_skips_without_release(monkeypatch, capsys):

@@ -16,7 +16,8 @@ run as a subprocess on the CPU (JAX_PLATFORMS=cpu unless set):
 ref^2), stat being the value's counting error. The field maps and the beam geometry come from CVMFS (or
 $BEAMFS_OFFLINE_ROOT / $BEAMFS_MAPS, as `python3 -m beamfastsim.stage` prints them). Writes <out>/demo_summary.json.
 Exit 0 every line passes, 1 a line is outside its tolerance, 2 inputs or settings missing (nothing run), 3 a chain
-failed. A smoke test of the setup, not a validation: the references are in docs/validation.md and QUICKSTART.md.
+failed. A smoke test of the setup, not a validation: the references are listed in the umbrella's QUICKSTART.md,
+section "The demo", and measured in its docs/validation.md.
 """
 from __future__ import annotations
 
@@ -43,14 +44,15 @@ CRV_FILES = ("crv_fastsim/tier1b_strict_v5/library.root", "crv_fastsim/geometry/
 
 @dataclass(frozen=True)
 class Reference:
-    value: float | None        # None: not measured yet; the line is printed without a pass/fail verdict
+    value: float
     error: float
     source: str
 
 
-# reference values (QUICKSTART.md "Demo references"): sample, how measured, and the error that enters the tolerance
+# reference values (umbrella QUICKSTART.md, "The demo"): sample, how measured, and the error that enters the tolerance
 REFERENCES = {
-    "beam": Reference(0.35919, 0.00148, "Geant4 DS stage on all 105,350 muons of the table (docs/validation.md); "
+    "beam": Reference(0.36038, 0.00148, "Geant4 DS stage on all 105,350 muons of the table, clean stock rerun "
+                      "(docs/validation.md; the first reference job, which stopped at event 105,100, gave 0.35919); "
                       "the fast chain gives 0.35834"),
     "ce": Reference(0.72598, 0.00223, "fast chain (JAX backend) on 40,000 electrons from the same stops, seed 2: "
                     "29,039 reach the plane; the CE chain agrees with Geant4 CeEndpoint (docs/validation.md)"),
@@ -89,10 +91,34 @@ def commands(inputs: str, out: Path, n: dict) -> dict:
     }
 
 
-def needed_files(inputs: str) -> list:
+def needed_files(inputs: str, chains=tuple(SAMPLES)) -> list:
+    """Release and CVMFS files the selected chains read."""
     off, maps = _offline_and_maps()
-    return ([f"{inputs}/{BEAM_TABLE}", f"{inputs}/{CRV_GEN}"] + [f"{inputs}/{f}" for f in CRV_FILES]
-            + [f"{maps}/DSMap.header", f"{maps}/TSdMap.header", f"{off}/Offline/Mu2eG4/geom/geom_common.txt"])
+    files = []
+    if {"beam", "ce"} & set(chains):
+        files += [f"{inputs}/{BEAM_TABLE}", f"{maps}/DSMap.header", f"{maps}/TSdMap.header",
+                  f"{off}/Offline/Mu2eG4/geom/geom_common.txt"]
+    if "crv" in chains:
+        files += [f"{inputs}/{CRV_GEN}"] + [f"{inputs}/{f}" for f in CRV_FILES]
+    return files
+
+
+def last_json_object(text: str, key: str) -> dict:
+    """The last JSON object in `text` that starts a line and holds `key` (the entry point may log other lines first)."""
+    dec, found, pos = json.JSONDecoder(), None, 0
+    for line in text.splitlines(keepends=True):
+        body = line.lstrip()
+        if body.startswith("{"):
+            try:
+                obj, _ = dec.raw_decode(text, pos + len(line) - len(body))
+            except ValueError:
+                obj = None
+            if isinstance(obj, dict) and key in obj:
+                found = obj
+        pos += len(line)
+    if found is None:
+        raise ValueError(f"no JSON object with {key!r} in the output")
+    return found
 
 
 def headline(chain: str, out: Path, stdout: str) -> tuple:
@@ -101,7 +127,7 @@ def headline(chain: str, out: Path, stdout: str) -> tuple:
         m = json.loads((out / "beam" / "metrics.json").read_text())
         return float(m["stop_frac"]), float(m["stop_frac_err"]), int(m["muons"])
     if chain == "ce":
-        s = json.loads(stdout[stdout.index("{"):])
+        s = last_json_object(stdout, "fates")
         n, k = int(s["n"]), int(s["fates"]["plane"])
         f = k / n
         return f, math.sqrt(f * (1 - f) / n), n
@@ -136,7 +162,7 @@ def main(argv=None, runner: Callable = run_chain) -> int:
         inputs = os.environ.get("M2FS_INPUTS")
         if not inputs:
             raise Missing("M2FS_INPUTS is not set: source a site preset (site/*.env) after your access request")
-        missing = [f for f in needed_files(inputs) if not os.path.isfile(f)]
+        missing = [f for f in needed_files(inputs, chains) if not os.path.isfile(f)]
         if missing:
             raise Missing("missing or unreadable: " + ", ".join(missing[:4]) + (" ..." if len(missing) > 4 else "")
                           + " (input release, or CVMFS; see QUICKSTART.md)")
@@ -158,11 +184,6 @@ def main(argv=None, runner: Callable = run_chain) -> int:
             worst = 3
             continue
         v, e, size = headline(c, out, stdout)
-        if ref.value is None:
-            rows.append(dict(chain=c, value=v, stat_error=e, sample=size, reference=None, passed=None,
-                             seconds=round(sec, 1), reference_source=ref.source))
-            print(f"{c:5s} {LABELS[c]:44s} {v:.4f} +- {e:.4f}  reference pending  ({size:,} {UNITS[c]}, {sec:.0f} s)")
-            continue
         tol = TOLERANCE_SIGMA * math.hypot(e, ref.error)
         ok = abs(v - ref.value) <= tol
         worst = max(worst, 0 if ok else 1)
