@@ -52,7 +52,8 @@ class Reference:
 REFERENCES = {
     "beam": Reference(0.35919, 0.00148, "Geant4 DS stage on all 105,350 muons of the table (docs/validation.md); "
                       "the fast chain gives 0.35834"),
-    "ce": Reference(None, 0.0, "fast chain on 40,000 electrons from the same stops (pending)"),
+    "ce": Reference(0.72598, 0.00223, "fast chain (JAX backend) on 40,000 electrons from the same stops, seed 2: "
+                    "29,039 reach the plane; the CE chain agrees with Geant4 CeEndpoint (docs/validation.md)"),
     "crv": Reference(0.05822, 0.00108, "stock chain (Geant4 + digi + reco) on all 50,000 events of the same shard, "
                      "2,911 clusters (crv_fastsim/v2_fastC_v1/ref.001400_00000011.root); the fast chain gives 0.0576"),
 }
