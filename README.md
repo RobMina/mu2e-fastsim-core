@@ -65,7 +65,7 @@ Docs: [`architecture.md`](docs/architecture.md), [`running.md`](docs/running.md)
 [`native-cry.md`](docs/native-cry.md), [`device-cry.md`](docs/device-cry.md), and the endpoint contracts
 [`endpoint-admission.md`](docs/endpoint-admission.md), [`slurm-recovery.md`](docs/slurm-recovery.md),
 [`artifact-bindings.md`](docs/artifact-bindings.md), [`geometry-capabilities.md`](docs/geometry-capabilities.md),
-[`tracker-point.md`](docs/tracker-point.md).
+[`tracker-point.md`](docs/tracker-point.md); the warm-rate timer [`bench.md`](docs/bench.md).
 
 ## Site configuration
 
