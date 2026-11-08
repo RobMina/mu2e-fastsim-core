@@ -115,3 +115,97 @@ def test_cli_with_prepare_and_kwargs(tmp_path, monkeypatch, capsys):
 def test_cli_rejects_non_object_kwargs(tmp_path):
     with pytest.raises(SystemExit):
         bench.main(["json:dumps", "--events", "1", "--kwargs", "[1]"])
+
+
+def test_fresh_inputs_draw_every_pass_outside_the_clock():
+    drawn, seen = [], []
+
+    def prepare(n, seed=None):
+        drawn.append(seed)
+        return [seed] * n
+
+    r = bench.run(lambda x: seen.append(list(x)), 4, passes=3, clock=fake_clock([5.0, 1.0, 1.0]), label="t",
+                  inputs=bench.fresh_inputs(prepare, 4, seed=7), seeds=[7, 8, 9])
+    assert drawn == [7, 8, 9] and seen == [[7] * 4, [8] * 4, [9] * 4]
+    assert r["pass_s"] == [5.0, 1.0, 1.0] and r["setup_s"] == pytest.approx(4.0)
+    assert r["inputs"] == "fresh" and r["seeds"] == [7, 8, 9]
+    assert len(r["prepare_pass_s"]) == 3 and r["prepare_s"] == pytest.approx(sum(r["prepare_pass_s"]))
+
+
+def test_fixed_inputs_stay_the_default():
+    r = bench.run(lambda n: n, 10, passes=2, args=(10,), clock=fake_clock([2.0, 1.0]), label="t")
+    assert r["inputs"] == "fixed" and r["seeds"] is None and r["prepare_pass_s"] is None
+
+
+def test_fresh_inputs_refuse_a_prepare_without_seed():
+    assert bench.accepts_seed(lambda n, seed=1: n) and bench.accepts_seed(lambda n, **kw: n)
+    assert not bench.accepts_seed(lambda n: n) and not bench.accepts_seed(lambda n, *, other=1: n)
+    with pytest.raises(bench.FreshInputError, match="takes no seed"):
+        bench.fresh_inputs(lambda n: list(range(n)), 3)
+
+
+def test_fresh_inputs_refuse_a_cached_input():
+    cached = [1, 2, 3]
+    inputs = bench.fresh_inputs(lambda n, seed=None: cached, 3)
+    with pytest.raises(bench.FreshInputError, match="same object"):
+        bench.run(lambda x: x, 3, passes=3, label="t", inputs=inputs)
+
+
+TOYFLOW = textwrap.dedent("""\
+    SEEN = []
+    def load(n):
+        return list(range(n))
+    def load_seeded(n, seed=0):
+        return [seed] * n
+    def step(events, scale=1):
+        SEEN.append(list(events))
+        return sum(events) * scale
+    """)
+
+
+def test_cli_fresh_inputs(tmp_path, monkeypatch, capsys):
+    (tmp_path / "toyfresh.py").write_text(TOYFLOW)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    out = tmp_path / "bench.json"
+    rc = bench.main(["toyfresh:step", "--events", "3", "--prepare", "toyfresh:load_seeded", "--fresh-inputs",
+                     "--seed", "4", "--device-label", "unit test", "--out", str(out)])
+    assert rc == 0
+    import toyfresh
+    assert toyfresh.SEEN == [[4] * 3, [5] * 3, [6] * 3]
+    r = json.loads(out.read_text())
+    assert r["inputs"] == "fresh" and r["seeds"] == [4, 5, 6] and len(r["prepare_pass_s"]) == 3
+    assert "fresh inputs (seeds 4, 5, 6)" in capsys.readouterr().out
+
+
+def test_cli_fresh_inputs_fail_loudly(tmp_path, monkeypatch, capsys):
+    (tmp_path / "toyrefuse.py").write_text(TOYFLOW)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    out = tmp_path / "bench.json"
+    rc = bench.main(["toyrefuse:step", "--events", "3", "--prepare", "toyrefuse:load", "--fresh-inputs",
+                     "--device-label", "unit test", "--out", str(out)])
+    import toyrefuse
+    assert rc == 2 and toyrefuse.SEEN == [] and not out.exists()
+    assert "toyrefuse:load takes no seed" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        bench.main(["toyrefuse:step", "--events", "3", "--fresh-inputs"])
+
+
+def test_jax_compiles_counted_per_pass():
+    """Fixed inputs recompile nothing after pass 1; new shapes every pass compile in every pass."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    def step(x):
+        return jnp.cumsum(jnp.sin(x)) * 2.0
+
+    fixed = bench.run(step, 8, passes=3, args=(jnp.ones(8),), label="t")
+    assert fixed["compile_source"] == "jax.monitoring"
+    assert [c["backend_compiles"] for c in fixed["compile_per_pass"][1:]] == [0, 0]
+    assert fixed["compile_per_pass"][0]["backend_compiles"] >= 1
+
+    fresh = bench.run(step, 8, passes=3, label="t", seeds=[1, 2, 3],
+                      inputs=bench.fresh_inputs(lambda n, seed: jnp.ones(n + 10 * seed), 8))
+    for counter in fresh["compile_per_pass"]:
+        assert counter["backend_compiles"] >= 1 and counter["backend_compile_s"] > 0
+        assert counter["traces"] >= 1
+    assert "JAX compiles per pass" in bench.format_report(fresh)
