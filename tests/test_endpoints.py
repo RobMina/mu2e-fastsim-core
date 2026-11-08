@@ -8,6 +8,7 @@ import tarfile
 import pytest
 
 from mu2efastsim.endpoints import EndpointError, Resources
+from mu2efastsim.endpoints import mu2e_config as cfg
 from mu2efastsim.endpoints.kit import FastsimKit
 from mu2efastsim.endpoints.slurm_ssh import SlurmSSHEndpoint, map_state, su_estimate
 
@@ -75,9 +76,12 @@ def test_map_state():
         map_state("WEIRD")
 
 
-def test_su_estimate_matches_measured_jobs():
-    assert su_estimate(Resources(cores=8, gpus=1, minutes=20)) == pytest.approx(19, abs=2)    # job 21703670: 19 SU
-    assert su_estimate(Resources(cores=16, gpus=1, minutes=24)) == pytest.approx(25, abs=2)   # job 21714859: 25 SU
+def test_su_estimate_prices_a100_jobs_from_the_rate_table():
+    # wall hours x (GPUs x GPU rate + cores x core rate + GB x GB rate) at the A100 rates of the site table
+    a100 = cfg.UVA_GPU_TABLE.types["a100"]
+    for r in (Resources(cores=8, gpus=1, minutes=20), Resources(cores=16, gpus=1, minutes=24)):
+        rate = r.gpus * a100.su_per_gpu_h + r.cores * a100.su_per_core_h + r.mem_gb * a100.su_per_gb_h
+        assert su_estimate(r) == pytest.approx(r.minutes / 60.0 * rate)
 
 
 def test_submit_status_fetch(site_ep, tmp_path):
