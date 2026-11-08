@@ -232,7 +232,7 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
         return pmf, cdf + pmf, k + above, ion
 
     pmf0 = jnp.exp(-lams)
-    _, _, kk, ion = lax.fori_loop(0, K, body, (pmf0, pmf0, jnp.zeros((3,) + sh, jnp.int32), jnp.zeros(sh, dt)),
+    _, _, kk, ion = lax.fori_loop(0, K, body, (pmf0, pmf0, jnp.zeros((3,) + sh, jnp.int32), jnp.zeros(sh)),
                                   **({"unroll": True} if unroll else {}))
     rx = jax.random.uniform(ks[4], (2,) + sh, dt)
     loss = jnp.where(kk[0] > 0, ((kk[0] + 1) - 2 * rx[0]) * e1, 0.0)
@@ -242,7 +242,8 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
     loss = loss + jnp.where(s23 > 0, _gauss_clipped(jax.random.uniform(ks[6], sh, dt), eav3,
                                                     jnp.where(s23 > 0, s23, 0.0)), 0.0)
     out = jnp.where(gs, x_gs, jnp.where(gm, x_gm, mean))
-    return jnp.where(u, loss * scaling, out)
+    # the ionisation sum above accumulates in float64 (as before); the result is returned in the input dtype
+    return jnp.where(u, loss * scaling, out).astype(dt)
 
 
 def sample_loss_electron(key, mat, T, length, cut, mean, positron=False, K=K_POISSON, unroll=False):

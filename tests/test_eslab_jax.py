@@ -26,10 +26,13 @@ AL, W = M.BY_NAME["G4_Al"], M.BY_NAME["G4_W"]
 CUTS = {"G4_Al": (0.03411, 0.00099), "G4_W": (0.0814923, 0.00770222)}
 
 # eloss_jax.sample_loss for muons over the grid of _muon_hashes, computed with the sampler before the electron
-# options were added (JAX 0.11.2 CPU); float64 results depend on the CPU's math kernels, so one hash per platform seen
+# options were added (JAX 0.11.2 CPU); float64 results depend on the CPU's math kernels, so one hash per platform seen.
+# float32: the sampler now returns the input dtype. The earlier pinned value (e41dc54f...) hashed the float64 arrays
+# that float32 inputs used to return; the values are unchanged up to that final rounding (the new float32 outputs
+# equal the old float64 outputs rounded to float32 over this whole grid), so the hash below is of the same samples.
 MUON_SHA256 = {"float64": {"5a43f3ec712cf4a397270126c9aad3c900e60b16de04546cdcf2d898d9ab6ff2",    # arm64
                            "31ac62093ec331e1c5058b8b1612b4812ea02ec683dca0654f0d11d0842c6e99"},   # x86-64
-               "float32": {"e41dc54f335924dbc4d600c6d88c3637f302c5676f9b91f3ddd39835150ecb33"}}
+               "float32": {"4915c2e46046d85676b1f63354fe26cbba12d1c4884ef8063238a5701be97496"}}
 
 
 def _muon_hashes():
