@@ -73,6 +73,7 @@ def test_sampled_spectrum_follows_the_cross_section():
     assert chi2 / (edges.size - 2) < 2.0
 
 
+@pytest.mark.slow
 def test_discrete_plus_continuous_loss_is_the_total():
     rng = np.random.default_rng(5)
     mat, T, kc = M.BY_NAME["G4_MYLAR"], 105.0, 0.1
@@ -82,6 +83,7 @@ def test_discrete_plus_continuous_loss_is_the_total():
     assert B.dedx_restricted(mat, T, kc)[0] + above == pytest.approx(total, rel=0.01)
 
 
+@pytest.mark.slow
 def test_multi_element_selection_follows_the_partial_cross_sections():
     rng = np.random.default_rng(7)
     mat, T = M.BY_NAME["G4_MYLAR"], np.full(200_000, 50.0)

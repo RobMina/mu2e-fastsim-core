@@ -61,7 +61,7 @@ def test_electron_options_are_inert_for_muons():
     # explicit muon tmax and gaussian=True reproduce the default call bit for bit
     for dt in (np.float64, np.float32):
         p = np.geomspace(30.0, 5000.0, 64).astype(dt)
-        for mat in (AL, W):
+        for mat in (W,):   # high Z; the options are material-independent (Al runs in the nightly sampler tests)
             c = EJ.consts(mat)
             mass = np.asarray(EJ.MMU, dt)
             tmax = EJ.kinematics(p, mass)[4]
@@ -95,6 +95,7 @@ def test_tables_equal_the_numpy_models_at_the_nodes(positron):
     assert np.all(np.diff(tab.brem_x, axis=1) >= 0) and tab.brem_x.min() >= 0 and tab.brem_x.max() <= 1
 
 
+@pytest.mark.pr_params("True-True")
 @pytest.mark.parametrize("msc", [False, True])
 @pytest.mark.parametrize("positron", [False, True])
 def test_energy_balance_faces_and_dtype(positron, msc):
@@ -116,6 +117,7 @@ def test_energy_balance_faces_and_dtype(positron, msc):
     assert r32.T.dtype == np.float32 and r32.position.dtype == np.float32
 
 
+@pytest.mark.slow
 def test_small_sample_parity_with_numpy():
     # 1 mm Al, 105 MeV e- with msc: medians of loss and exit angle, photon and delta yields within statistics
     n = 20_000
@@ -163,6 +165,7 @@ def test_helix_and_plane_crossing_match_ehelix():
     assert (np.isfinite(sj) == fin).all() and np.allclose(sj[fin], sn[fin], atol=1e-9)
 
 
+@pytest.mark.slow
 def test_start_depth_field_and_compaction_parity_with_numpy():
     # 0.5 mm Al from mid-depth in a 1 T transverse field, 105 MeV e- both ways: fates and loss medians as in NumPy;
     # the compacted run keeps the energy balance and matches NumPy within statistics (uncompacted runs:
@@ -198,6 +201,7 @@ def test_compaction_rejects_nonpositive_or_noninteger_chunks(chunk, monkeypatch)
                          *CUTS["G4_Al"], chunk=chunk)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
 def test_plane_crossings_over_many_revolutions(dtype):
     from mu2efastsim import ehelix
@@ -215,6 +219,7 @@ def test_plane_crossings_over_many_revolutions(dtype):
     assert np.isinf(s[[1, 3]]).all()
 
 
+@pytest.mark.pr_params("float64")
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
 def test_slab_leaves_at_first_face_before_curling_back(dtype):
     from mu2efastsim import ehelix
@@ -233,6 +238,7 @@ def test_slab_leaves_at_first_face_before_curling_back(dtype):
     assert not np.asarray(r.n_photons + r.n_deltas).any()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
 @pytest.mark.parametrize("msc,chunk", [(False, None), (True, np.int64(1))])
 def test_boundary_starts_exit_outward_and_transport_inward(dtype, msc, chunk):
@@ -252,6 +258,7 @@ def test_boundary_starts_exit_outward_and_transport_inward(dtype, msc, chunk):
         assert ((r.position[:, 2] >= -1e-6) & (r.position[:, 2] <= 1.0 + 1e-6)).all()
 
 
+@pytest.mark.pr_params("False-field2-float64")
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
 @pytest.mark.parametrize("msc,field", [(True, None), (True, [0.4, 0.0, 1.0]), (False, [0.0, 1.0, 0.0])])
 def test_lane_step_with_mixed_layer_types_equals_one_slab_call_per_type(dtype, msc, field):
@@ -273,12 +280,23 @@ def test_lane_step_with_mixed_layer_types_equals_one_slab_call_per_type(dtype, m
     Bf = None if field is None else np.broadcast_to(np.asarray(field, float), (n, 3)).astype(dtype)
     key = jax.random.PRNGKey(11)
 
-    @jax.jit
-    def loop(st):
-        def cond(s):
-            return jnp.any(~s["stopped"] & ~s["exited"])
-        return jax.lax.while_loop(cond, lambda s: SJ.lane_step(key, lt, jnp.asarray(mi), s, Bf, msc=msc), st)
-    st = jax.tree_util.tree_map(np.asarray, loop(SJ.lane_state(T, d, z0, lt.length[mi])))
+    def run(unroll):
+        @jax.jit
+        def loop(st):
+            def cond(s):
+                return jnp.any(~s["stopped"] & ~s["exited"])
+            return jax.lax.while_loop(cond, lambda s: SJ.lane_step(key, lt, jnp.asarray(mi), s, Bf, msc=msc,
+                                                                   unroll=unroll), st)
+        return jax.tree_util.tree_map(np.asarray, loop(SJ.lane_state(T, d, z0, lt.length[mi])))
+    st = run(False)
+    if not msc and dtype == np.float64:
+        # the per-PR item also checks unroll identity (test_lane_step_unroll_gives_the_same_draws runs it with msc):
+        # with the field on, every unrolled loop of the step is traced (plane crossing, delta and brems sampling)
+        su = run(True)
+        for k in ("stopped", "exited", "nph", "nde", "it"):
+            assert np.array_equal(st[k], su[k])
+        for k in ("T", "d", "x", "path", "eph", "ede"):
+            assert np.allclose(st[k], su[k], rtol=1e-11, atol=1e-11)
     for m, (mat, L, tc, kc) in enumerate(layers):
         r = jax.tree_util.tree_map(np.asarray, SJ.electron_slab(key, mat, T, d, L, tc, kc, msc=msc,
                                                                 z0=np.full(n, 0.5 * L), field=field))
@@ -292,6 +310,7 @@ def test_lane_step_with_mixed_layer_types_equals_one_slab_call_per_type(dtype, m
             assert np.allclose(a[j], b[j], rtol=tol, atol=tol)
 
 
+@pytest.mark.slow
 def test_lane_step_unroll_gives_the_same_draws():
     # unroll (opt-in) unrolls the fixed-trip loops of the step: same keys and arithmetic, so the same outcomes
     jnp = jax.numpy

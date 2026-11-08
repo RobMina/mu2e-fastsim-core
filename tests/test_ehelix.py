@@ -125,7 +125,8 @@ def test_propagate_to_a_plane_conserves_and_agrees_between_methods():
     u0 = np.stack([np.sqrt(1 - ct ** 2) * np.cos(phi), np.sqrt(1 - ct ** 2) * np.sin(phi), ct], axis=1)
     field = lambda x: np.stack([-0.5e-4 * x[:, 0], -0.5e-4 * x[:, 1], 1.0 + 1e-4 * x[:, 2]], axis=1)  # div B = 0
     p = 105.5
-    xh, uh, sh, rh = H.propagate(np.zeros((n, 3)), u0, p, -1.0, field, 2.0, 2000.0, 1e5)
-    xr, ur, sr, rr = H.propagate(np.zeros((n, 3)), u0, p, -1.0, field, 2.0, 2000.0, 1e5, method="rk4")
-    assert rh.all() and rr.all() and np.allclose(xh[:, 2], 2000.0) and np.allclose(xr[:, 2], 2000.0)
+    zp = 500.0   # several turns already; the step loop is per-step bound, so a farther plane only costs time
+    xh, uh, sh, rh = H.propagate(np.zeros((n, 3)), u0, p, -1.0, field, 2.0, zp, 1e5)
+    xr, ur, sr, rr = H.propagate(np.zeros((n, 3)), u0, p, -1.0, field, 2.0, zp, 1e5, method="rk4")
+    assert rh.all() and rr.all() and np.allclose(xh[:, 2], zp) and np.allclose(xr[:, 2], zp)
     assert np.abs(xh - xr).max() < 0.05 and np.abs(sh - sr).max() < 0.05

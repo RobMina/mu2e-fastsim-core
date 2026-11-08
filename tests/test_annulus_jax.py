@@ -10,14 +10,28 @@ from _annulus_reference import foil_exit
 from mu2efastsim import eslab_jax as SJ
 
 
+# One compiled program per (lane count, entering): every scalar is passed as a traced array (as in production, where
+# they come from lane state) and field=None as the zero field crossing() substitutes for None.
+_CROSSING = jax.jit(A.crossing, static_argnames=("entering",))
+
+
 def query(x, u, *, field=None, p=1., q=1., limit=100., z=0., half=2., inner=1., outer=5.,
           axis=0., entering=False):
     x, u = np.atleast_2d(np.asarray(x, float)), np.atleast_2d(np.asarray(u, float))
     u = u / np.linalg.norm(u, axis=1, keepdims=True)
-    return jax.jit(lambda xx, uu: A.crossing(xx, uu, p, q, field, limit, z, half, inner, outer,
-                                            axis, entering=entering))(jnp.asarray(x), jnp.asarray(u))
+    return traced(x, u, field=field, p=p, q=q, limit=limit, z=z, half=half, inner=inner, outer=outer, axis=axis,
+                  entering=entering)
 
 
+def traced(x, u, *, field, p, q, limit, z=0., half=2., inner=1., outer=5., axis=0., entering=False):
+    n = len(x)
+    lane = lambda v: jnp.broadcast_to(jnp.asarray(v, jnp.float64), (n,))
+    B = jnp.zeros((n, 3), jnp.float64) if field is None else jnp.broadcast_to(jnp.asarray(field, jnp.float64), (n, 3))
+    return _CROSSING(jnp.asarray(x), jnp.asarray(u), lane(p), lane(q), B, lane(limit), lane(z), lane(half),
+                     lane(inner), lane(outer), lane(axis), entering=entering)
+
+
+@pytest.mark.pr_params("x0-u0-2.0-2")
 @pytest.mark.parametrize("x,u,expected,face", [
     ([3., 0., 0.], [0., 0., 1.], 2., 2),
     ([3., 0., 0.], [0., 0., -1.], 2., 1),
@@ -65,6 +79,7 @@ def test_no_hole_and_zero_transverse_motion():
     np.testing.assert_allclose(got.distance, [2.])
 
 
+@pytest.mark.pr_params("x0-u0-1.0-4")
 @pytest.mark.parametrize("x,u,expected,face", [
     ([0., 0., .7], [1., 0., 0.], 1., 4),
     ([6., 0., -.7], [-1., 0., 0.], 1., 3),
@@ -86,6 +101,7 @@ def test_vacuum_chord_across_hole_has_entry_with_equal_endpoint_radii():
     assert got.surface[0] == 3
 
 
+@pytest.mark.pr_params("-1.0")
 @pytest.mark.parametrize("charge", [-1., 1.])
 def test_curved_first_exit_even_after_full_turn_return(charge):
     k = .2
@@ -101,6 +117,7 @@ def test_curved_first_exit_even_after_full_turn_return(charge):
     np.testing.assert_allclose(endpoint, 0., atol=1e-12)
 
 
+@pytest.mark.pr_params("-1.0")
 @pytest.mark.parametrize("charge", [-1., 1.])
 def test_curved_hole_entry_after_exit(charge):
     field = [0., 0., 1. / SJ.K_FIELD]
@@ -209,6 +226,7 @@ def test_random_axial_field_exits_against_circle_intersections(charge):
     np.testing.assert_allclose(got.distance, expected, rtol=2e-11, atol=2e-11)
 
 
+@pytest.mark.pr_params("0.0")
 @pytest.mark.parametrize("field", [0., 1e-18, 1e-12, 1e-6])
 def test_weak_curvature_limit_near_rim(field):
     got = query([5. - 1e-9, 0., 0.], [1., 0., 0.], field=[0., 0., field])
@@ -262,6 +280,7 @@ def test_tiny_axial_velocity_is_not_classified_as_stationary():
     np.testing.assert_allclose(got.distance, [1e11])
 
 
+@pytest.mark.pr_params("-2.0-True-False", "-2.0-True-True")
 @pytest.mark.parametrize('compiled', [False, True])
 @pytest.mark.parametrize('entering', [False, True])
 @pytest.mark.parametrize('k', [0., -.2, .2, -2., 2.])
@@ -274,8 +293,10 @@ def test_near_axial_radial_boundary_starts_resolve_or_fail_closed(compiled, ente
     u = np.column_stack((radial_sign * transverse, np.zeros_like(radius), axial_sign))
     u /= np.linalg.norm(u, axis=1, keepdims=True)
     field = None if k == 0 else [0., 0., -100. * k / SJ.K_FIELD]
-    run = lambda xx, uu: A.crossing(xx, uu, 100., -1., field, 4., 0., 2., 1., 5., entering=entering)
-    got = (jax.jit(run) if compiled else run)(jnp.asarray(x), jnp.asarray(u))
+    if compiled:
+        got = traced(x, u, field=field, p=100., q=-1., limit=4., entering=entering)
+    else:
+        got = A.crossing(jnp.asarray(x), jnp.asarray(u), 100., -1., field, 4., 0., 2., 1., 5., entering=entering)
     material_directed = (radius == 1.) == (radial_sign > 0)
     radial_face = np.where(radius == 1., 4, 3)
     axial_face = np.where(axial_sign > 0, 2, 1)
@@ -297,6 +318,7 @@ def test_near_axial_radial_boundary_starts_resolve_or_fail_closed(compiled, ente
     assert np.all(supported[transverse == 1e-10])
 
 
+@pytest.mark.pr_params("1e-08-1.0")
 @pytest.mark.parametrize('radius', [1., 5.])
 @pytest.mark.parametrize('transverse', [1e-8, 2. ** -26])
 def test_small_transverse_boundary_tangent_resolves_or_fails_closed(radius, transverse):
@@ -309,6 +331,7 @@ def test_small_transverse_boundary_tangent_resolves_or_fails_closed(radius, tran
         assert np.isnan(got.distance[0]) and got.surface[0] == 0
 
 
+@pytest.mark.pr_params("0.0-False")
 @pytest.mark.parametrize('entering', [False, True])
 @pytest.mark.parametrize('k', [0., -.2, .2])
 def test_exact_axial_radial_boundary_starts_stay_supported(entering, k):
@@ -327,6 +350,7 @@ def test_numerically_extreme_curvature_and_phase_are_unsupported():
         assert not got.supported[0] and np.isnan(got.distance[0])
 
 
+@pytest.mark.pr_params("x0-1.0-0.0-6.0-False")
 @pytest.mark.parametrize('x,k,inner,outer,entering', [
     ([3., 5., 0.], 1., 0., 6., False),
     ([3., 3., 0.], -1., 4., 7., False),
@@ -339,6 +363,7 @@ def test_offset_circle_exact_tangency_is_not_a_transition(x, k, inner, outer, en
     assert got.supported[0] and np.isinf(got.distance[0]) and got.surface[0] == 0
 
 
+@pytest.mark.pr_params("-1e-14")
 @pytest.mark.parametrize('shift', [-1e-14, 1e-14])
 def test_unresolved_near_tangencies_are_not_reported_as_clear(shift):
     straight = query([-5., 1. + shift, 0.], [1., 0., 0.], outer=6.)

@@ -15,7 +15,7 @@ from mu2efastsim.cosmic_cry import CosmicConfig, highest_intersection
 TABLE = Path(os.environ.get("CRYDATAPATH", "/opt/cry/data")) / "cosmics_0.data"
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def setup():
     if not TABLE.exists():
         pytest.skip("verified CRY table not installed")
@@ -50,6 +50,7 @@ def test_primary_rates_and_distribution_dimensions(setup):
     assert tables["time"].cdf.shape == (7*85, 45)
 
 
+@pytest.mark.slow
 def test_pdf_inverse_and_within_bin_semantics():
     pdf = T.Pdf("", 1, 100, "log", np.array([[1., 2., 0., 1.]]))
     p = D._pdf(pdf)
@@ -140,6 +141,7 @@ def test_device_overenergy_carry_across_empty_terminal_and_batches():
     np.testing.assert_array_equal(np.asarray(second["clocks"])[:2], [2.,3.])
 
 
+@pytest.mark.pr_params("0")
 @pytest.mark.parametrize("species", range(7))
 def test_conditional_energy_sampler_shared_primary_and_exact_pdf_pmf(setup, species):
     tables, _ = setup

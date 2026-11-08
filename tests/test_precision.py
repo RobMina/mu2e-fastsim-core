@@ -60,8 +60,10 @@ print("ok")
 def test_float32_mode_scoped_to_kernels_shared_kernels_follow_inputs(tmp_path):
     out = {}
     for mode in ("float32", "float64"):
-        env = dict(os.environ, MU2EFS_DEVICE_FLOAT=mode, PYTHONPATH=str(ROOT))
-        code = f"OUT = {str(tmp_path / mode)!r}\n" + (FLOAT32_CHECK if mode == "float32" else
+        # float32 is the default: that leg runs with the variable unset and also checks the provenance record
+        env = {k: v for k, v in os.environ.items() if k != "MU2EFS_DEVICE_FLOAT"}
+        env.update(PYTHONPATH=str(ROOT), **({} if mode == "float32" else {"MU2EFS_DEVICE_FLOAT": mode}))
+        code = f"OUT = {str(tmp_path / mode)!r}\n" + (FLOAT32_CHECK + DEFAULT_PROVENANCE if mode == "float32" else
                                                    FLOAT32_CHECK.split("assert dprec.SINGLE")[0] + FLOAT64_PART)
         r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=300)
         assert r.returncode == 0 and r.stdout.strip().endswith("ok"), r.stderr[-2000:]
@@ -77,6 +79,15 @@ print("ok")
 '''
 
 
+DEFAULT_PROVENANCE = r'''
+from mu2efastsim import precision as p
+d = p.provenance()
+assert p.SINGLE and d['device_float'] == 'float32' and d['device_kind'], d
+print("ok")
+'''
+
+
+@pytest.mark.slow   # the same check runs in the float32 leg of test_float32_mode_scoped_to_kernels_...
 def test_default_is_float32_and_provenance_records_it():
     env = {k: v for k, v in os.environ.items() if k != "MU2EFS_DEVICE_FLOAT"}
     env["PYTHONPATH"] = str(ROOT)

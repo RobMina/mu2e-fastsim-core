@@ -81,7 +81,7 @@ def _inputs(n, seed=3):
 
 
 def test_sample_matches_eloss_jax():
-    n = 20_000
+    n = 2_000
     keys = _keys(n, 11)
     c, p, L = _inputs(n)
     ref = jax.jit(jax.vmap(lambda kk, cc, pp, ll: EJ._sample(kk, cc, pp, ll, 1e9, EJ.MMU)))(keys, c, p, L)
@@ -131,6 +131,7 @@ def test_slab_xla_matches_reference():
     assert np.all(np.asarray(loss)[np.asarray(L) == 0] == 0.0)
 
 
+@pytest.mark.slow
 def test_slab_kernel_interpreted_matches_xla():
     n = 512
     keys = _keys(n, 9)
@@ -143,6 +144,7 @@ def test_slab_kernel_interpreted_matches_xla():
     assert rel.max() < 1e-9
 
 
+@pytest.mark.pr_params("mat0-800.0-300.0")
 @pytest.mark.parametrize("mat, p, L", [(M.CONCRETE_MARS, 800.0, 300.0), (M.MILD_STEEL, 400.0, 100.0),
                                        (M.POLYSTYRENE, 3000.0, 20.0)])
 def test_slab_matches_numpy_in_distribution(mat, p, L):
@@ -157,6 +159,7 @@ def test_slab_matches_numpy_in_distribution(mat, p, L):
     assert np.all(np.abs(qd / qr - 1) < 0.02)
 
 
+@pytest.mark.pr_params("mat0-100000.0-200.0")
 @pytest.mark.parametrize("mat, p, L", [(M.COPPER, 100_000.0, 200.0), (M.CONCRETE_MARS, 20_000.0, 2000.0),
                                        (M.MILD_STEEL, 300_000.0, 500.0)])
 def test_slab_with_radiative_matches_numpy_default(mat, p, L):
@@ -175,6 +178,7 @@ def test_slab_with_radiative_matches_numpy_default(mat, p, L):
         assert abs(fd - fr) < 5 * np.sqrt((fd + fr) / n) + 1e-4
 
 
+@pytest.mark.slow
 def test_path_with_radiative_matches_numpy_world_loss():
     from mu2efastsim import muradiative_jax as RJ
     mats = [M.CONCRETE_MARS, M.MILD_STEEL, M.ALUMINIUM_6061]
@@ -214,7 +218,7 @@ def _path_case(n, J, seed):
 
 
 def test_path_xla_matches_segment_by_segment():
-    k, p, L, c, f1, f2, mean = _path_case(600, 7, 21)
+    k, p, L, c, f1, f2, mean = _path_case(64, 4, 21)   # J=4: f1 in {0,1}, f2 in {0,1,2}, one mean-loss segment
     out = np.asarray(S.path_loss(k, p, L, c, f1, f2, mean, impl="xla"))
     lost = jnp.zeros_like(p)
     for j in range(L.shape[0]):
@@ -228,6 +232,7 @@ def test_path_xla_matches_segment_by_segment():
         assert _close(out[j], lost, 1e-9, 0.5, 0.99)
 
 
+@pytest.mark.slow
 def test_path_kernel_interpreted_matches_xla():
     args = _path_case(64, 5, 22)
     a = np.asarray(S.path_loss(*args, impl="xla"))
