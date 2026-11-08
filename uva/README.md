@@ -7,7 +7,7 @@ image, the job outputs and `kpp/`), `FASTSIMKIT_FNAL_HOST` and `FASTSIMKIT_FNAL_
 Mu2e-internal inputs). The job scripts carry no account or log path: submit them with
 `sbatch -A "$FASTSIMKIT_SLURM_ACCOUNT" -o "$FASTSIMKIT_SCRATCH/probe/slurm-%j.out" --export=ALL,FASTSIMKIT_SCRATCH="$FASTSIMKIT_SCRATCH"`
 (the stream drivers do this themselves). Image: `mu2efastsim.sif` built on an `interactive` node with `container/build.sh`
-(gpu variant keeps cuDNN and cuFFT). Measured cost ~60 SU per A100-hour (8-16 cores).
+(gpu variant keeps cuDNN and cuFFT).
 
 | Script | What | Inputs |
 |---|---|---|
