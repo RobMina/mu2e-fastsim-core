@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import Callable, Dict, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from hependpoints.eaf import IMAGE, PROFILE, SLICE_GB, HubClient, slice_of  # noqa: F401
 from hependpoints.eaf import EAFEndpoint as _EAFEndpoint
@@ -56,6 +56,11 @@ class EAFEndpoint(_EAFEndpoint):
         venv = self._venv or site.setting("FASTSIMKIT_EAF_VENV") or site.output_root() + "/crv_fastsim/venv_eaf"
         return venv.rstrip("/")
 
+    def _watcher_argv(self) -> List[str]:
+        """The base watcher command plus this endpoint's FNAL data path, so the detached watcher rebuilds the same
+        endpoint without needing M2FS_DATA or FASTSIMKIT_FNAL_DATA (the caller may have passed fnal_data instead)."""
+        return super()._watcher_argv() + ["--fnal-data", self.fnal_data]
+
     def runtime(self) -> Dict[str, str]:
         """Shell definitions of A and T for the kit's task bodies (mu2e_config.eaf_runtime): the venv on shared storage
         instead of an Apptainer image, which EAF cannot start."""
@@ -63,8 +68,15 @@ class EAFEndpoint(_EAFEndpoint):
 
 
 def main(argv=None) -> int:
-    """python -m mu2efastsim.endpoints.eaf {server|jobs|stop-idle} [--state-dir D] (needs EAF_TOKEN_FILE)."""
-    return _main(argv, endpoint_cls=EAFEndpoint,
+    """python -m mu2efastsim.endpoints.eaf {server|jobs|stop-idle} [--state-dir D] [--fnal-data P] (needs
+    EAF_TOKEN_FILE). --fnal-data is the endpoint's fnal_data (the watcher passes it; default from the site)."""
+    import argparse
+    import functools
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--fnal-data", default=None)
+    known, rest = pre.parse_known_args(argv)
+    cls = functools.partial(EAFEndpoint, fnal_data=known.fnal_data) if known.fnal_data else EAFEndpoint
+    return _main(rest, endpoint_cls=cls,
                  default_state_dir=os.environ.get("FASTSIMKIT_STATE_DIR", "~/.mu2efastsim/kit") + "/jobs")
 
 

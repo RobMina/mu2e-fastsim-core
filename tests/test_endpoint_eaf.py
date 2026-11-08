@@ -344,3 +344,32 @@ def test_kit_crv_response_knob_lines_run(tmp_path):
     block = body[body.index("KN=()"):body.index("KA=()")]
     out = subprocess.run(["bash", "-c", block + 'printf "%s\\n" "${KN[@]}"'], capture_output=True, text=True, check=True)
     assert out.stdout.split() == ["atten_T1=0.58", "speed_EX=1.08"]
+
+
+def test_watcher_rebuilds_the_endpoint_from_the_callers_fnal_data(tmp_path, monkeypatch, capsys):
+    """A caller that passed fnal_data (no M2FS_DATA, M2FS_INPUTS or FASTSIMKIT_FNAL_DATA in the environment): the
+    watcher command carries it, and the watcher's endpoint builds and stops the idle server."""
+    import hependpoints.eaf as base
+    from mu2efastsim import site
+    from mu2efastsim.endpoints import eaf as m2eaf
+    for name in ("M2FS_DATA", "M2FS_INPUTS", "FASTSIMKIT_FNAL_DATA", "CRVFS_DATA"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(site.SiteConfigError):
+        site.crv_data()                                                 # the site alone cannot name the data
+    hub = FakeHub(available=("4g.40gb",), run=False)
+    hub.start({"imagegpu": "x-40gb"})
+    ep, _ = make(tmp_path, hub, fnal_data="/path/to/caller/data")
+    argv = ep._watcher_argv()
+    assert argv[1:3] == ["-m", "mu2efastsim.endpoints.eaf"]
+    assert argv[argv.index("--fnal-data") + 1] == "/path/to/caller/data"
+    monkeypatch.setattr(base, "HubClient", lambda *a, **k: hub)       # the watcher's own hub client: the fake
+    built = []
+    real_init = m2eaf.EAFEndpoint.__init__
+
+    def init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        built.append(self.fnal_data)
+    monkeypatch.setattr(m2eaf.EAFEndpoint, "__init__", init)
+    assert m2eaf.main(argv[3:]) == 0                                    # stop-idle --wait ... --fnal-data ...
+    assert built == ["/path/to/caller/data"] and hub.srv is None
+    assert "watcher: stopped" in capsys.readouterr().out
