@@ -136,7 +136,7 @@ def test_small_sample_parity_with_numpy():
     assert b.n_photons.mean() == pytest.approx(a.photons.track.size / n, abs=5 * np.sqrt(0.15 / n))
 
 
-@pytest.mark.slow
+@pytest.mark.weekly   # ~29 min on a CI runner (case 2 alone ~22 min): the weekly run, not the nightly
 @pytest.mark.parametrize("case", [("G4_Al", 105.0, 0.1), ("G4_Al", 20.0, 1.0), ("G4_W", 105.0, 3.5)])
 def test_parity_200k(case):
     name, T0, L = case
