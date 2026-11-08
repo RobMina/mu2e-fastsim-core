@@ -68,6 +68,15 @@ def make(tmp_path, hub, clock=None, **kw):
 needs_setsid = pytest.mark.skipif(shutil.which("setsid") is None, reason="setsid (util-linux) not available")
 
 
+@pytest.fixture(autouse=True)
+def watchers(monkeypatch):
+    """Record linger-watcher spawns instead of starting a detached process against a real hub (since hep-endpoints
+    5366560 a status call that sees the last job end inside the linger starts one)."""
+    spawned = []
+    monkeypatch.setattr(EAFEndpoint, "_spawn_watcher", lambda self: spawned.append(self.state.root))
+    return spawned
+
+
 def wait_pid(ep, h, timeout=10):
     t0 = time.time()
     while not (ep._dir(h) / "job.pid").exists() and time.time() - t0 < timeout:
