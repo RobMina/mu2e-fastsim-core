@@ -2,6 +2,8 @@
 # "pytest (no JAX)" runs the same suite without JAX installed, where the JAX tests must skip cleanly.
 # Pull requests and pushes run the per-PR tier. The nightly schedule (and a manual run with runslow) adds the
 # @pytest.mark.slow tests (--runslow); a pull request that changes a file listed in ci/runslow_paths.txt runs them too.
+# The weekly schedule (and a manual run with weekly) runs only the @pytest.mark.weekly validations
+# (--runweekly -m weekly), which are too long for the nightly run.
 # JAX's persistent compilation cache is restored from main's last run and saved by runs on main.
 name: tests
 on:
@@ -9,13 +11,18 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: "23 5 * * *"
+    - cron: "23 5 * * *"    # nightly: --runslow
+    - cron: "11 3 * * 0"    # weekly (Sunday): --runweekly -m weekly
   workflow_dispatch:
     inputs:
       runslow:
         description: "also run the @pytest.mark.slow tests (--runslow)"
         type: boolean
         default: true
+      weekly:
+        description: "run only the @pytest.mark.weekly validations (--runweekly -m weekly); overrides runslow"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -43,7 +50,9 @@ jobs:
         working-directory: core
         env:
           EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
           DISPATCH_RUNSLOW: ${{ inputs.runslow }}
+          DISPATCH_WEEKLY: ${{ inputs.weekly }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: bash ci/runslow.sh
       - name: Cache key month
