@@ -207,3 +207,16 @@ def test_unrolled_sampler_same_draws():
     g = [np.asarray(EJ._gamma_fixed(jax.random.key(5), jnp.full(4096, a), EJ.GAMMA_ROUNDS, u)) for u in (False, True)
          for a in (0.3,)]
     np.testing.assert_allclose(g[1], g[0], rtol=1e-12)
+
+
+@pytest.mark.parametrize("unroll", [False, True])
+def test_float32_inputs_give_float32_losses(unroll):
+    """float32 inputs stay float32 through the Urban sampler (no float64 accumulator), muons and electrons."""
+    p = jnp.full(64, 104.0, jnp.float32)
+    ln = jnp.full(64, 5.0, jnp.float32)
+    key = jax.random.PRNGKey(3)
+    mu = EJ.sample_loss(key, GAS, p, ln, jnp.float32(1e-3))
+    T = jnp.full(64, 100.0, jnp.float32)
+    el = EJ.sample_loss_electron(key, GAS, T, ln, 0.1, ln * jnp.float32(1e-3), unroll=unroll)
+    assert mu.dtype == jnp.float32 and el.dtype == jnp.float32
+    assert bool(jnp.all(jnp.isfinite(el))) and bool(jnp.all(el >= 0))

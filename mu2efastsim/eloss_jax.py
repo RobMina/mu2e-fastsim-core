@@ -242,7 +242,8 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
     loss = loss + jnp.where(s23 > 0, _gauss_clipped(jax.random.uniform(ks[6], sh, dt), eav3,
                                                     jnp.where(s23 > 0, s23, 0.0)), 0.0)
     out = jnp.where(gs, x_gs, jnp.where(gm, x_gm, mean))
-    return jnp.where(u, loss * scaling, out)
+    # the ionisation sum above accumulates in float64 (as before); the result is returned in the input dtype
+    return jnp.where(u, loss * scaling, out).astype(dt)
 
 
 def sample_loss_electron(key, mat, T, length, cut, mean, positron=False, K=K_POISSON, unroll=False):
