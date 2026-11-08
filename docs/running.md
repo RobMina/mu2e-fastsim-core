@@ -17,7 +17,15 @@ are configured from the experiment-neutral [hep-endpoints](https://github.com/Ro
 it the endpoint tests are skipped and every other module works. The CI environment is pinned in
 [`ci/requirements.txt`](../ci/requirements.txt); CI runs the suite with and without JAX.
 `python3 -m mu2efastsim.testselect --why` lists the test files a change affects; `--run --isolate` runs them one
-pytest process per file. Large-sample checks are `@pytest.mark.slow` and run with `--runslow`.
+pytest process per file.
+
+Test tiers (hooks in `mu2efastsim.testing`, shared by every fastsim suite):
+
+| Tier | Selection | Runs |
+|---|---|---|
+| per PR | default | every pull request and push |
+| nightly | `--runslow`: adds `@pytest.mark.slow` (large samples, duplicated parameter sets via `@pytest.mark.pr_params`) | scheduled nightly; manual dispatch; PRs that change a path in `ci/runslow_paths.txt` |
+| weekly | `--runweekly -m weekly`: only `@pytest.mark.weekly` (validations of tens of minutes; `--runslow` does not select them) | scheduled weekly; manual dispatch with `weekly` |
 
 ## Library use
 

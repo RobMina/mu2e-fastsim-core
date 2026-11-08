@@ -9,6 +9,11 @@ Each repository's ``tests/conftest.py`` imports these hooks, so one test process
   ``--runslow`` is given (or selected explicitly with ``-m slow``); the scheduled CI run passes ``--runslow``.
 - ``@pytest.mark.pr_params("id", ...)`` on a parametrized test keeps only the listed parameter ids per PR; the other
   ids are marked slow, so every case still runs with ``--runslow``.
+- ``@pytest.mark.weekly`` marks validations too long for the nightly run (tens of minutes on a CI runner). They are
+  skipped unless ``--runweekly`` is given (or selected with ``-m weekly``); ``--runslow`` does not select them. The
+  weekly scheduled CI run passes ``--runweekly -m weekly``.
+
+Tiers: per PR (no option), nightly (``--runslow``: per-PR + slow), weekly (``--runweekly -m weekly``).
 - ``XLA_PYTHON_CLIENT_PREALLOCATE`` defaults to false, so a test run on a GPU host does not reserve most of the card.
 - ``MU2EFS_DEVICE_FLOAT`` defaults to float64: the suites check exact device-versus-NumPy parity, which holds in float64
   only. The float32 production default has its own tests (float32 subprocesses); ``MU2EFS_DEVICE_FLOAT=float32`` runs a
@@ -38,11 +43,14 @@ if "mu2efastsim.precision" in sys.modules and sys.modules["mu2efastsim.precision
 def pytest_addoption(parser):
     parser.addoption("--runslow", action="store_true", default=False,
                      help="also run @pytest.mark.slow statistical validations (large samples, GB-scale memory)")
+    parser.addoption("--runweekly", action="store_true", default=False,
+                     help="also run @pytest.mark.weekly validations (tens of minutes; not selected by --runslow)")
 
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: large-sample statistical validation; skipped unless --runslow")
     config.addinivalue_line("markers", "pr_params(*ids): parameter ids kept per PR; the other ids are slow")
+    config.addinivalue_line("markers", "weekly: validation too long for the nightly run; skipped unless --runweekly")
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -52,12 +60,17 @@ def pytest_collection_modifyitems(config, items):
         callspec = getattr(item, "callspec", None)
         if keep is not None and callspec is not None and callspec.id not in keep.args:
             item.add_marker(pytest.mark.slow)
-    if config.getoption("--runslow") or "slow" in (config.getoption("-m") or ""):
-        return
-    skip = pytest.mark.skip(reason="slow validation: run with --runslow")
+    selected = config.getoption("-m") or ""
+    runslow = config.getoption("--runslow") or "slow" in selected
+    runweekly = config.getoption("--runweekly") or "weekly" in selected
+    skip_slow = pytest.mark.skip(reason="slow validation: run with --runslow")
+    skip_weekly = pytest.mark.skip(reason="weekly validation: run with --runweekly")
     for item in items:
-        if "slow" in item.keywords:
-            item.add_marker(skip)
+        if "weekly" in item.keywords:
+            if not runweekly:
+                item.add_marker(skip_weekly)
+        elif "slow" in item.keywords and not runslow:
+            item.add_marker(skip_slow)
 
 
 @pytest.fixture(autouse=True, scope="module")
