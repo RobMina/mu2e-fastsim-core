@@ -217,6 +217,7 @@ def _path_case(n, J, seed):
     return S.raw(_keys(n, seed)), p, L, c, f1, f2, mean
 
 
+@pytest.mark.slow   # path_loss composition; the per-PR tier keeps slab-level parity (xla, reference, radiative)
 def test_path_xla_matches_segment_by_segment():
     k, p, L, c, f1, f2, mean = _path_case(64, 4, 21)   # J=4: f1 in {0,1}, f2 in {0,1,2}, one mean-loss segment
     out = np.asarray(S.path_loss(k, p, L, c, f1, f2, mean, impl="xla"))

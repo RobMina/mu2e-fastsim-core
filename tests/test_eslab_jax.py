@@ -280,23 +280,12 @@ def test_lane_step_with_mixed_layer_types_equals_one_slab_call_per_type(dtype, m
     Bf = None if field is None else np.broadcast_to(np.asarray(field, float), (n, 3)).astype(dtype)
     key = jax.random.PRNGKey(11)
 
-    def run(unroll):
-        @jax.jit
-        def loop(st):
-            def cond(s):
-                return jnp.any(~s["stopped"] & ~s["exited"])
-            return jax.lax.while_loop(cond, lambda s: SJ.lane_step(key, lt, jnp.asarray(mi), s, Bf, msc=msc,
-                                                                   unroll=unroll), st)
-        return jax.tree_util.tree_map(np.asarray, loop(SJ.lane_state(T, d, z0, lt.length[mi])))
-    st = run(False)
-    if not msc and dtype == np.float64:
-        # the per-PR item also checks unroll identity (test_lane_step_unroll_gives_the_same_draws runs it with msc):
-        # with the field on, every unrolled loop of the step is traced (plane crossing, delta and brems sampling)
-        su = run(True)
-        for k in ("stopped", "exited", "nph", "nde", "it"):
-            assert np.array_equal(st[k], su[k])
-        for k in ("T", "d", "x", "path", "eph", "ede"):
-            assert np.allclose(st[k], su[k], rtol=1e-11, atol=1e-11)
+    @jax.jit
+    def loop(st):
+        def cond(s):
+            return jnp.any(~s["stopped"] & ~s["exited"])
+        return jax.lax.while_loop(cond, lambda s: SJ.lane_step(key, lt, jnp.asarray(mi), s, Bf, msc=msc), st)
+    st = jax.tree_util.tree_map(np.asarray, loop(SJ.lane_state(T, d, z0, lt.length[mi])))
     for m, (mat, L, tc, kc) in enumerate(layers):
         r = jax.tree_util.tree_map(np.asarray, SJ.electron_slab(key, mat, T, d, L, tc, kc, msc=msc,
                                                                 z0=np.full(n, 0.5 * L), field=field))
@@ -310,7 +299,7 @@ def test_lane_step_with_mixed_layer_types_equals_one_slab_call_per_type(dtype, m
             assert np.allclose(a[j], b[j], rtol=tol, atol=tol)
 
 
-@pytest.mark.slow
+@pytest.mark.slow   # unroll identity per PR: test_eloss_jax::test_unrolled_sampler_same_draws
 def test_lane_step_unroll_gives_the_same_draws():
     # unroll (opt-in) unrolls the fixed-trip loops of the step: same keys and arithmetic, so the same outcomes
     jnp = jax.numpy
