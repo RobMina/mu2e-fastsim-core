@@ -238,7 +238,7 @@ def test_slab_leaves_at_first_face_before_curling_back(dtype):
     assert not np.asarray(r.n_photons + r.n_deltas).any()
 
 
-@pytest.mark.slow
+@pytest.mark.pr_params("True-chunk1-float64")   # the per-PR check of lane compaction (chunk)
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
 @pytest.mark.parametrize("msc,chunk", [(False, None), (True, np.int64(1))])
 def test_boundary_starts_exit_outward_and_transport_inward(dtype, msc, chunk):

@@ -131,7 +131,6 @@ def test_slab_xla_matches_reference():
     assert np.all(np.asarray(loss)[np.asarray(L) == 0] == 0.0)
 
 
-@pytest.mark.slow
 def test_slab_kernel_interpreted_matches_xla():
     n = 512
     keys = _keys(n, 9)
@@ -233,7 +232,6 @@ def test_path_xla_matches_segment_by_segment():
         assert _close(out[j], lost, 1e-9, 0.5, 0.99)
 
 
-@pytest.mark.slow
 def test_path_kernel_interpreted_matches_xla():
     args = _path_case(64, 5, 22)
     a = np.asarray(S.path_loss(*args, impl="xla"))
