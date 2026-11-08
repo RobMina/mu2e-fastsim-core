@@ -232,7 +232,7 @@ def _sample(key, c, p, length, tcut, mass, K=K_POISSON, gamma_rounds=GAMMA_ROUND
         return pmf, cdf + pmf, k + above, ion
 
     pmf0 = jnp.exp(-lams)
-    _, _, kk, ion = lax.fori_loop(0, K, body, (pmf0, pmf0, jnp.zeros((3,) + sh, jnp.int32), jnp.zeros(sh)),
+    _, _, kk, ion = lax.fori_loop(0, K, body, (pmf0, pmf0, jnp.zeros((3,) + sh, jnp.int32), jnp.zeros(sh, dt)),
                                   **({"unroll": True} if unroll else {}))
     rx = jax.random.uniform(ks[4], (2,) + sh, dt)
     loss = jnp.where(kk[0] > 0, ((kk[0] + 1) - 2 * rx[0]) * e1, 0.0)
