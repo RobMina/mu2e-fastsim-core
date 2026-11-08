@@ -1,0 +1,11 @@
+# Extended regular expressions (one per line) of paths whose contracts are checked only by @pytest.mark.slow tests.
+# A pull request that changes a matching file runs the suite with --runslow.
+# electron slab lane compaction (chunk) and its NumPy distribution parity
+^mu2efastsim/eslab_jax\.py$
+# Pallas slab and path kernels (CUDA-only in production; interpreter tests are slow)
+^mu2efastsim/slab_jax\.py$
+# NumPy electron slab with multiple scattering
+^mu2efastsim/(eslab|emsc)\.py$
+# float32 device mode and job-side imports
+^mu2efastsim/precision\.py$
+^ci/runslow
