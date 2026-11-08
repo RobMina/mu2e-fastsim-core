@@ -30,6 +30,7 @@ def _assert_bytes_equal(a, b):
         assert av.tobytes() == bv.tobytes(), name
 
 
+@pytest.mark.pr_params("False-False-True-float32")
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 @pytest.mark.parametrize("positron", [False, True])
 @pytest.mark.parametrize("msc,field", [(False, False), (True, False), (False, True), (True, True)])
@@ -142,6 +143,7 @@ def test_empty_and_finished_lanes_have_safe_zero_records(tables):
         assert not np.asarray(result["nph"]).any()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("positron", [False, True])
 @pytest.mark.parametrize("msc,field", [(False, False), (True, False), (False, True), (True, True)])
 def test_finite_state_only_matches_records_with_physical_tables(tables, positron, msc, field):

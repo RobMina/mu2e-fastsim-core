@@ -152,6 +152,7 @@ def test_poisson_means_below_truncation():
     assert np.isfinite(alfa1).all() and (alfa1 >= 1).all()
 
 
+@pytest.mark.slow
 def test_gamma_sampler():
     from scipy.stats import kstest
     for a in (0.3, 1.0, 3.5):
@@ -159,6 +160,7 @@ def test_gamma_sampler():
         assert kstest(x, "gamma", args=(a,)).pvalue > 1e-3
 
 
+@pytest.mark.slow
 def test_truncated_gauss():
     """Inverse-CDF truncated Gauss vs the numpy rejection sampler."""
     eav = np.full(400_000, 1.0)

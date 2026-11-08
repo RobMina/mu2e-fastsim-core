@@ -4,8 +4,11 @@ Each repository's ``tests/conftest.py`` imports these hooks, so one test process
 
 - After every test module, JAX's compilation caches are cleared and garbage is collected. A suite otherwise keeps
   every compiled XLA program and its buffers for the rest of the process, which is how a full run grows to several GB.
-- ``@pytest.mark.slow`` marks statistical validations with large samples (GB-scale or tens of seconds). They are
-  skipped unless ``--runslow`` is given (or selected explicitly with ``-m slow``).
+- ``@pytest.mark.slow`` marks statistical validations with large samples (GB-scale or tens of seconds), JAX
+  duplicates of a contract another per-PR test already checks, and campaign checks. They are skipped unless
+  ``--runslow`` is given (or selected explicitly with ``-m slow``); the scheduled CI run passes ``--runslow``.
+- ``@pytest.mark.pr_params("id", ...)`` on a parametrized test keeps only the listed parameter ids per PR; the other
+  ids are marked slow, so every case still runs with ``--runslow``.
 - ``XLA_PYTHON_CLIENT_PREALLOCATE`` defaults to false, so a test run on a GPU host does not reserve most of the card.
 - ``MU2EFS_DEVICE_FLOAT`` defaults to float64: the suites check exact device-versus-NumPy parity, which holds in float64
   only. The float32 production default has its own tests (float32 subprocesses); ``MU2EFS_DEVICE_FLOAT=float32`` runs a
@@ -39,9 +42,16 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: large-sample statistical validation; skipped unless --runslow")
+    config.addinivalue_line("markers", "pr_params(*ids): parameter ids kept per PR; the other ids are slow")
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
+    for item in items:
+        keep = item.get_closest_marker("pr_params")
+        callspec = getattr(item, "callspec", None)
+        if keep is not None and callspec is not None and callspec.id not in keep.args:
+            item.add_marker(pytest.mark.slow)
     if config.getoption("--runslow") or "slow" in (config.getoption("-m") or ""):
         return
     skip = pytest.mark.skip(reason="slow validation: run with --runslow")

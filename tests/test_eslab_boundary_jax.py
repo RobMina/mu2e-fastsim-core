@@ -1,4 +1,5 @@
 """Finite-material per-leg hooks; synthetic rates isolate transport from fluctuation statistics."""
+import inspect
 from functools import partial
 
 import numpy as np
@@ -135,6 +136,7 @@ def _bytes(a, b):
         assert av.tobytes() == bv.tobytes()
 
 
+@pytest.mark.pr_params("1-False-False")
 @pytest.mark.parametrize("field", [False, True])
 @pytest.mark.parametrize("positron", [False, True])
 @pytest.mark.parametrize("leg", [1, 2])
@@ -165,6 +167,7 @@ def test_forced_msc_exit_uses_actual_leg_and_flushes_pending(mean_loss, field, p
     _no_records(photons)
 
 
+@pytest.mark.pr_params("annih-2-True")
 @pytest.mark.parametrize("field", [False, True])
 @pytest.mark.parametrize("leg", [1, 2])
 @pytest.mark.parametrize("interaction", ["brems", "delta", "hard", "annih"])
@@ -196,6 +199,7 @@ def test_exit_suppresses_endpoint_interactions(mean_loss, field, leg, interactio
     _no_records(photons)
 
 
+@pytest.mark.pr_params("2-True")
 @pytest.mark.parametrize("field", [False, True])
 @pytest.mark.parametrize("leg", [1, 2])
 def test_stopping_precedes_boundary_exit(monkeypatch, field, leg):
@@ -214,6 +218,7 @@ def test_stopping_precedes_boundary_exit(monkeypatch, field, leg):
     _no_records(photons)
 
 
+@pytest.mark.pr_params("False")
 @pytest.mark.parametrize("field", [False, True])
 def test_lateral_safety_prevents_planar_range_trapping(mean_loss, field):
     st, B, calls = _state(leg=1), _field(field), []
@@ -232,6 +237,7 @@ def test_lateral_safety_prevents_planar_range_trapping(mean_loss, field):
     assert np.max(np.abs(calls[0][4] - planar_calls[0][4])) > 1.0
 
 
+@pytest.mark.pr_params("True-True")
 @pytest.mark.parametrize("field", [False, True])
 @pytest.mark.parametrize("msc", [False, True])
 def test_inactive_rows_receive_zero_proposals_and_remain_inert(mean_loss, field, msc):
@@ -258,22 +264,22 @@ def test_inactive_rows_receive_zero_proposals_and_remain_inert(mean_loss, field,
     _no_records(photons)
 
 
+@pytest.mark.pr_params("float32-True-True")
 @pytest.mark.parametrize("field", [False, True])
 @pytest.mark.parametrize("msc", [False, True])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 def test_null_hooks_and_far_boundary_preserve_exact_state_and_records(field, msc, dtype):
     st, B, lt = _state(dtype=dtype), _field(field, dtype=dtype), _tables(sig_b=3.0)
+    # Passing boundary=None, safety=None explicitly is the same call as omitting them (keyword-only, default None).
+    for step in (SJ.lane_step, SJ.lane_step_photons):
+        params = inspect.signature(step).parameters
+        assert params["boundary"].default is None and params["safety"].default is None
     omitted = _step(lt, st, B=B, msc=msc)
-    explicit = _step(lt, st, B=B, msc=msc, boundary=None, safety=None)
     far = _step(lt, st, B=B, msc=msc,
                 boundary=lambda x, d, p, q, B, smax: jnp.full_like(smax, jnp.inf),
                 safety=lambda x: jnp.minimum(x[:, 2], 20 - x[:, 2]))
-    _bytes(omitted, explicit)
     _bytes(omitted, far)
     plain = jax.jit(partial(SJ.lane_step, KEY, lt, jnp.arange(N), B=B, msc=msc, mott=False))(st)
-    disabled = jax.jit(partial(SJ.lane_step, KEY, lt, jnp.arange(N), B=B, msc=msc, mott=False,
-                               boundary=None, safety=None))(st)
-    _bytes(plain, disabled)
     _state_close(plain, omitted[0])
     assert np.asarray(omitted[1].valid).any()
 
@@ -285,6 +291,7 @@ def test_hooks_must_be_paired_before_any_state_or_table_tracing(step, hook):
         step(None, None, None, None, **{hook: lambda *args: None})
 
 
+@pytest.mark.pr_params("True")
 @pytest.mark.parametrize("field", [False, True])
 def test_unscattered_exit_replaces_legacy_faces(mean_loss, monkeypatch, field):
     def forbidden(*args, **kwargs):
@@ -306,6 +313,7 @@ def test_unscattered_exit_replaces_legacy_faces(mean_loss, monkeypatch, field):
     _no_records(photons)
 
 
+@pytest.mark.pr_params("True-True")
 @pytest.mark.parametrize("field", [False, True])
 @pytest.mark.parametrize("msc", [False, True])
 def test_complete_boundary_still_handles_axial_exit(mean_loss, field, msc):
@@ -320,6 +328,7 @@ def test_complete_boundary_still_handles_axial_exit(mean_loss, field, msc):
     _no_records(photons)
 
 
+@pytest.mark.pr_params("True-True")
 @pytest.mark.parametrize("field", [False, True])
 @pytest.mark.parametrize("msc", [False, True])
 def test_overdue_pending_loss_cannot_propose_negative_path(mean_loss, field, msc):
@@ -353,6 +362,7 @@ def _state_close(a, b):
             np.testing.assert_array_equal(av, bv, err_msg=name)
 
 
+@pytest.mark.pr_params("2-True-True")
 @pytest.mark.parametrize("field", [False, True])
 @pytest.mark.parametrize("positron", [False, True])
 @pytest.mark.parametrize("leg", [1, 2])
@@ -368,6 +378,7 @@ def test_state_only_finite_hooks_match_recorded_msc_exit(mean_loss, field, posit
     _no_records(photons)
 
 
+@pytest.mark.pr_params("True")
 @pytest.mark.parametrize("hooks", [False, True])
 def test_state_only_does_not_construct_photon_records(monkeypatch, mean_loss, hooks):
     def forbidden(*args, **kwargs):

@@ -28,6 +28,7 @@ def _balance(r, n):
             + np.bincount(r.deltas.track, r.deltas.energy, n) + np.bincount(a.track, a.energy - B.ME, n))
 
 
+@pytest.mark.pr_params("False-False", "True-False")   # msc items: NumPy msc is iteration-bound
 @pytest.mark.parametrize("msc", [False, True])
 @pytest.mark.parametrize("positron", [False, True])
 def test_energy_is_conserved_per_track(positron, msc):
@@ -43,6 +44,7 @@ def test_energy_is_conserved_per_track(positron, msc):
         assert np.bincount(r.annihilation.track, minlength=n)[r.stopped].min() == 2
 
 
+@pytest.mark.slow
 def test_thin_slab_mean_loss_and_photon_count():
     n, T0, L = 200_000, 105.0, 0.1
     mat = M.BY_NAME["G4_Al"]
@@ -84,6 +86,7 @@ def test_msc_off_moves_only_by_recoil():
     assert np.median(np.hypot(r.position[:, 0], r.position[:, 1])) < 1e-4
 
 
+@pytest.mark.slow
 def test_msc_scatters_and_lengthens_path():
     n = 1500
     r = _run("G4_W", 105.0, 3.5, n, 13, msc=True)
@@ -94,7 +97,7 @@ def test_msc_scatters_and_lengthens_path():
 
 
 def test_positron_annihilation_in_flight_rate():
-    n, L = 200_000, 1.0
+    n, L = 50_000, 1.0   # the tolerance 5/sqrt(lam n) scales with n
     mat = M.BY_NAME["G4_Al"]
     r = _run("G4_Al", 105.0, L, n, 19, positron=True)
     lam = A.xsec_per_mm(mat, 105.0) * L
@@ -102,6 +105,7 @@ def test_positron_annihilation_in_flight_rate():
     assert r.annihilation.track.size == 2 * r.stopped.sum()
 
 
+@pytest.mark.slow
 def test_slow_electrons_stop_or_reflect_with_msc():
     # 0.5 MeV in W: restricted CSDA range below 0.5 mm, so nothing crosses 1 mm or stops beyond 0.5 mm
     n = 100
@@ -115,7 +119,7 @@ def test_slow_electrons_stop_or_reflect_with_msc():
 
 
 def test_start_depth_default_is_identical_and_inside_start_exits_either_face():
-    n, T0, L = 4000, 105.0, 0.5
+    n, T0, L = 1000, 105.0, 0.5   # the 4-sigma mean comparison scales with n
     mat = M.BY_NAME["G4_Al"]
     d = np.tile([0.0, 0.0, 1.0], (n, 1))
     a = S.electron_slab(np.random.default_rng(7), mat, np.full(n, T0), d, L, TCUT, KCUT, msc=True)
@@ -131,6 +135,7 @@ def test_start_depth_default_is_identical_and_inside_start_exits_either_face():
         S.electron_slab(np.random.default_rng(1), mat, np.full(2, T0), d[:2], L, TCUT, KCUT, z0=2 * L)
 
 
+@pytest.mark.pr_params("False-False-None", "False-False-field1", "False-False-field2", "True-False-None", "True-False-field1", "True-False-field2")
 @pytest.mark.parametrize("field", [None, [0.0, 0.0, 0.0], [0.0, 0.0, 0.5]])
 @pytest.mark.parametrize("msc", [False, True])
 @pytest.mark.parametrize("positron", [False, True])

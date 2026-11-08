@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 CORE = Path(__file__).resolve().parent.parent
 
 PROBE = r"""
@@ -50,6 +52,7 @@ print("OTHER", other)
 """
 
 
+@pytest.mark.slow
 def test_core_modules_import_without_hependpoints():
     r = subprocess.run([sys.executable, "-c", PROBE], capture_output=True, text=True, cwd=CORE,
                        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": os.pathsep.join([str(CORE), os.environ.get("PYTHONPATH", "")]),

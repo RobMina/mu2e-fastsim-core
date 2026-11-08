@@ -57,6 +57,7 @@ def test_bad_value_refused():
     assert r.returncode != 0 and "MU2EFS_DEVICE_DETERMINISTIC" in r.stderr
 
 
+@pytest.mark.slow
 def test_late_application_is_recorded_and_provenance_carries_it():
     pytest.importorskip("jax")
     code = ("import json, jax\njax.config.update('jax_platforms', 'cpu')\njax.devices()\n"
