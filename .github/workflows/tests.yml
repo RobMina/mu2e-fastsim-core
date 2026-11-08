@@ -1,11 +1,21 @@
 # Tests on every pull request and on main. The job name "pytest" is the required status check of the main branch;
 # "pytest (no JAX)" runs the same suite without JAX installed, where the JAX tests must skip cleanly.
+# Pull requests and pushes run the per-PR tier. The nightly schedule (and a manual run with runslow) adds the
+# @pytest.mark.slow tests (--runslow); a pull request that changes a file listed in ci/runslow_paths.txt runs them too.
+# JAX's persistent compilation cache is restored from main's last run and saved by runs on main.
 name: tests
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "23 5 * * *"
   workflow_dispatch:
+    inputs:
+      runslow:
+        description: "also run the @pytest.mark.slow tests (--runslow)"
+        type: boolean
+        default: true
 permissions:
   contents: read
 concurrency:
@@ -20,10 +30,31 @@ jobs:
       CI_BRANCH: ${{ github.head_ref || github.ref_name }}
       JAX_PLATFORMS: cpu
       PYTHONDONTWRITEBYTECODE: "1"
+      JAX_COMPILATION_CACHE_DIR: ${{ github.workspace }}/.jax-cache
+      JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS: "0"
+      JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES: "0"
     steps:
       - uses: actions/checkout@v4
         with:
           path: core
+          fetch-depth: 0
+      - name: Tier (per-PR, or with --runslow)
+        id: tier
+        working-directory: core
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_RUNSLOW: ${{ inputs.runslow }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash ci/runslow.sh
+      - name: Cache key month
+        id: month
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - name: Restore the JAX compilation cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .jax-cache
+          key: jax-core-${{ steps.month.outputs.month }}-${{ hashFiles('core/ci/requirements.txt') }}-${{ github.sha }}
+          restore-keys: jax-core-${{ steps.month.outputs.month }}-${{ hashFiles('core/ci/requirements.txt') }}-
       - name: Sibling repositories (same-named branch if it exists, else main)
         run: bash core/ci/checkout_siblings.sh crv umbrella
       - uses: actions/setup-python@v5
@@ -41,7 +72,13 @@ jobs:
         working-directory: core
         env:
           PYTHONPATH: ${{ github.workspace }}/core:${{ github.workspace }}/crv:${{ github.workspace }}/umbrella/beam
-        run: python -m pytest -q -p no:cacheprovider --durations=15 tests
+        run: python -m pytest -q -p no:cacheprovider --durations=15 ${{ steps.tier.outputs.args }} tests
+      - name: Save the JAX compilation cache (main only)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: .jax-cache
+          key: jax-core-${{ steps.month.outputs.month }}-${{ hashFiles('core/ci/requirements.txt') }}-${{ github.sha }}
   pytest-nojax:
     name: pytest (no JAX)
     runs-on: ubuntu-24.04
