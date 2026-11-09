@@ -1,3 +1,5 @@
+> **Moved.** This repository is archived. The code now lives in [RobMina/mu2e-fastsim](https://github.com/RobMina/mu2e-fastsim), directory [`core/`](https://github.com/RobMina/mu2e-fastsim/tree/main/core), with the full history of this repository merged in (old pull requests, `#NN`, are linked from those commits as `RobMina/mu2e-fastsim-core#NN`). Park and archive branches stay here, readable.
+
 # mu2e-fastsim-core
 
 Detector-independent core of the Mu2e Geant4-free fast simulation: muon energy loss and fluctuations matched to
